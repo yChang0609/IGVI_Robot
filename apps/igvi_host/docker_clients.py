@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .config import HostSettings
 from .models import ComposeActionResponse, ContainerStatus
+from .progress import ProgressBuffer, get_progress_buffer
 from .service_registry import ServiceRegistry
 
 
@@ -155,9 +158,15 @@ class DockerEngineClient:
 class ComposeProjectClient:
     """Thin wrapper around python_on_whales.DockerClient(...).compose."""
 
-    def __init__(self, settings: HostSettings, registry: ServiceRegistry | None = None):
+    def __init__(
+        self,
+        settings: HostSettings,
+        registry: ServiceRegistry | None = None,
+        progress: ProgressBuffer | None = None,
+    ):
         self.settings = settings
         self.registry = registry or ServiceRegistry(settings.compose_file)
+        self.progress = progress or get_progress_buffer()
         try:
             from python_on_whales import DockerClient  # type: ignore
             from python_on_whales.exceptions import DockerException  # type: ignore
@@ -218,15 +227,41 @@ class ComposeProjectClient:
             events_tail=[],
         )
 
+    def _compose_base_cmd(self, profile: str | None = None) -> list[str]:
+        docker_bin = shutil.which("docker") or "docker"
+        cmd: list[str] = [docker_bin, "compose"]
+        for path in self.settings.compose_files:
+            if Path(path).exists():
+                cmd.extend(["--file", str(path)])
+        cmd.extend(["--project-name", self.settings.project_name])
+        cmd.extend([
+            "--project-directory",
+            str(self.settings.repo_root / "docker" / "compose"),
+        ])
+        if profile:
+            cmd.extend(["--profile", profile])
+        return cmd
+
+    def _stream_subprocess(self, action: str, cmd: list[str]) -> None:
+        self.progress.start(action)
+        try:
+            self._stream_into_active_progress(action, cmd)
+        finally:
+            self.progress.finish()
+
     def build(self, service: str | None = None, services: list[str] | None = None, no_cache: bool = False) -> ComposeActionResponse:
         target_services = self._normalize_services(service, services)
         started_at = _utcnow()
-        kwargs: dict[str, Any] = {"cache": not no_cache}
+        cmd = self._compose_base_cmd()
+        cmd.append("build")
+        if no_cache:
+            cmd.append("--no-cache")
+        cmd.append("--progress=plain")
         if target_services:
-            kwargs["services"] = target_services
-        kwargs["quiet"] = True
-        self._run_compose("build", lambda: self.client.compose.build(**kwargs))
-        return self._result("rebuild" if no_cache else "build", target_services, started_at, "Build finished")
+            cmd.extend(target_services)
+        action_name = "rebuild" if no_cache else "build"
+        self._stream_subprocess(action_name, cmd)
+        return self._result(action_name, target_services, started_at, "Build finished")
 
     def up(
         self,
@@ -239,13 +274,80 @@ class ComposeProjectClient:
         target_services = self._normalize_services(service, services)
         profile = self.registry.validate_profile(profile)
         started_at = _utcnow()
-        kwargs: dict[str, Any] = {"detach": detach, "force_recreate": force_recreate}
+        cmd = self._compose_base_cmd(profile=profile)
+        cmd.append("up")
+        if detach:
+            cmd.append("--detach")
+        if force_recreate:
+            cmd.append("--force-recreate")
+        cmd.append("--progress=plain")
         if target_services:
-            kwargs["services"] = target_services
-        kwargs["quiet"] = True
-        self._run_compose("start", lambda: self._client_for_profile(profile).compose.up(**kwargs))
+            cmd.extend(target_services)
+        self._stream_subprocess("start", cmd)
         target = ", ".join(target_services) if target_services else profile or "project"
         return self._result("start", target_services, started_at, f"Started {target}")
+
+    def rebuild(
+        self,
+        service: str | None = None,
+        services: list[str] | None = None,
+        profile: str | None = None,
+    ) -> ComposeActionResponse:
+        target_services = self._normalize_services(service, services)
+        profile_validated = self.registry.validate_profile(profile)
+        started_at = _utcnow()
+
+        self.progress.start("rebuild")
+        try:
+            build_cmd = self._compose_base_cmd()
+            build_cmd.extend(["build", "--no-cache", "--progress=plain"])
+            if target_services:
+                build_cmd.extend(target_services)
+            self._stream_into_active_progress("rebuild:build", build_cmd)
+
+            up_cmd = self._compose_base_cmd(profile=profile_validated)
+            up_cmd.extend(["up", "--detach", "--force-recreate", "--progress=plain"])
+            if target_services:
+                up_cmd.extend(target_services)
+            self._stream_into_active_progress("rebuild:up", up_cmd)
+        finally:
+            self.progress.finish()
+
+        target = ", ".join(target_services) if target_services else profile_validated or "project"
+        return self._result("rebuild", target_services, started_at, f"Rebuilt and started {target}")
+
+    def _stream_into_active_progress(self, phase: str, cmd: list[str]) -> None:
+        self.progress.append(f"--- {phase} ---")
+        self.progress.append(f"$ {' '.join(cmd)}")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                text=True,
+            )
+        except OSError as exc:
+            self.progress.append(f"error: {exc}")
+            raise DockerComposeError(
+                f"Docker compose failed during {phase}: {exc}"
+            ) from exc
+
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if line:
+                self.progress.append(line)
+        return_code = proc.wait()
+        if return_code != 0:
+            snapshot = self.progress.snapshot()
+            tail = "\n".join(snapshot.lines[-30:])
+            raise DockerComposeError(
+                f"Docker compose failed during {phase}\n"
+                f"exit code: {return_code}\n"
+                f"command: {' '.join(cmd)}\n"
+                f"output:\n{tail}"
+            )
 
     def stop(self, service: str | None = None, services: list[str] | None = None) -> ComposeActionResponse:
         target_services = self._normalize_services(service, services)

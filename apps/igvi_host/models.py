@@ -103,6 +103,16 @@ class RosActionResponse(BaseModel):
     message: str
 
 
+class ComposeProgressResponse(BaseModel):
+    action: str | None = None
+    busy: bool = False
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_line: str = ""
+    lines: list[str] = Field(default_factory=list)
+    seq: int = 0
+
+
 class UiBridgeHealth(BaseModel):
     ok: bool
     path: str

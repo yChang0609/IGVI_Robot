@@ -92,6 +92,8 @@ class DockerPage(QWidget):
         self.busy_actions: set[str] = set()
         self.current_log_service: str | None = None
         self.profile_filter = "All"
+        self._progress_busy: bool = False
+        self._progress_target: str = ""
         self._build_ui()
 
         self.refresh_timer = QTimer(self)
@@ -101,6 +103,9 @@ class DockerPage(QWidget):
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._reload_log_if_following)
         self.log_timer.start(3000)
+
+        self.progress_timer = QTimer(self)
+        self.progress_timer.timeout.connect(self._poll_progress)
 
         self.refresh()
         self._reload_profiles()
@@ -447,8 +452,27 @@ class DockerPage(QWidget):
         worker.finished.connect(lambda worker=worker: self._worker_finished(worker))
         self.action_workers.append(worker)
         self.busy_actions.add(action)
+        self._progress_target = target
+        if action in {"start", "build", "rebuild"}:
+            self._progress_busy = True
+            self.progress_timer.start(800)
         self._set_busy(True)
         worker.start()
+
+    def _poll_progress(self) -> None:
+        try:
+            data = self.client.compose_progress(tail=1)
+        except HostClientError:
+            return
+        last = str(data.get("last_line") or "").strip()
+        action = str(data.get("action") or "")
+        busy = bool(data.get("busy"))
+        if last:
+            short = last if len(last) <= 160 else last[:157] + "…"
+            self.summary.setText(f"{action or 'compose'} · {self._progress_target} · {short}")
+        if not busy:
+            self.progress_timer.stop()
+            self._progress_busy = False
 
     def _action_completed(self, action: str, result: dict) -> None:
         message = str(result.get("message", result))
@@ -465,6 +489,8 @@ class DockerPage(QWidget):
         if not self.action_workers:
             self.busy_actions.clear()
             self._set_busy(False)
+            self.progress_timer.stop()
+            self._progress_busy = False
 
     def _set_busy(self, busy: bool) -> None:
         for button in (

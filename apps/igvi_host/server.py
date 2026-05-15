@@ -18,6 +18,7 @@ from .models import (
     CmdVelRequest,
     ComposeActionRequest,
     ComposeActionResponse,
+    ComposeProgressResponse,
     ContainerStatus,
     DevModeRequest,
     HealthResponse,
@@ -30,6 +31,7 @@ from .models import (
     SettingsModel,
     UiBridgeHealth,
 )
+from .progress import get_progress_buffer
 from .ros_control import RosbridgeClient
 from .service_registry import ServiceRegistry
 from .ui_bridge import read_ui_bridge_health
@@ -180,12 +182,9 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/compose/actions/rebuild", response_model=ComposeActionResponse)
     def rebuild(request: ComposeActionRequest) -> ComposeActionResponse:
         services = target_services(request)
-        client = compose_project()
-        def run() -> ComposeActionResponse:
-            client.build(services=services, no_cache=True)
-            return client.up(services=services, profile=request.profile, detach=True, force_recreate=True)
-
-        return compose_or_http(run)
+        return compose_or_http(
+            lambda: compose_project().rebuild(services=services, profile=request.profile)
+        )
 
     @app.post("/api/compose/actions/start", response_model=ComposeActionResponse)
     def start(request: ComposeActionRequest) -> ComposeActionResponse:
@@ -210,6 +209,21 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/compose/actions/down", response_model=ComposeActionResponse)
     def down() -> ComposeActionResponse:
         return compose_or_http(lambda: compose_project().down())
+
+    @app.get("/api/compose/progress", response_model=ComposeProgressResponse)
+    def compose_progress(tail: int = 50, since_seq: int = 0) -> ComposeProgressResponse:
+        tail = min(max(tail, 1), 500)
+        snapshot = get_progress_buffer().snapshot()
+        lines = snapshot.lines[-tail:] if tail else snapshot.lines
+        return ComposeProgressResponse(
+            action=snapshot.action,
+            busy=snapshot.busy,
+            started_at=snapshot.started_at,
+            finished_at=snapshot.finished_at,
+            last_line=snapshot.last_line,
+            lines=lines,
+            seq=snapshot.seq,
+        )
 
     @app.get("/api/ros/connection", response_model=RosConnectionResponse)
     async def ros_connection() -> RosConnectionResponse:

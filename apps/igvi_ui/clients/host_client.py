@@ -82,6 +82,9 @@ class HostClient:
         response = self.request("GET", f"/api/compose/services/{service}/logs", params={"tail": tail})
         return str(response.get("logs", ""))
 
+    def compose_progress(self, tail: int = 50) -> dict[str, Any]:
+        return self.request("GET", "/api/compose/progress", params={"tail": tail})
+
     def compose_action(
         self,
         action: str,
