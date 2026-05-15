@@ -19,6 +19,7 @@ services:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
     volumes:
       - *config_volume
+      - ../../../data/maps:/maps
     ports:
       - "8771:8771"
     restart: unless-stopped

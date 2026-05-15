@@ -19,6 +19,7 @@ from .models import (
     RosActionResponse,
     RosConnectionResponse,
     RosServiceCallRequest,
+    SaveMapResponse,
 )
 
 
@@ -172,6 +173,16 @@ class RosbridgeClient:
             ok=bool(result.get("ok", False)),
             action="nav_cancel",
             message=str(result.get("message", "")),
+        )
+
+    async def save_map(self, filename: str = "arena_map") -> SaveMapResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/map/save", {"filename": filename}, 10.0,
+        )
+        return SaveMapResponse(
+            ok=bool(result.get("ok", False)),
+            message=str(result.get("message", "")),
+            path=str(result.get("message", "")) if result.get("ok") else "",
         )
 
     async def get_nav_status(self) -> NavStatusResponse:

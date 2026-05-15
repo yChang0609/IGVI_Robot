@@ -1,9 +1,13 @@
-"""Nav2 planning-only stack.
+"""Nav2 planning-only stack (topic-based map).
 
-Runs map_server, amcl, planner_server, and bt_navigator with a custom BT that
-calls ComputePathToPose but skips FollowPath. The controller_server,
-behavior_server, smoother_server, velocity_smoother, and waypoint_follower are
-intentionally not launched — motion_arbiter is the sole velocity authority.
+Runs planner_server and bt_navigator with a custom BT that calls
+ComputePathToPose but skips FollowPath.  The global_costmap subscribes
+directly to the /map topic published by rtabmap (slam_fusion or
+slam_localization), so no map_server or amcl is needed.
+
+The controller_server, behavior_server, smoother_server, velocity_smoother,
+and waypoint_follower are intentionally not launched — motion_arbiter is the
+sole velocity authority.
 """
 
 from launch import LaunchDescription
@@ -14,27 +18,11 @@ def generate_launch_description() -> LaunchDescription:
     params = "/configs/nav2_params.yaml"
 
     lifecycle_nodes = [
-        "map_server",
-        "amcl",
         "planner_server",
         "bt_navigator",
     ]
 
     nodes = [
-        Node(
-            package="nav2_map_server",
-            executable="map_server",
-            name="map_server",
-            output="screen",
-            parameters=[params],
-        ),
-        Node(
-            package="nav2_amcl",
-            executable="amcl",
-            name="amcl",
-            output="screen",
-            parameters=[params],
-        ),
         Node(
             package="nav2_planner",
             executable="planner_server",

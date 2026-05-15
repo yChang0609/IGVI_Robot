@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -227,6 +229,47 @@ class BridgeNode(Node):
     def snapshot_image(self) -> tuple[bytes | None, str | None, dict[str, Any]]:
         with self._image_lock:
             return self._image_jpeg, self._image_topic, dict(self._image_meta)
+
+    # ── Map saving ────────────────────────────────────────────────────────────
+
+    def save_map(self, filename: str = "arena_map", out_dir: str = "/maps") -> tuple[bool, str]:
+        with self._lock:
+            snap = dict(self._map) if self._map else None
+        if snap is None:
+            return False, "no map data available"
+        w, h = int(snap["width"]), int(snap["height"])
+        res = float(snap["resolution"])
+        ox, oy = float(snap["origin_x"]), float(snap["origin_y"])
+        data = snap["data"]
+
+        os.makedirs(out_dir, exist_ok=True)
+        pgm_path = os.path.join(out_dir, f"{filename}.pgm")
+        yaml_path = os.path.join(out_dir, f"{filename}.yaml")
+
+        with open(pgm_path, "wb") as f:
+            f.write(f"P5\n{w} {h}\n255\n".encode())
+            for row in range(h - 1, -1, -1):
+                for col in range(w):
+                    cell = data[row * w + col]
+                    if cell < 0:
+                        px = 205
+                    else:
+                        px = max(0, min(255, 255 - int(cell * 255 / 100)))
+                    f.write(struct.pack("B", px))
+
+        yaml_content = (
+            f"image: {pgm_path}\n"
+            f"resolution: {res}\n"
+            f"origin: [{ox}, {oy}, 0.0]\n"
+            "negate: 0\n"
+            "occupied_thresh: 0.65\n"
+            "free_thresh: 0.196\n"
+        )
+        with open(yaml_path, "w") as f:
+            f.write(yaml_content)
+
+        self.get_logger().info(f"Map saved to {yaml_path}")
+        return True, yaml_path
 
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
@@ -515,6 +558,10 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/nav/cancel":
                 ok, msg = node.cancel_nav_goal()
                 self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/map/save":
+                filename = str(body.get("filename", "arena_map"))
+                ok, msg = node.save_map(filename=filename)
+                self._json({"ok": ok, "action": "map_save", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()

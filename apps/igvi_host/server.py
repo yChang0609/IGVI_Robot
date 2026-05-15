@@ -34,6 +34,8 @@ from .models import (
     RosActionResponse,
     RosConnectionResponse,
     RosServiceCallRequest,
+    SaveMapRequest,
+    SaveMapResponse,
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
@@ -295,6 +297,11 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/nav/cancel", response_model=RosActionResponse)
     async def ros_nav_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.cancel_nav_goal())
+
+    @app.post("/api/ros/map/save", response_model=SaveMapResponse)
+    async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
+        filename = request.filename if request else "arena_map"
+        return await run_ros(lambda client: client.save_map(filename))
 
     @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
     async def ros_nav_status() -> NavStatusResponse:

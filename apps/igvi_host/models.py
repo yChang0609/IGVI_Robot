@@ -153,6 +153,16 @@ class NavGoalRequest(BaseModel):
     yaw: float = 0.0
 
 
+class SaveMapRequest(BaseModel):
+    filename: str = "arena_map"
+
+
+class SaveMapResponse(BaseModel):
+    ok: bool
+    message: str = ""
+    path: str = ""
+
+
 class NavStatusResponse(BaseModel):
     state: str = "idle"
     message: str = ""
