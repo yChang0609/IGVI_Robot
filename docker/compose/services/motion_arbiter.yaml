@@ -19,6 +19,7 @@ services:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
     volumes:
       - *config_volume
+      - ../../../robot_ws/src/motion_arbiter/motion_arbiter:/workspace/src/motion_arbiter/motion_arbiter:ro
     restart: unless-stopped
 
 networks:
