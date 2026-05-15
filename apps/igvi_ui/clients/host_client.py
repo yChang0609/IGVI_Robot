@@ -161,3 +161,6 @@ class HostClient:
 
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
+
+    def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
+        return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)

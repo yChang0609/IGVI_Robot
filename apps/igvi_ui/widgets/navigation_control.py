@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
@@ -98,10 +98,14 @@ class NavigationControl(QWidget):
         self.probe_btn = QPushButton("Probe Actions")
         self.probe_btn.setToolTip("List action servers visible to the bridge")
         self.probe_btn.clicked.connect(self._probe_actions)
+        self.save_map_btn = QPushButton("Save Map")
+        self.save_map_btn.setToolTip("Save current occupancy grid as PGM + YAML")
+        self.save_map_btn.clicked.connect(self._save_map)
         buttons.addWidget(self.cancel_btn, 0, 0)
         buttons.addWidget(self.clear_btn, 0, 1)
         buttons.addWidget(self.initial_btn, 1, 0)
         buttons.addWidget(self.probe_btn, 1, 1)
+        buttons.addWidget(self.save_map_btn, 2, 0, 1, 2)
         layout.addLayout(buttons)
         layout.addStretch(1)
 
@@ -199,3 +203,15 @@ class NavigationControl(QWidget):
         ]
         lines.extend(f"  • {a}" for a in actions) if actions else lines.append("  (none discovered)")
         QMessageBox.information(self, "Action server probe", "\n".join(lines))
+
+    def _save_map(self) -> None:
+        try:
+            result = self.client.save_map()
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Save map failed", str(exc))
+            return
+        if result.get("ok"):
+            QMessageBox.information(self, "Map saved", f"Map saved to:\n{result.get('message', '')}")
+            self.log_message.emit("Map saved successfully")
+        else:
+            QMessageBox.warning(self, "Save map failed", result.get("message", "unknown error"))
