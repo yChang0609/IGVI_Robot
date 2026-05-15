@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -30,6 +30,10 @@ class BridgeNode(Node):
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+
+        self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -83,6 +87,32 @@ class BridgeNode(Node):
                 "pose_source": self._pose_source,
             }
 
+    def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
+        msg = Twist()
+        msg.linear.x = linear_x
+        msg.angular.z = angular_z
+        self._cmd_vel_pub.publish(msg)
+
+    def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
+        msg = PoseStamped()
+        msg.header.frame_id = frame_id
+        msg.pose.position.x = x
+        msg.pose.position.y = y
+        half = yaw / 2.0
+        msg.pose.orientation.z = math.sin(half)
+        msg.pose.orientation.w = math.cos(half)
+        self._goal_pose_pub.publish(msg)
+
+    def publish_initial_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = frame_id
+        msg.pose.pose.position.x = x
+        msg.pose.pose.position.y = y
+        half = yaw / 2.0
+        msg.pose.pose.orientation.z = math.sin(half)
+        msg.pose.pose.orientation.w = math.cos(half)
+        self._initial_pose_pub.publish(msg)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +131,13 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
         def log_message(self, *_args: Any) -> None:
             pass
 
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?")[0]
             if path == "/api/map":
@@ -110,6 +147,32 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_pose())
             elif path == "/api/health":
                 self._json(node.snapshot_health())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = self.path.split("?")[0]
+            length = int(self.headers.get("Content-Length", 0))
+            body: dict[str, Any] = json.loads(self.rfile.read(length)) if length else {}
+            if path == "/api/cmd_vel":
+                node.publish_cmd_vel(float(body.get("linear_x", 0.0)), float(body.get("angular_z", 0.0)))
+                self._json({"ok": True, "action": "cmd_vel"})
+            elif path == "/api/stop":
+                node.publish_cmd_vel(0.0, 0.0)
+                self._json({"ok": True, "action": "stop"})
+            elif path == "/api/goal_pose":
+                node.publish_goal_pose(
+                    float(body.get("x", 0.0)), float(body.get("y", 0.0)),
+                    float(body.get("yaw", 0.0)), str(body.get("frame_id", "map")),
+                )
+                self._json({"ok": True, "action": "goal_pose"})
+            elif path == "/api/initial_pose":
+                node.publish_initial_pose(
+                    float(body.get("x", 0.0)), float(body.get("y", 0.0)),
+                    float(body.get("yaw", 0.0)), str(body.get("frame_id", "map")),
+                )
+                self._json({"ok": True, "action": "initial_pose"})
             else:
                 self.send_response(404)
                 self.end_headers()

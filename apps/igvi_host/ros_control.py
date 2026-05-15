@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import urllib.request
 from typing import Any
 
@@ -14,6 +13,15 @@ class RosbridgeClient:
     def __init__(self, settings: HostSettings):
         self.settings = settings
 
+    def _bridge_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + path
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return json.loads(r.read())
+
     async def _send(self, payload: dict[str, Any]) -> None:
         try:
             import websockets  # type: ignore
@@ -24,53 +32,41 @@ class RosbridgeClient:
             await websocket.send(json.dumps(payload))
 
     async def ping(self) -> RosConnectionResponse:
+        def _check() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/health"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
         try:
-            await asyncio.wait_for(self._send({"op": "get_time", "id": "igvi_ping"}), timeout=3)
+            result = await asyncio.to_thread(_check)
+            if result.get("ok"):
+                return RosConnectionResponse(ok=True, url=self.settings.bridge_url, message="connected")
         except Exception as exc:
-            return RosConnectionResponse(ok=False, url=self.settings.rosbridge_url, message=str(exc))
-        return RosConnectionResponse(ok=True, url=self.settings.rosbridge_url, message="connected")
+            return RosConnectionResponse(ok=False, url=self.settings.bridge_url, message=str(exc))
+        return RosConnectionResponse(ok=False, url=self.settings.bridge_url, message="bridge not ready")
 
     async def publish_cmd_vel(self, request: CmdVelRequest) -> RosActionResponse:
-        payload = {
-            "op": "publish",
-            "topic": "/cmd_vel",
-            "type": "geometry_msgs/Twist",
-            "msg": {
-                "linear": {"x": request.linear_x, "y": 0.0, "z": 0.0},
-                "angular": {"x": 0.0, "y": 0.0, "z": request.angular_z},
-            },
-        }
-        await self._send(payload)
+        await asyncio.to_thread(
+            self._bridge_post, "/api/cmd_vel",
+            {"linear_x": request.linear_x, "angular_z": request.angular_z},
+        )
         return RosActionResponse(ok=True, action="cmd_vel", message="velocity command published")
 
     async def stop(self) -> RosActionResponse:
-        return await self.publish_cmd_vel(CmdVelRequest(linear_x=0.0, angular_z=0.0))
+        await asyncio.to_thread(self._bridge_post, "/api/stop", {})
+        return RosActionResponse(ok=True, action="stop", message="robot stopped")
 
     async def publish_goal_pose(self, request: Pose2DRequest) -> RosActionResponse:
-        payload = {
-            "op": "publish",
-            "topic": "/goal_pose",
-            "type": "geometry_msgs/PoseStamped",
-            "msg": _pose_stamped(request),
-        }
-        await self._send(payload)
+        await asyncio.to_thread(
+            self._bridge_post, "/api/goal_pose",
+            {"x": request.x, "y": request.y, "yaw": request.yaw, "frame_id": request.frame_id},
+        )
         return RosActionResponse(ok=True, action="goal_pose", message="goal pose published")
 
     async def publish_initial_pose(self, request: Pose2DRequest) -> RosActionResponse:
-        pose = _pose_stamped(request)
-        payload = {
-            "op": "publish",
-            "topic": "/initialpose",
-            "type": "geometry_msgs/PoseWithCovarianceStamped",
-            "msg": {
-                "header": pose["header"],
-                "pose": {
-                    "pose": pose["pose"],
-                    "covariance": [0.0] * 36,
-                },
-            },
-        }
-        await self._send(payload)
+        await asyncio.to_thread(
+            self._bridge_post, "/api/initial_pose",
+            {"x": request.x, "y": request.y, "yaw": request.yaw, "frame_id": request.frame_id},
+        )
         return RosActionResponse(ok=True, action="initial_pose", message="initial pose published")
 
     async def call_service(self, request: RosServiceCallRequest) -> RosActionResponse:
@@ -110,17 +106,3 @@ class RosbridgeClient:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
 
-def _pose_stamped(request: Pose2DRequest) -> dict[str, Any]:
-    half = request.yaw / 2.0
-    return {
-        "header": {"frame_id": request.frame_id},
-        "pose": {
-            "position": {"x": request.x, "y": request.y, "z": 0.0},
-            "orientation": {
-                "x": 0.0,
-                "y": 0.0,
-                "z": math.sin(half),
-                "w": math.cos(half),
-            },
-        },
-    }

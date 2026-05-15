@@ -19,6 +19,12 @@ class Map2DView(QWidget):
         self._map_pixmap: QPixmap | None = None
         self._pose: dict[str, float] | None = None
         self._goal: tuple[float, float] | None = None
+        self._locked = False
+
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        self.setCursor(Qt.CursorShape.ForbiddenCursor if locked else Qt.CursorShape.CrossCursor)
+        self.update()
 
     # ── Public update API ─────────────────────────────────────────────────────
 
@@ -75,8 +81,19 @@ class Map2DView(QWidget):
                 painter.setPen(QPen(QColor("#f59e0b"), 3))
                 painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
 
+        if self._locked:
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 55))
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(font.pointSize() + 1)
+            painter.setFont(font)
+            painter.setPen(QColor("#f59e0b"))
+            banner = self.rect().adjusted(0, 6, 0, 0)
+            painter.drawText(banner, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+                             "⌨  Keyboard Control Mode")
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() != Qt.MouseButton.LeftButton or not self._map_data:
+        if self._locked or event.button() != Qt.MouseButton.LeftButton or not self._map_data:
             return
         world = self._widget_to_world(event.position().x(), event.position().y())
         if world:

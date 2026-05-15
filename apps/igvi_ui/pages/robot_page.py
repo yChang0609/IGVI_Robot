@@ -67,6 +67,7 @@ class RobotPage(QWidget):
         self.client = client
         self._poller: _RosPoller | None = None
         self._held_keys: set[Qt.Key] = set()
+        self._keyboard_mode = False
         self._drive_timer = QTimer(self)
         self._drive_timer.setInterval(100)
         self._drive_timer.timeout.connect(self._send_held_velocity)
@@ -99,7 +100,13 @@ class RobotPage(QWidget):
 
         control_panel = self._panel("Control")
         control_layout = QVBoxLayout(control_panel)
-        self._add_heading(control_layout, "Control  [WASD]")
+        self._add_heading(control_layout, "Control")
+
+        self._kb_btn = QPushButton("⌨  Keyboard Mode")
+        self._kb_btn.setCheckable(True)
+        self._kb_btn.clicked.connect(self._toggle_keyboard_mode)
+        control_layout.addWidget(self._kb_btn)
+
         drive_grid = QGridLayout()
         drive_grid.setSpacing(8)
         forward = self._drive_button("▲ Forward", 1.0, 0.0)
@@ -166,9 +173,29 @@ class RobotPage(QWidget):
             self._poller.wait(1000)
             self._poller = None
 
+    # ── Keyboard mode toggle ──────────────────────────────────────────────────
+
+    def _toggle_keyboard_mode(self) -> None:
+        self._keyboard_mode = not self._keyboard_mode
+        if self._keyboard_mode:
+            self._kb_btn.setText("✕  Exit Keyboard Mode")
+            self._kb_btn.setObjectName("Primary")
+        else:
+            self._kb_btn.setText("⌨  Keyboard Mode")
+            self._kb_btn.setObjectName("")
+            self._held_keys.clear()
+            self._drive_timer.stop()
+            self._stop()
+        self._kb_btn.setChecked(self._keyboard_mode)
+        self._kb_btn.style().unpolish(self._kb_btn)
+        self._kb_btn.style().polish(self._kb_btn)
+        self.map_2d.set_locked(self._keyboard_mode)
+
     # ── App-level event filter (catches keys regardless of focused widget) ─────
 
     def eventFilter(self, obj: QObject, event: QKeyEvent) -> bool:
+        if not self._keyboard_mode:
+            return False
         if event.type() == QKeyEvent.Type.KeyPress and not event.isAutoRepeat():
             key = Qt.Key(event.key())
             if key in _WASD and key not in self._held_keys:
