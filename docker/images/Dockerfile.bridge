@@ -3,6 +3,7 @@ FROM ros:jazzy-ros-base
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-jazzy-nav-msgs \
+        ros-jazzy-nav2-msgs \
         ros-jazzy-geometry-msgs \
         ros-jazzy-sensor-msgs \
         ros-jazzy-trajectory-msgs \

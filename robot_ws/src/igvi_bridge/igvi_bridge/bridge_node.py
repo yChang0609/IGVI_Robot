@@ -9,9 +9,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -47,6 +50,13 @@ class BridgeNode(Node):
         self._image_jpeg: bytes | None = None
         self._image_meta: dict[str, Any] = {}
 
+        self._nav_lock = threading.Lock()
+        self._nav_state: str = "idle"
+        self._nav_message: str = ""
+        self._nav_goal_handle = None
+        self._nav_goal: dict[str, float] | None = None
+        self._nav_feedback: dict[str, float] = {}
+
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
@@ -55,6 +65,7 @@ class BridgeNode(Node):
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_controller/joint_trajectory", 10)
+        self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -190,6 +201,119 @@ class BridgeNode(Node):
         with self._image_lock:
             return self._image_jpeg, self._image_topic, dict(self._image_meta)
 
+    # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
+
+    def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        if not self._nav_client.server_is_ready():
+            if not self._nav_client.wait_for_server(timeout_sec=1.5):
+                self._update_nav_state("unavailable", "navigate_to_pose action server not ready")
+                return False, "navigate_to_pose action server not ready"
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose.header.frame_id = "map"
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_msg.pose.pose.position.x = float(x)
+        goal_msg.pose.pose.position.y = float(y)
+        half = float(yaw) / 2.0
+        goal_msg.pose.pose.orientation.z = math.sin(half)
+        goal_msg.pose.pose.orientation.w = math.cos(half)
+        with self._nav_lock:
+            self._nav_goal = {"x": float(x), "y": float(y), "yaw": float(yaw)}
+            self._nav_feedback = {}
+        self._update_nav_state("sending", "goal dispatched")
+        future = self._nav_client.send_goal_async(goal_msg, feedback_callback=self._on_nav_feedback)
+        future.add_done_callback(self._on_nav_response)
+        return True, "goal dispatched"
+
+    def cancel_nav_goal(self) -> tuple[bool, str]:
+        with self._nav_lock:
+            handle = self._nav_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_nav_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_nav_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_nav(self) -> dict[str, Any]:
+        with self._nav_lock:
+            return {
+                "state": self._nav_state,
+                "message": self._nav_message,
+                "goal": dict(self._nav_goal) if self._nav_goal else None,
+                "feedback": dict(self._nav_feedback),
+                "server_ready": self._nav_client.server_is_ready(),
+            }
+
+    def _update_nav_state(self, state: str, message: str = "") -> None:
+        with self._nav_lock:
+            self._nav_state = state
+            self._nav_message = message
+
+    def _on_nav_feedback(self, feedback_msg: Any) -> None:
+        try:
+            fb = feedback_msg.feedback
+            payload = {
+                "distance_remaining": float(getattr(fb, "distance_remaining", 0.0)),
+                "navigation_time": float(getattr(fb.navigation_time, "sec", 0))
+                + float(getattr(fb.navigation_time, "nanosec", 0)) * 1e-9,
+                "estimated_time_remaining": float(getattr(fb.estimated_time_remaining, "sec", 0))
+                + float(getattr(fb.estimated_time_remaining, "nanosec", 0)) * 1e-9,
+                "recoveries": int(getattr(fb, "number_of_recoveries", 0)),
+            }
+        except Exception:  # noqa: BLE001
+            payload = {}
+        with self._nav_lock:
+            self._nav_feedback = payload
+            if self._nav_state in ("sending", "accepted"):
+                self._nav_state = "navigating"
+                self._nav_message = "executing"
+
+    def _on_nav_response(self, future: Any) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"send error: {exc}")
+            return
+        if not goal_handle.accepted:
+            self._update_nav_state("rejected", "goal rejected by server")
+            return
+        with self._nav_lock:
+            self._nav_goal_handle = goal_handle
+            self._nav_state = "accepted"
+            self._nav_message = "goal accepted"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._on_nav_result)
+
+    def _on_nav_result(self, future: Any) -> None:
+        try:
+            wrapped = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"result error: {exc}")
+            with self._nav_lock:
+                self._nav_goal_handle = None
+            return
+        status_map = {
+            GoalStatus.STATUS_SUCCEEDED: ("succeeded", "goal reached"),
+            GoalStatus.STATUS_ABORTED: ("aborted", "goal aborted"),
+            GoalStatus.STATUS_CANCELED: ("canceled", "goal canceled"),
+        }
+        state, message = status_map.get(wrapped.status, ("failed", f"status {wrapped.status}"))
+        with self._nav_lock:
+            self._nav_state = state
+            self._nav_message = message
+            self._nav_goal_handle = None
+
+    def _on_nav_cancel_response(self, future: Any) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"cancel error: {exc}")
+            return
+        if not getattr(response, "goals_canceling", None):
+            self._update_nav_state("canceled", "no active goal to cancel")
+            with self._nav_lock:
+                self._nav_goal_handle = None
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -259,6 +383,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_pose())
             elif path == "/api/health":
                 self._json(node.snapshot_health())
+            elif path == "/api/nav/status":
+                self._json(node.snapshot_nav())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -320,6 +446,16 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                     self.wfile.write(str(exc).encode())
                     return
                 self._json({"ok": True, "action": "arm_trajectory"})
+            elif path == "/api/nav/goal":
+                ok, msg = node.send_nav_goal(
+                    float(body.get("x", 0.0)),
+                    float(body.get("y", 0.0)),
+                    float(body.get("yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "nav_goal", "message": msg})
+            elif path == "/api/nav/cancel":
+                ok, msg = node.cancel_nav_goal()
+                self._json({"ok": ok, "action": "nav_cancel", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()

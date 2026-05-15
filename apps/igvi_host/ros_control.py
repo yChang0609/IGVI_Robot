@@ -11,6 +11,8 @@ from .models import (
     ArmTrajectoryRequest,
     CmdVelRequest,
     ImageTopicsResponse,
+    NavGoalRequest,
+    NavStatusResponse,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -150,5 +152,42 @@ class RosbridgeClient:
             {"positions": request.positions, "time_from_start": request.time_from_start},
         )
         return RosActionResponse(ok=True, action="arm_trajectory", message="arm trajectory published")
+
+    async def send_nav_goal(self, request: NavGoalRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/nav/goal",
+            {"x": request.x, "y": request.y, "yaw": request.yaw},
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="nav_goal",
+            message=str(result.get("message", "")),
+        )
+
+    async def cancel_nav_goal(self) -> RosActionResponse:
+        result = await asyncio.to_thread(self._bridge_post, "/api/nav/cancel", {})
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="nav_cancel",
+            message=str(result.get("message", "")),
+        )
+
+    async def get_nav_status(self) -> NavStatusResponse:
+        return await asyncio.to_thread(self._fetch_nav_status)
+
+    def _fetch_nav_status(self) -> NavStatusResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/nav/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return NavStatusResponse(
+                state=str(data.get("state", "idle")),
+                message=str(data.get("message", "")),
+                server_ready=bool(data.get("server_ready", False)),
+                goal=data.get("goal"),
+                feedback=dict(data.get("feedback") or {}),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
 

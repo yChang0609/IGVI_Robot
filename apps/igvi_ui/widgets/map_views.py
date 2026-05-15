@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 
 class Map2DView(QWidget):
-    goal_requested = Signal(float, float)  # world x, y
+    goal_requested = Signal(float, float, float)  # world x, y, yaw
 
     def __init__(self) -> None:
         super().__init__()
@@ -18,8 +18,11 @@ class Map2DView(QWidget):
         self._map_data: dict[str, Any] | None = None
         self._map_pixmap: QPixmap | None = None
         self._pose: dict[str, float] | None = None
-        self._goal: tuple[float, float] | None = None
+        self._goal: tuple[float, float, float] | None = None  # x, y, yaw
         self._locked = False
+        self._drag_origin: tuple[float, float] | None = None  # widget px while dragging
+        self._drag_current: tuple[float, float] | None = None
+        self._drag_world: tuple[float, float] | None = None
 
     def set_locked(self, locked: bool) -> None:
         self._locked = locked
@@ -59,7 +62,8 @@ class Map2DView(QWidget):
         map_rect = QRectF(ox, oy, scaled.width(), scaled.height())
 
         if self._goal:
-            pt = self._world_to_widget(*self._goal, map_rect)
+            gx, gy, gyaw = self._goal
+            pt = self._world_to_widget(gx, gy, map_rect)
             if pt:
                 painter.setPen(QPen(QColor("#f59e0b"), 2))
                 painter.setBrush(QColor("#f59e0b"))
@@ -68,6 +72,19 @@ class Map2DView(QWidget):
                 r = 14.0
                 painter.drawLine(QPointF(pt.x() - r, pt.y()), QPointF(pt.x() + r, pt.y()))
                 painter.drawLine(QPointF(pt.x(), pt.y() - r), QPointF(pt.x(), pt.y() + r))
+                dx = math.cos(gyaw) * 22
+                dy = -math.sin(gyaw) * 22
+                painter.setPen(QPen(QColor("#f59e0b"), 2))
+                painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
+
+        if self._drag_origin and self._drag_current:
+            ox, oy = self._drag_origin
+            cx, cy = self._drag_current
+            painter.setPen(QPen(QColor("#fbbf24"), 2, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(ox, oy), QPointF(cx, cy))
+            painter.setBrush(QColor("#fbbf24"))
+            painter.setPen(QPen(QColor("#fbbf24"), 1))
+            painter.drawEllipse(QPointF(ox, oy), 5, 5)
 
         if self._pose:
             pt = self._world_to_widget(self._pose["x"], self._pose["y"], map_rect)
@@ -95,11 +112,42 @@ class Map2DView(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if self._locked or event.button() != Qt.MouseButton.LeftButton or not self._map_data:
             return
-        world = self._widget_to_world(event.position().x(), event.position().y())
-        if world:
-            self._goal = world
-            self.goal_requested.emit(*world)
-            self.update()
+        px, py = event.position().x(), event.position().y()
+        world = self._widget_to_world(px, py)
+        if not world:
+            return
+        self._drag_origin = (px, py)
+        self._drag_current = (px, py)
+        self._drag_world = world
+        self.update()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_origin is None:
+            return
+        self._drag_current = (event.position().x(), event.position().y())
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_origin is None or self._drag_world is None:
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        ox, oy = self._drag_origin
+        cx, cy = self._drag_current or self._drag_origin
+        # yaw: positive CCW in world frame; widget Y is flipped
+        dx = cx - ox
+        dy = cy - oy
+        if math.hypot(dx, dy) < 4.0:
+            yaw = 0.0  # treat as click without drag
+        else:
+            yaw = math.atan2(-dy, dx)
+        gx, gy = self._drag_world
+        self._goal = (gx, gy, yaw)
+        self._drag_origin = None
+        self._drag_current = None
+        self._drag_world = None
+        self.goal_requested.emit(gx, gy, yaw)
+        self.update()
 
     # ── Coordinate helpers ────────────────────────────────────────────────────
 
