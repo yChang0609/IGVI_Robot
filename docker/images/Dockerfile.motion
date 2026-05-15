@@ -1,0 +1,21 @@
+FROM ros:jazzy-ros-base
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-jazzy-nav-msgs \
+        ros-jazzy-geometry-msgs \
+        ros-jazzy-std-msgs \
+        python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY robot_ws/src/motion_arbiter src/motion_arbiter
+
+RUN . /opt/ros/jazzy/setup.sh && \
+    colcon build --packages-select motion_arbiter --symlink-install
+
+CMD ["/bin/bash", "-c", \
+     "source /opt/ros/jazzy/setup.bash && \
+      source /workspace/install/setup.bash && \
+      ros2 run motion_arbiter arbiter_node"]

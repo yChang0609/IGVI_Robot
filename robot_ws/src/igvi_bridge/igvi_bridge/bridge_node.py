@@ -11,13 +11,14 @@ from urllib.parse import parse_qs, urlparse
 import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -61,11 +62,22 @@ class BridgeNode(Node):
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
 
-        self._cmd_vel_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
+        # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
+        # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
+        # /cmd_vel output onto /base_controller/cmd_vel for the wheel driver.
+        self._motion_cmd_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        self._wheel_cmd_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_controller/joint_trajectory", 10)
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        # Relay motion_arbiter's /cmd_vel to /base_controller/cmd_vel. Subscribe
+        # both message types — only the one matching the publisher will fire.
+        self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
+        self.create_subscription(Twist, "/cmd_vel", self._on_nav_cmd_vel_unstamped, 10)
+        # Track latest arbiter state for HTTP diagnostics.
+        self._motion_state: str = "unknown"
+        self.create_subscription(String, "/motion/state", self._on_motion_state, 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -101,6 +113,24 @@ class BridgeNode(Node):
             )
             self._pose_source = "amcl"
 
+    def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
+        # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout
+        # measures against the bridge clock (DDS delivery may lag).
+        out = TwistStamped()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = msg.header.frame_id
+        out.twist = msg.twist
+        self._wheel_cmd_pub.publish(out)
+
+    def _on_nav_cmd_vel_unstamped(self, msg: Twist) -> None:
+        out = TwistStamped()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.twist = msg
+        self._wheel_cmd_pub.publish(out)
+
+    def _on_motion_state(self, msg) -> None:  # std_msgs/String
+        self._motion_state = str(getattr(msg, "data", ""))
+
     def _on_image(self, msg: Image) -> None:
         jpeg = _encode_jpeg(msg)
         if jpeg is None:
@@ -132,11 +162,16 @@ class BridgeNode(Node):
             }
 
     def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
-        msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.twist.linear.x = linear_x
-        msg.twist.angular.z = angular_z
-        self._cmd_vel_pub.publish(msg)
+        # Manual override flows through motion_arbiter: publish a Twist on
+        # /motion/cmd; arbiter will preempt path tracking and publish the
+        # actual /cmd_vel which the bridge relays to /base_controller/cmd_vel.
+        msg = Twist()
+        msg.linear.x = float(linear_x)
+        msg.angular.z = float(angular_z)
+        self._motion_cmd_pub.publish(msg)
+
+    def snapshot_motion_state(self) -> str:
+        return self._motion_state
 
     def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
         msg = PoseStamped()
@@ -415,6 +450,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/motion/state":
+                self._json({"state": node.snapshot_motion_state()})
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":

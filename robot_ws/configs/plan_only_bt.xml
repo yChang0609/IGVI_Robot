@@ -1,0 +1,12 @@
+<!--
+  Plan-only behavior tree. Nav2's bt_navigator runs ComputePathToPose against
+  the planner_server and returns success. The planner publishes the resulting
+  path to /plan, where motion_arbiter picks it up for execution. The standard
+  FollowPath/recovery branches are intentionally omitted because the
+  controller_server is not part of the planning-only stack.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+  </BehaviorTree>
+</root>

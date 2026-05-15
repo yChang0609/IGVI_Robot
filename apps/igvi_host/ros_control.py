@@ -26,13 +26,13 @@ class RosbridgeClient:
     def __init__(self, settings: HostSettings):
         self.settings = settings
 
-    def _bridge_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _bridge_post(self, path: str, payload: dict[str, Any], timeout: float = 2.0) -> dict[str, Any]:
         url = self.settings.bridge_url.rstrip("/") + path
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
 
     async def _send(self, payload: dict[str, Any]) -> None:
@@ -154,9 +154,11 @@ class RosbridgeClient:
         return RosActionResponse(ok=True, action="arm_trajectory", message="arm trajectory published")
 
     async def send_nav_goal(self, request: NavGoalRequest) -> RosActionResponse:
+        # Bridge may block up to 3.5s in wait_for_server; allow some slack.
         result = await asyncio.to_thread(
             self._bridge_post, "/api/nav/goal",
             {"x": request.x, "y": request.y, "yaw": request.yaw},
+            6.0,
         )
         return RosActionResponse(
             ok=bool(result.get("ok", False)),
@@ -165,7 +167,7 @@ class RosbridgeClient:
         )
 
     async def cancel_nav_goal(self) -> RosActionResponse:
-        result = await asyncio.to_thread(self._bridge_post, "/api/nav/cancel", {})
+        result = await asyncio.to_thread(self._bridge_post, "/api/nav/cancel", {}, 4.0)
         return RosActionResponse(
             ok=bool(result.get("ok", False)),
             action="nav_cancel",
