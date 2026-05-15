@@ -12,7 +12,7 @@ services:
     profiles: ["monitoring"]
     build:
       context: ../../..
-      dockerfile: docker/images/foxglove/Dockerfile
+      dockerfile: docker/images/Dockerfile.foxglove
     image: wildbot_foxglove_bridge:latest
     ports:
       - 8765:8765

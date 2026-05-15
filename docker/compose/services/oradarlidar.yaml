@@ -6,7 +6,7 @@ x-base-service: &base_service
   networks:
     - robot_net
 
-x-launch-volume: &launch_volume ../../../robot_ws/src/wildbot_bringup/launch:/workspace/launch:ro
+x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
 
 services:
   oradarlidar:
@@ -17,7 +17,7 @@ services:
       - /dev/oradar:/dev/oradar
     volumes:
       - *launch_volume
-      - ../../../robot_ws/src/wildbot_bringup/config/custom_configs/ms200_scan.launch.py:/robot_ws/src/oradar_ros/launch/ms200_scan.launch.py:ro
+      - ../../../robot_ws/launch/ms200_scan.launch.py:/robot_ws/src/oradar_ros/launch/ms200_scan.launch.py:ro
     command: ros2 launch /workspace/launch/oradarlidar.launch.py
 
 networks:
