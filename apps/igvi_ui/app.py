@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtCore import Qt, QTimer
@@ -153,7 +154,8 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE_SHEET)
-    window = MainWindow(HostClient())
+    base_url = os.environ.get("IGVI_HOST_URL", "http://127.0.0.1:8770")
+    window = MainWindow(HostClient(base_url=base_url))
     window.show()
     sys.exit(app.exec())
 
