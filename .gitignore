@@ -139,3 +139,6 @@ video.txt
 !/data/calibration/
 /data/calibration/*
 !/data/calibration/.gitkeep
+
+# Local files
+.*
