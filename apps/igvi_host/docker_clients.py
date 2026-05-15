@@ -229,7 +229,7 @@ class ComposeProjectClient:
 
     def _compose_base_cmd(self, profile: str | None = None) -> list[str]:
         docker_bin = shutil.which("docker") or "docker"
-        cmd: list[str] = [docker_bin, "compose"]
+        cmd: list[str] = [docker_bin, "compose", "--progress=plain"]
         for path in self.settings.compose_files:
             if Path(path).exists():
                 cmd.extend(["--file", str(path)])
@@ -256,7 +256,6 @@ class ComposeProjectClient:
         cmd.append("build")
         if no_cache:
             cmd.append("--no-cache")
-        cmd.append("--progress=plain")
         if target_services:
             cmd.extend(target_services)
         action_name = "rebuild" if no_cache else "build"
@@ -280,7 +279,6 @@ class ComposeProjectClient:
             cmd.append("--detach")
         if force_recreate:
             cmd.append("--force-recreate")
-        cmd.append("--progress=plain")
         if target_services:
             cmd.extend(target_services)
         self._stream_subprocess("start", cmd)
@@ -300,13 +298,13 @@ class ComposeProjectClient:
         self.progress.start("rebuild")
         try:
             build_cmd = self._compose_base_cmd()
-            build_cmd.extend(["build", "--no-cache", "--progress=plain"])
+            build_cmd.extend(["build", "--no-cache"])
             if target_services:
                 build_cmd.extend(target_services)
             self._stream_into_active_progress("rebuild:build", build_cmd)
 
             up_cmd = self._compose_base_cmd(profile=profile_validated)
-            up_cmd.extend(["up", "--detach", "--force-recreate", "--progress=plain"])
+            up_cmd.extend(["up", "--detach", "--force-recreate"])
             if target_services:
                 up_cmd.extend(target_services)
             self._stream_into_active_progress("rebuild:up", up_cmd)

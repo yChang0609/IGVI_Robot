@@ -4,10 +4,10 @@ include:
   - services/kros_car.yaml
   - services/camera_kinect.yaml
   - services/foxglove_bridge.yaml
-  - services/rosbridge.yaml
   - services/slam_fusion.yaml
   - services/slam_localization.yaml
   - services/urdf_viz.yaml
+  # - services/rosbridge.yaml
   # - services/nav2.yaml
 
 networks:
