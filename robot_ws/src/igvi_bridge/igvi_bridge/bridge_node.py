@@ -71,10 +71,8 @@ class BridgeNode(Node):
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_controller/joint_trajectory", 10)
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
-        # Relay motion_arbiter's /cmd_vel to /base_controller/cmd_vel. Subscribe
-        # both message types — only the one matching the publisher will fire.
+        # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
-        self.create_subscription(Twist, "/cmd_vel", self._on_nav_cmd_vel_unstamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
         self._motion_state: str = "unknown"
         self.create_subscription(String, "/motion/state", self._on_motion_state, 10)
@@ -120,12 +118,6 @@ class BridgeNode(Node):
         out.header.stamp = self.get_clock().now().to_msg()
         out.header.frame_id = msg.header.frame_id
         out.twist = msg.twist
-        self._wheel_cmd_pub.publish(out)
-
-    def _on_nav_cmd_vel_unstamped(self, msg: Twist) -> None:
-        out = TwistStamped()
-        out.header.stamp = self.get_clock().now().to_msg()
-        out.twist = msg
         self._wheel_cmd_pub.publish(out)
 
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
