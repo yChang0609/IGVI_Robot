@@ -94,6 +94,7 @@ class DockerPage(QWidget):
         self.profile_filter = "All"
         self._progress_busy: bool = False
         self._progress_target: str = ""
+        self._pending_actions: dict[str, str] = {}
         self._build_ui()
 
         self.refresh_timer = QTimer(self)
@@ -290,12 +291,17 @@ class DockerPage(QWidget):
         self.table.setRowCount(len(filtered))
         running = 0
         for row, service in enumerate(filtered):
+            name = str(service.get("service", ""))
             status = str(service.get("status") or "")
             if status in _RUNNING:
                 running += 1
-            self.table.setItem(row, 0, QTableWidgetItem(str(service.get("service", ""))))
+            self.table.setItem(row, 0, QTableWidgetItem(name))
             self.table.setItem(row, 1, QTableWidgetItem(str(service.get("profile") or "")))
-            self.table.setItem(row, 2, self._make_status_item(status))
+            pending = self._pending_actions.get(name)
+            if pending:
+                self.table.setItem(row, 2, self._make_pending_item(pending))
+            else:
+                self.table.setItem(row, 2, self._make_status_item(status))
             self.table.setItem(row, 3, QTableWidgetItem(str(service.get("health") or "")))
             self.table.setItem(row, 4, QTableWidgetItem(str(service.get("image") or "")))
             self.table.setItem(row, 5, QTableWidgetItem(", ".join(service.get("ports") or [])))
@@ -320,6 +326,23 @@ class DockerPage(QWidget):
             item.setForeground(Qt.GlobalColor.gray)
         elif status == "docker_unavailable":
             item.setForeground(Qt.GlobalColor.darkYellow)
+        return item
+
+    _PENDING_LABEL = {
+        "start": "starting…",
+        "restart": "restarting…",
+        "stop": "stopping…",
+        "build": "building…",
+        "rebuild": "rebuilding…",
+        "down": "stopping…",
+    }
+
+    def _make_pending_item(self, action: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(self._PENDING_LABEL.get(action, f"{action}…"))
+        item.setForeground(Qt.GlobalColor.darkYellow)
+        font = item.font()
+        font.setItalic(True)
+        item.setFont(font)
         return item
 
     # ------------------------------------------------------------- selection
@@ -446,9 +469,14 @@ class DockerPage(QWidget):
         target = ", ".join(services) if services else profile or "all services"
         self.log_message.emit(f"{action} started for {target}")
         self.summary.setText(f"{action} running for {target}…")
+        pending_targets = services or ([s["service"] for s in self.services] if action == "down" else [])
+        for name in pending_targets:
+            self._pending_actions[name] = action
+        if pending_targets:
+            self._render_services()
         worker = ComposeActionWorker(self.client, action, services=services, profile=profile)
-        worker.completed.connect(self._action_completed)
-        worker.failed.connect(self._action_failed)
+        worker.completed.connect(lambda a, r, names=list(pending_targets): self._action_completed(a, r, names))
+        worker.failed.connect(lambda a, m, names=list(pending_targets): self._action_failed(a, m, names))
         worker.finished.connect(lambda worker=worker: self._worker_finished(worker))
         self.action_workers.append(worker)
         self.busy_actions.add(action)
@@ -474,13 +502,18 @@ class DockerPage(QWidget):
             self.progress_timer.stop()
             self._progress_busy = False
 
-    def _action_completed(self, action: str, result: dict) -> None:
+    def _action_completed(self, action: str, result: dict, services: list[str] | None = None) -> None:
         message = str(result.get("message", result))
         self.log_message.emit(f"{action} ok · {message}")
+        for name in services or []:
+            self._pending_actions.pop(name, None)
         self.refresh()
 
-    def _action_failed(self, action: str, message: str) -> None:
+    def _action_failed(self, action: str, message: str, services: list[str] | None = None) -> None:
         self.log_message.emit(f"{action} failed")
+        for name in services or []:
+            self._pending_actions.pop(name, None)
+        self._render_services()
         QMessageBox.critical(self, f"{action} failed", message)
 
     def _worker_finished(self, worker: ComposeActionWorker) -> None:
