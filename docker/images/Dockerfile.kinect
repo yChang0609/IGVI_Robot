@@ -1,0 +1,73 @@
+FROM ghcr.io/screamlab/wildbot_base_image:latest
+ENV ROS_DISTRO=jazzy
+
+# 避免安裝過程中的互動提示
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. 安裝編譯 SDK 與 ROS 2 驅動所需的依賴工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config \
+    libusb-1.0-0-dev libudev-dev libssl-dev uuid-dev \
+    libgl1-mesa-dev libsoundio-dev libvulkan-dev \
+    libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. 下載並編譯 Azure Kinect Sensor SDK (libk4a)
+# 注意：這裡使用了 -DGENERATE_PKGCONFIG=ON 讓 ROS 2 colcon 能找到它
+# 2.1 下載主程式庫 (獨立一層，瞬間完成快取)
+RUN git clone https://github.com/microsoft/Azure-Kinect-Sensor-SDK.git /tmp/kinect_sdk/Azure-Kinect-Sensor-SDK
+
+# 2.2 手動下載所有 Submodules 子模組 (獨立一層，把最耗時的下載鎖在這一層快取起來！)
+RUN cd /tmp/kinect_sdk/Azure-Kinect-Sensor-SDK \
+    && git submodule update --init --recursive
+
+# 2.3 進行 CMake、修改不相容程式碼，然後編譯
+RUN cd /tmp/kinect_sdk/Azure-Kinect-Sensor-SDK \
+    && mkdir build && cd build \
+    && cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DGENERATE_PKGCONFIG=ON -DCMAKE_CXX_FLAGS="-include cstdint -include limits -include string -include cstring" \
+    && sed -i 's/ssl_ctx->extra_certs != NULL/0/g' ../extern/azure_c_shared/src/adapters/x509_openssl.c \
+    && sed -i 's/sk_X509_pop_free(ssl_ctx->extra_certs, X509_free);//g' ../extern/azure_c_shared/src/adapters/x509_openssl.c \
+    && sed -i 's/ssl_ctx->extra_certs = NULL;//g' ../extern/azure_c_shared/src/adapters/x509_openssl.c \
+    && sed -i 's/struct FILE;//g' ../extern/libyuv/src/source/mjpeg_decoder.cc \
+    && sed -i 's/-Werror//g' build.ninja \
+    && ninja \
+    && ninja install \
+    && cd / \
+    && rm -rf /tmp/kinect_sdk
+
+# 3. Copy the ROS workspace into the container.
+COPY . /tmp
+RUN cp -r /tmp/robot_ws/* /workspaces || true
+
+# 4. 下載 Azure Kinect ROS 驅動 (Humble 分支) 到 src 目錄，並執行 Jazzy 標頭檔精準升級 (.h 轉 .hpp)
+WORKDIR /workspaces
+RUN mkdir -p src \
+    && cd src \
+    && git clone -b humble https://github.com/microsoft/Azure_Kinect_ROS_Driver.git \
+    && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/cv_bridge\/cv_bridge\.h/cv_bridge\/cv_bridge.hpp/g' {} + \
+    && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/image_transport\/image_transport\.h/image_transport\/image_transport.hpp/g' {} + \
+    && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/camera_info_manager\/camera_info_manager\.h/camera_info_manager\/camera_info_manager.hpp/g' {} + \
+    && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/\.hpppp/\.hpp/g' {} +
+
+# 5. 更新 rosdep、安裝依賴並編譯 workspace
+# 使用 /bin/bash -c 確保 source 指令能正確執行
+RUN apt-get update \
+    && rosdep update --rosdistro ${ROS_DISTRO} || true \
+    && /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && rosdep install -q -y -r --from-paths src --ignore-src \
+    && colcon build --symlink-install" \
+    && rm -rf /tmp/* \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+    && mkdir -p /workspaces/install/azure_kinect_ros_driver/lib/azure_kinect_ros_driver/ \
+    && cp /workspaces/build/azure_kinect_ros_driver/node /workspaces/install/azure_kinect_ros_driver/lib/azure_kinect_ros_driver/node \
+    && chmod +x /workspaces/install/azure_kinect_ros_driver/lib/azure_kinect_ros_driver/node
+
+RUN ldconfig
+
+# 沿用你們原本的 entrypoint
+ENTRYPOINT ["/ros_entrypoint.bash"]
+CMD ["bash", "-l"]

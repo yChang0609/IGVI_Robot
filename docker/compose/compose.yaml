@@ -1,0 +1,21 @@
+name: igvi_robot
+
+include:
+  - services/kros_car.yaml
+  - services/camera_kinect.yaml
+  - services/camera_gemini.yaml
+  - services/oradarlidar.yaml
+  - services/lidar_filter.yaml
+  - services/lidar_transform.yaml
+  - services/foxglove_bridge.yaml
+  - services/rosbridge.yaml
+  - services/slam_fusion.yaml
+  - services/slam_localization.yaml
+  - services/nav2.yaml
+  - services/unity_camera.yaml
+  - services/unity_urdf_publisher.yaml
+  - services/urdf_viz.yaml
+
+networks:
+  robot_net:
+    driver: bridge

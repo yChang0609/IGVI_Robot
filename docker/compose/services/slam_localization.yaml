@@ -1,0 +1,38 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/src/wildbot_bringup/config:/configs:ro
+x-launch-volume: &launch_volume ../../../robot_ws/src/wildbot_bringup/launch:/workspace/launch:ro
+
+services:
+  slam_localization:
+    <<: *base_service
+    profiles: ["localization"]
+    image: wildbot_slam_fusion:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - *launch_volume
+      - ../../../data/slam:/root/.ros
+    command:
+      - /bin/bash
+      - -c
+      - >-
+        ros2 launch /workspace/launch/slam_localization.launch.py
+        database_path:=/root/.ros/rtabmap.db
+        camera_mount_x:=0.17
+        camera_mount_y:=0.0
+        camera_mount_z:=0.25
+        camera_mount_roll:=0.0
+        camera_mount_pitch:=0.11
+        camera_mount_yaw:=0.0
+
+networks:
+  robot_net:
+    driver: bridge

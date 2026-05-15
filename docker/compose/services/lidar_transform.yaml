@@ -1,0 +1,20 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+services:
+  lidar_transform:
+    <<: *base_service
+    profiles: ["sensors", "lidar", "unity"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    volumes:
+      - ../../scripts/lidar_transformer_node.py:/lidar_transformer_node.py:ro
+    command: python3 /lidar_transformer_node.py
+
+networks:
+  robot_net:
+    driver: bridge
