@@ -270,12 +270,15 @@ app = create_app()
 
 
 def main() -> None:
+    import os
+
     import uvicorn
 
     settings = load_settings()
+    bind_host = os.environ.get("IGVI_HOST_BIND") or settings.host
     uvicorn.run(
         "igvi_host.server:create_app",
-        host=settings.host,
+        host=bind_host,
         port=settings.port,
         factory=True,
         reload=False,

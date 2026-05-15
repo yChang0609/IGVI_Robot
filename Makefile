@@ -6,12 +6,15 @@ HOST_PORT := 8770
 
 # `make run <ip>` connects the UI to a remote host at http://<ip>:$(HOST_PORT).
 # `make run` (no IP) launches igvi-host locally and opens the UI against it.
-REMOTE_IP := $(filter-out run app,$(MAKECMDGOALS))
+# `make host lan` (or any non-empty arg) binds igvi-host to 0.0.0.0 so other
+# machines on the LAN can connect; `make host` alone keeps the safe loopback default.
+REMOTE_IP := $(filter-out run app host,$(MAKECMDGOALS))
 
 help:
 	@echo "IGVI Robot app commands:"
 	@echo "  make sync          - Install/sync Python dependencies"
-	@echo "  make host          - Run igvi-host"
+	@echo "  make host          - Run igvi-host (loopback only)"
+	@echo "  make host lan      - Run igvi-host bound to 0.0.0.0 (exposed on LAN)"
 	@echo "  make ui            - Run igvi-ui (local host)"
 	@echo "  make run           - Run igvi-host in the background, then open igvi-ui"
 	@echo "  make run <ip>      - Open igvi-ui pointed at a remote host (http://<ip>:$(HOST_PORT))"
@@ -21,7 +24,12 @@ sync:
 	cd $(APP_DIR) && $(UV) sync
 
 host:
+ifeq ($(strip $(REMOTE_IP)),)
 	cd $(APP_DIR) && $(UV) run igvi-host
+else
+	@echo "Binding igvi-host to 0.0.0.0:$(HOST_PORT) (LAN-exposed)"
+	cd $(APP_DIR) && IGVI_HOST_BIND=0.0.0.0 $(UV) run igvi-host
+endif
 
 ui:
 	cd $(APP_DIR) && $(UV) run igvi-ui
