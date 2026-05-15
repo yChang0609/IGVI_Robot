@@ -205,9 +205,10 @@ class BridgeNode(Node):
 
     def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
         if not self._nav_client.server_is_ready():
-            if not self._nav_client.wait_for_server(timeout_sec=1.5):
-                self._update_nav_state("unavailable", "navigate_to_pose action server not ready")
-                return False, "navigate_to_pose action server not ready"
+            if not self._nav_client.wait_for_server(timeout_sec=3.5):
+                hint = self._nav_diagnostic_hint()
+                self._update_nav_state("unavailable", hint)
+                return False, hint
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = "map"
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
@@ -242,7 +243,36 @@ class BridgeNode(Node):
                 "goal": dict(self._nav_goal) if self._nav_goal else None,
                 "feedback": dict(self._nav_feedback),
                 "server_ready": self._nav_client.server_is_ready(),
+                "visible_actions": self._visible_action_names(),
             }
+
+    def _visible_action_names(self) -> list[str]:
+        try:
+            from rclpy.action import get_action_names_and_types  # local import to avoid hard dep at module load
+            pairs = get_action_names_and_types(self)
+            return sorted(name for name, _types in pairs)
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _nav_diagnostic_hint(self) -> str:
+        actions = self._visible_action_names()
+        if not actions:
+            return (
+                "/navigate_to_pose action server not discoverable. "
+                "Is nav2 running? (docker compose --profile navigation up -d). "
+                "Also check ROS_DOMAIN_ID and DDS profile match between bridge and nav2."
+            )
+        nav_like = [a for a in actions if "navigate" in a.lower()]
+        if nav_like:
+            return (
+                f"navigate_to_pose action not ready. Discovered similar action names: {', '.join(nav_like)}. "
+                "Either the lifecycle manager hasn't activated bt_navigator yet, or the action is namespaced."
+            )
+        return (
+            f"navigate_to_pose action not ready. {len(actions)} actions visible "
+            f"({', '.join(actions[:6])}{'…' if len(actions) > 6 else ''}). "
+            "Likely nav2 stack is down."
+        )
 
     def _update_nav_state(self, state: str, message: str = "") -> None:
         with self._nav_lock:

@@ -159,6 +159,7 @@ class NavStatusResponse(BaseModel):
     server_ready: bool = False
     goal: dict | None = None
     feedback: dict = Field(default_factory=dict)
+    visible_actions: list[str] = Field(default_factory=list)
 
 
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

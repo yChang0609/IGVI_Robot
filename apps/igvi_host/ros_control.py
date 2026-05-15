@@ -186,6 +186,7 @@ class RosbridgeClient:
                 server_ready=bool(data.get("server_ready", False)),
                 goal=data.get("goal"),
                 feedback=dict(data.get("feedback") or {}),
+                visible_actions=list(data.get("visible_actions") or []),
             )
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc

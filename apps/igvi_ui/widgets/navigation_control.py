@@ -95,9 +95,13 @@ class NavigationControl(QWidget):
         self.clear_btn.clicked.connect(self._clear_costmap)
         self.initial_btn = QPushButton("Reset Initial Pose")
         self.initial_btn.clicked.connect(self._reset_initial)
+        self.probe_btn = QPushButton("Probe Actions")
+        self.probe_btn.setToolTip("List action servers visible to the bridge")
+        self.probe_btn.clicked.connect(self._probe_actions)
         buttons.addWidget(self.cancel_btn, 0, 0)
         buttons.addWidget(self.clear_btn, 0, 1)
-        buttons.addWidget(self.initial_btn, 1, 0, 1, 2)
+        buttons.addWidget(self.initial_btn, 1, 0)
+        buttons.addWidget(self.probe_btn, 1, 1)
         layout.addLayout(buttons)
         layout.addStretch(1)
 
@@ -180,3 +184,18 @@ class NavigationControl(QWidget):
             self.client.initial_pose(0.0, 0.0, 0.0)
         except HostClientError as exc:
             QMessageBox.warning(self, "Initial pose failed", str(exc))
+
+    def _probe_actions(self) -> None:
+        try:
+            status = self.client.nav_status()
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Probe failed", str(exc))
+            return
+        actions = status.get("visible_actions") or []
+        ready = status.get("server_ready")
+        lines = [
+            f"navigate_to_pose ready: {ready}",
+            f"Bridge sees {len(actions)} action server(s):",
+        ]
+        lines.extend(f"  • {a}" for a in actions) if actions else lines.append("  (none discovered)")
+        QMessageBox.information(self, "Action server probe", "\n".join(lines))
