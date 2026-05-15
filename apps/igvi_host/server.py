@@ -24,6 +24,8 @@ from .models import (
     HealthResponse,
     LogsResponse,
     Pose2DRequest,
+    RobotMapResponse,
+    RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
     RosServiceCallRequest,
@@ -248,6 +250,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/service_call", response_model=RosActionResponse)
     async def service_call(request: RosServiceCallRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.call_service(request))
+
+    @app.get("/api/ros/map", response_model=RobotMapResponse)
+    async def ros_map() -> RobotMapResponse:
+        return await run_ros(lambda client: client.get_map())
+
+    @app.get("/api/ros/pose", response_model=RobotPoseResponse)
+    async def ros_pose() -> RobotPoseResponse:
+        return await run_ros(lambda client: client.get_pose())
 
     @app.get("/api/ui-bridge/health", response_model=UiBridgeHealth)
     def ui_bridge_health() -> UiBridgeHealth:

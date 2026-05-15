@@ -1,75 +1,124 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+import math
+from typing import Any
+
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 
 class Map2DView(QWidget):
+    goal_requested = Signal(float, float)  # world x, y
+
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumHeight(360)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._map_data: dict[str, Any] | None = None
+        self._map_pixmap: QPixmap | None = None
+        self._pose: dict[str, float] | None = None
+        self._goal: tuple[float, float] | None = None
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    # ── Public update API ─────────────────────────────────────────────────────
+
+    def update_map(self, data: dict[str, Any]) -> None:
+        if not data or not data.get("width") or not data.get("data"):
+            return
+        self._map_data = data
+        self._map_pixmap = QPixmap.fromImage(_build_image(data))
+        self.update()
+
+    def update_pose(self, pose: dict[str, float]) -> None:
+        self._pose = pose
+        self.update()
+
+    # ── Qt events ────────────────────────────────────────────────────────────
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self.rect()
-        painter.fillRect(rect, QColor("#243041"))
+        painter.fillRect(self.rect(), QColor("#1a2535"))
 
-        grid_pen = QPen(QColor(148, 163, 184, 42), 1)
-        painter.setPen(grid_pen)
-        step = 32
-        for x in range(0, rect.width(), step):
-            painter.drawLine(x, 0, x, rect.height())
-        for y in range(0, rect.height(), step):
-            painter.drawLine(0, y, rect.width(), y)
+        if not self._map_pixmap:
+            _draw_placeholder(painter, self.rect())
+            return
 
-        margin = 46
-        room = QRectF(margin, margin, rect.width() - margin * 2, rect.height() - margin * 2)
-        painter.setPen(QPen(QColor("#9aa7b8"), 3))
-        painter.setBrush(QColor(15, 23, 42, 80))
-        painter.drawRect(room)
-
-        wall_pen = QPen(QColor("#a7b3c4"), 9)
-        wall_pen.setCapStyle(Qt.PenCapStyle.SquareCap)
-        painter.setPen(wall_pen)
-        painter.drawLine(room.left() + room.width() * 0.18, room.top(), room.left() + room.width() * 0.18, room.top() + room.height() * 0.38)
-        painter.drawLine(room.left() + room.width() * 0.18, room.top() + room.height() * 0.38, room.left() + room.width() * 0.38, room.top() + room.height() * 0.38)
-        painter.drawLine(room.left() + room.width() * 0.64, room.top(), room.left() + room.width() * 0.64, room.top() + room.height() * 0.58)
-        painter.drawLine(room.left() + room.width() * 0.64, room.top() + room.height() * 0.58, room.right(), room.top() + room.height() * 0.58)
-
-        path = QPainterPath()
-        start = QPointF(room.left() + room.width() * 0.35, room.bottom() - room.height() * 0.10)
-        goal = QPointF(room.left() + room.width() * 0.85, room.top() + room.height() * 0.32)
-        path.moveTo(start)
-        path.cubicTo(
-            QPointF(room.left() + room.width() * 0.48, room.bottom() - room.height() * 0.26),
-            QPointF(room.left() + room.width() * 0.66, room.top() + room.height() * 0.72),
-            goal,
+        scaled = self._map_pixmap.scaled(
+            self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
         )
-        painter.setPen(QPen(QColor("#60a5fa"), 4))
-        painter.drawPath(path)
+        ox = (self.width() - scaled.width()) // 2
+        oy = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(ox, oy, scaled)
+        map_rect = QRectF(ox, oy, scaled.width(), scaled.height())
 
-        dash_pen = QPen(QColor("#14b8a6"), 5)
-        dash_pen.setDashPattern([6, 5])
-        painter.setPen(dash_pen)
-        painter.drawPath(path)
+        if self._goal:
+            pt = self._world_to_widget(*self._goal, map_rect)
+            if pt:
+                painter.setPen(QPen(QColor("#f59e0b"), 2))
+                painter.setBrush(QColor("#f59e0b"))
+                painter.drawEllipse(pt, 8, 8)
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                r = 14.0
+                painter.drawLine(QPointF(pt.x() - r, pt.y()), QPointF(pt.x() + r, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - r), QPointF(pt.x(), pt.y() + r))
 
-        painter.setPen(QPen(QColor("#dbeafe"), 4))
-        painter.setBrush(QColor("#3b82f6"))
-        painter.drawEllipse(start, 15, 15)
-        painter.setPen(QPen(QColor("#ffedd5"), 4))
-        painter.setBrush(QColor("#f59e0b"))
-        painter.drawEllipse(goal, 12, 12)
+        if self._pose:
+            pt = self._world_to_widget(self._pose["x"], self._pose["y"], map_rect)
+            if pt:
+                painter.setPen(QPen(QColor("#dbeafe"), 2))
+                painter.setBrush(QColor("#3b82f6"))
+                painter.drawEllipse(pt, 10, 10)
+                yaw = self._pose.get("yaw", 0.0)
+                dx = math.cos(yaw) * 18
+                dy = -math.sin(yaw) * 18
+                painter.setPen(QPen(QColor("#f59e0b"), 3))
+                painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#ef4444"))
-        for point in (
-            QPointF(room.left() + 55, room.top() + 60),
-            QPointF(room.right() - 70, room.bottom() - 90),
-            QPointF(room.left() + room.width() * 0.70, room.top() + 45),
-        ):
-            painter.drawEllipse(point, 5, 5)
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton or not self._map_data:
+            return
+        world = self._widget_to_world(event.position().x(), event.position().y())
+        if world:
+            self._goal = world
+            self.goal_requested.emit(*world)
+            self.update()
+
+    # ── Coordinate helpers ────────────────────────────────────────────────────
+
+    def _map_rect(self) -> QRectF:
+        if not self._map_pixmap:
+            return QRectF(self.rect())
+        scaled = self._map_pixmap.scaled(
+            self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
+        )
+        ox = (self.width() - scaled.width()) / 2
+        oy = (self.height() - scaled.height()) / 2
+        return QRectF(ox, oy, scaled.width(), scaled.height())
+
+    def _world_to_widget(self, wx: float, wy: float, map_rect: QRectF) -> QPointF | None:
+        if not self._map_data:
+            return None
+        md = self._map_data
+        col = (wx - md["origin_x"]) / md["resolution"]
+        row = md["height"] - 1 - (wy - md["origin_y"]) / md["resolution"]
+        sx = map_rect.x() + col / md["width"] * map_rect.width()
+        sy = map_rect.y() + row / md["height"] * map_rect.height()
+        return QPointF(sx, sy)
+
+    def _widget_to_world(self, px: float, py: float) -> tuple[float, float] | None:
+        if not self._map_data:
+            return None
+        map_rect = self._map_rect()
+        if not map_rect.contains(QPointF(px, py)):
+            return None
+        md = self._map_data
+        col = (px - map_rect.x()) / map_rect.width() * md["width"]
+        row_flipped = (py - map_rect.y()) / map_rect.height() * md["height"]
+        row = md["height"] - 1 - row_flipped
+        world_x = md["origin_x"] + col * md["resolution"]
+        world_y = md["origin_y"] + row * md["resolution"]
+        return world_x, world_y
 
 
 class Map3DView(QWidget):
@@ -77,7 +126,7 @@ class Map3DView(QWidget):
         super().__init__()
         self.setMinimumHeight(220)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
@@ -107,3 +156,38 @@ class Map3DView(QWidget):
         painter.drawLine(origin, QPointF(origin.x() + 18, origin.y() - 58))
         painter.setPen(QPen(QColor("#60a5fa"), 4))
         painter.drawLine(origin, QPointF(origin.x() + 42, origin.y() + 24))
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_image(data: dict[str, Any]) -> QImage:
+    width: int = data["width"]
+    height: int = data["height"]
+    raw: list[int] = data["data"]
+
+    buf = bytearray(width * height * 3)
+    for i, val in enumerate(raw):
+        if val < 0:
+            r = g = b = 128
+        elif val < 50:
+            r = g = b = 210
+        else:
+            r = g = b = 30
+        off = i * 3
+        buf[off] = r
+        buf[off + 1] = g
+        buf[off + 2] = b
+
+    img = QImage(bytes(buf), width, height, width * 3, QImage.Format.Format_RGB888)
+    return img.mirrored(False, True)
+
+
+def _draw_placeholder(painter: QPainter, rect) -> None:
+    painter.setPen(QPen(QColor(148, 163, 184, 60), 1))
+    step = 32
+    for x in range(0, rect.width(), step):
+        painter.drawLine(x, 0, x, rect.height())
+    for y in range(0, rect.height(), step):
+        painter.drawLine(0, y, rect.width(), y)
+    painter.setPen(QColor(100, 116, 139))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Waiting for map…")

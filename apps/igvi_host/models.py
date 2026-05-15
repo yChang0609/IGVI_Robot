@@ -121,4 +121,21 @@ class UiBridgeHealth(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class RobotMapResponse(BaseModel):
+    width: int = 0
+    height: int = 0
+    resolution: float = 0.05
+    origin_x: float = 0.0
+    origin_y: float = 0.0
+    data: list[int] = Field(default_factory=list)
+    ok: bool = False
+
+
+class RobotPoseResponse(BaseModel):
+    x: float = 0.0
+    y: float = 0.0
+    yaw: float = 0.0
+    ok: bool = False
+
+
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

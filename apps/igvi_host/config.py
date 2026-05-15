@@ -41,6 +41,7 @@ class HostSettings:
     host: str = "127.0.0.1"
     port: int = 8770
     rosbridge_url: str = "ws://127.0.0.1:9090"
+    bridge_url: str = "http://127.0.0.1:8771"
     shm_path: Path = Path("/mnt/ui_bridge_shm")
     dev_mode: bool = False
 
@@ -78,6 +79,7 @@ class HostSettings:
             "host": self.host,
             "port": self.port,
             "rosbridge_url": self.rosbridge_url,
+            "bridge_url": self.bridge_url,
             "shm_path": str(self.shm_path),
             "dev_mode": self.dev_mode,
         }
@@ -90,6 +92,7 @@ class HostSettings:
             host=str(data.get("host") or "127.0.0.1"),
             port=int(data.get("port") or 8770),
             rosbridge_url=str(data.get("rosbridge_url") or "ws://127.0.0.1:9090"),
+            bridge_url=str(data.get("bridge_url") or "http://127.0.0.1:8771"),
             shm_path=Path(data.get("shm_path") or "/mnt/ui_bridge_shm"),
             dev_mode=bool(data.get("dev_mode", False)),
         )

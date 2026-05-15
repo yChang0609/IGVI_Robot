@@ -117,3 +117,9 @@ class HostClient:
 
     def ui_bridge_health(self) -> dict[str, Any]:
         return self.request("GET", "/api/ui-bridge/health")
+
+    def ros_map(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/map", timeout=5.0)
+
+    def ros_pose(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/pose")

@@ -7,6 +7,7 @@ include:
   - services/slam_fusion.yaml
   - services/slam_localization.yaml
   - services/urdf_viz.yaml
+  - services/igvi_bridge.yaml
   # - services/rosbridge.yaml
   # - services/nav2.yaml
 

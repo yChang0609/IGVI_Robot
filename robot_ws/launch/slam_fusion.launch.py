@@ -112,6 +112,7 @@ def generate_launch_description():
         'subscribe_rgb':              True,
         'subscribe_scan':             False,  # depth camera handles mapping; scan only used for odometry
         'approx_sync':                True,
+        'Mem/IncrementalMemory':      'true',
         'Reg/Strategy':               '0',   # 0 = Visual (depth camera)
         'Reg/Force3DoF':              'true',
         'RGBD/NeighborLinkRefining':  'true',

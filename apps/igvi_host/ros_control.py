@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import urllib.request
 from typing import Any
 
 from .config import HostSettings
-from .models import CmdVelRequest, Pose2DRequest, RosActionResponse, RosConnectionResponse, RosServiceCallRequest
+from .models import CmdVelRequest, Pose2DRequest, RobotMapResponse, RobotPoseResponse, RosActionResponse, RosConnectionResponse, RosServiceCallRequest
 
 
 class RosbridgeClient:
@@ -81,6 +82,32 @@ class RosbridgeClient:
         }
         await self._send(payload)
         return RosActionResponse(ok=True, action="service_call", message=f"service called: {request.service}")
+
+    async def get_map(self) -> RobotMapResponse:
+        return await asyncio.to_thread(self._fetch_map)
+
+    def _fetch_map(self) -> RobotMapResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/map"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                data = json.loads(r.read())
+            if not data.get("width"):
+                return RobotMapResponse(ok=False)
+            return RobotMapResponse(ok=True, **{k: data[k] for k in ("width", "height", "resolution", "origin_x", "origin_y", "data") if k in data})
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_pose(self) -> RobotPoseResponse:
+        return await asyncio.to_thread(self._fetch_pose)
+
+    def _fetch_pose(self) -> RobotPoseResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/pose"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return RobotPoseResponse(ok=True, x=data.get("x", 0.0), y=data.get("y", 0.0), yaw=data.get("yaw", 0.0))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
 
 def _pose_stamped(request: Pose2DRequest) -> dict[str, Any]:
