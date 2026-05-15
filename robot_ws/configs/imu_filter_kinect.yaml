@@ -1,0 +1,13 @@
+# Madgwick filter: Kinect IMU has gyro + accel only (no magnetometer).
+# Publishes orientation so RTAB-Map SLAM and robot_localization can consume /imu/filtered.
+imu_filter:
+  ros__parameters:
+    use_mag: false
+    publish_tf: false
+    reverse_tf: false
+    constant_dt: 0.0
+    publish_debug_topics: false
+    world_frame: "enu"
+    gain: 0.08
+    zeta: 0.0
+    orientation_stddev: 0.0

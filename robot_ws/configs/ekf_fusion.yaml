@@ -1,0 +1,31 @@
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.25
+    two_d_mode: true        # flat indoor floor — only track X, Y, yaw
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     odom
+
+    # LiDAR odometry only. IMU is NOT fused here because linear acceleration
+    # during walking is misread as tilt by the Madgwick filter, which leaks
+    # into yaw and causes the SLAM map to explode. The lidar odom yaw is
+    # stable and sufficient. IMU still helps RTAB-Map via Mem/UseOdomGravity.
+    odom0: odom_lidar
+    odom0_config: [true,  true,  false,   # X, Y, Z
+                   false, false, true,    # Roll, Pitch, Yaw
+                   false, false, false,   # Vx, Vy, Vz
+                   false, false, false,   # Vroll, Vpitch, Vyaw
+                   false, false, false]   # Ax, Ay, Az
+    odom0_queue_size: 10
+    odom0_nodelay: false
+    odom0_differential: false
+    odom0_relative: false
+
+    use_control: false

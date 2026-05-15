@@ -1,0 +1,27 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+x-kros-xacro-volume: &kros_xacro_volume ../../../robot_ws/configs/kros_car.xacro:/robot_ws/src/wildbot-car-description/urdf/kros_car.xacro:ro
+
+services:
+  kros_car:
+    <<: *base_service
+    profiles: ["core"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    devices:
+      - /dev/usb_wheel:/dev/usb_wheel
+      - /dev/usb_robot_arm:/dev/usb_robot_arm
+    volumes:
+      - *config_volume
+      - *kros_xacro_volume
+    command: ros2 launch kros_car bringup.launch.py
+
+networks:
+  robot_net:
+    driver: bridge

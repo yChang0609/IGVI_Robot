@@ -1,0 +1,38 @@
+FROM ghcr.io/screamlab/wildbot_base_image:latest
+ENV ROS_DISTRO jazzy
+COPY . /tmp
+
+WORKDIR /tmp
+
+### list the ros2 packages you want here
+# Copy the ROS workspace and install ROS package dependencies.
+RUN cp -r ./robot_ws/* /workspaces && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-demo-nodes-py \
+    ros-${ROS_DISTRO}-demo-nodes-cpp \
+    ros-${ROS_DISTRO}-robot-localization \
+    ros-${ROS_DISTRO}-rtabmap-ros \
+    ros-${ROS_DISTRO}-imu-filter-madgwick \
+    ros-${ROS_DISTRO}-nav2-bringup \
+    ros-${ROS_DISTRO}-depthimage-to-laserscan \
+    && \
+    rosdep update --rosdistro ${ROS_DISTRO} && \
+    colcon mixin update && \
+    colcon metadata update
+
+
+#build the workspace
+WORKDIR /workspaces
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    rosdep install -q -y -r --from-paths src --ignore-src && \
+    colcon build --symlink-install
+
+
+RUN rm -rf /tmp/* && \
+    rm -rf /temp/* && \
+    rm -rf /var/lib/apt/lists/*
+
+
+ENTRYPOINT ["/ros_entrypoint.bash"]
+CMD ["bash", "-l"]

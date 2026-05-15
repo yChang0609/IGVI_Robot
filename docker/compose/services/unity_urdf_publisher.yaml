@@ -1,0 +1,22 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+
+services:
+  unity_urdf_publisher:
+    <<: *base_service
+    profiles: ["unity", "debug"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    volumes:
+      - *config_volume
+    command: ros2 run robot_state_publisher robot_state_publisher /configs/v6_unity.urdf
+
+networks:
+  robot_net:
+    driver: bridge

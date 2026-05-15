@@ -1,0 +1,28 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+
+services:
+  igvi_bridge:
+    <<: *base_service
+    profiles: ["bridge"]
+    build:
+      context: ../../..
+      dockerfile: docker/images/Dockerfile.bridge
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+    ports:
+      - "8771:8771"
+    restart: unless-stopped
+
+networks:
+  robot_net:
+    driver: bridge

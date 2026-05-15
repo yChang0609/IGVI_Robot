@@ -1,0 +1,11 @@
+FROM ghcr.io/screamlab/wildbot_base_image:latest
+ENV ROS_DISTRO jazzy
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-foxglove-bridge \
+    && \
+    rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["/ros_entrypoint.bash"]
+CMD ["bash", "-l"]

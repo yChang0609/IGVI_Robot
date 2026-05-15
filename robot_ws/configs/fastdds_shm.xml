@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  FastDDS transport profile for same-host Docker containers.
+
+  SHM transport causes a SIGSEGV in FastDDS 2.14.5 during endpoint matching
+  (reproducible with ros-jazzy-rtabmap-ros on the base image).  UDP-only is
+  used instead.  Large Kinect frames (3.7 MB RGB @ 720P/15fps) are delivered
+  via RTPS fragmentation; with 16 MB receive buffers DDS reassembly is reliable.
+  Foxglove connecting from a laptop also works over UDP.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+    <transport_descriptors>
+        <!-- UDPv4 with large buffers to handle 3.7 MB Kinect frames reliably -->
+        <transport_descriptor>
+            <transport_id>UDPv4</transport_id>
+            <type>UDPv4</type>
+            <sendBufferSize>16777216</sendBufferSize>    <!-- 16 MB -->
+            <receiveBufferSize>16777216</receiveBufferSize> <!-- 16 MB -->
+        </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="default_participant" is_default_profile="true">
+        <rtps>
+            <useBuiltinTransports>false</useBuiltinTransports>
+            <userTransports>
+                <transport_id>UDPv4</transport_id>
+            </userTransports>
+        </rtps>
+    </participant>
+
+</profiles>

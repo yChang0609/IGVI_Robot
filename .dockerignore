@@ -1,0 +1,12 @@
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+apps/*/.venv/
+robot_ws/build/
+robot_ws/install/
+robot_ws/log/
+docker/compose/slam_data/
+docker/compose/.env
+data/

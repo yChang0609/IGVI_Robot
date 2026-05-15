@@ -1,0 +1,46 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+
+services:
+  camera_gemini:
+    <<: *base_service
+    profiles: ["sensors", "gemini"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - *config_volume
+    command:
+      - ros2
+      - launch
+      - orbbec_camera
+      - gemini_ew.launch.py
+      - color_width:=640
+      - color_height:=480
+      - color_fps:=30
+      - depth_width:=640
+      - depth_height:=400
+      - depth_fps:=30
+      - depth_registration:=true
+      - enable_point_cloud:=true
+      - enable_colored_point_cloud:=true
+      - ordered_pc:=true
+
+  camera_gemini_compress:
+    <<: *base_service
+    profiles: ["sensors", "gemini"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    depends_on:
+      - camera_gemini
+    command: ros2 run image_transport republish raw --ros-args --remap in:=camera/color/image_raw -p out:=camera/compressed
+
+networks:
+  robot_net:
+    driver: bridge

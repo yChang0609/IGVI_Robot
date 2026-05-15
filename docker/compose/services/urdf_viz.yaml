@@ -1,0 +1,29 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-kros-xacro-volume: &kros_xacro_volume ../../../robot_ws/configs/kros_car.xacro:/robot_ws/src/wildbot-car-description/urdf/kros_car.xacro:ro
+
+services:
+  urdf_viz:
+    <<: *base_service
+    profiles: ["debug"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    volumes:
+      - *kros_xacro_volume
+    command:
+      - bash
+      - -lc
+      - |
+        source /opt/ros/jazzy/setup.bash
+        source /robot_ws/install/setup.bash 2>/dev/null || true
+        ros2 run robot_state_publisher robot_state_publisher \
+          --ros-args -p robot_description:="$$(xacro /robot_ws/src/wildbot-car-description/urdf/kros_car.xacro)"
+
+networks:
+  robot_net:
+    driver: bridge

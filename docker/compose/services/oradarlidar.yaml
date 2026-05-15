@@ -1,0 +1,25 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
+
+services:
+  oradarlidar:
+    <<: *base_service
+    profiles: ["sensors", "lidar"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    devices:
+      - /dev/oradar:/dev/oradar
+    volumes:
+      - *launch_volume
+      - ../../../robot_ws/launch/ms200_scan.launch.py:/robot_ws/src/oradar_ros/launch/ms200_scan.launch.py:ro
+    command: ros2 launch /workspace/launch/oradarlidar.launch.py
+
+networks:
+  robot_net:
+    driver: bridge

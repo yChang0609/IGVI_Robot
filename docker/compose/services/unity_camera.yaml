@@ -1,0 +1,24 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+services:
+  unity_camera_depth_decompressor:
+    <<: *base_service
+    profiles: ["unity"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    command: ros2 run image_transport republish --ros-args -p in_transport:=compressed -p out_transport:=raw --remap in/compressed:=/camera/depth/compressed --remap out:=/camera/depth/image_raw
+
+  unity_camera_image_decompressor:
+    <<: *base_service
+    profiles: ["unity"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    command: ros2 run image_transport republish --ros-args -p in_transport:=compressed -p out_transport:=raw --remap in/compressed:=/camera/image/compressed --remap out:=/camera/color/image_raw
+
+networks:
+  robot_net:
+    driver: bridge
