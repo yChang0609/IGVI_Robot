@@ -123,3 +123,32 @@ class HostClient:
 
     def ros_pose(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/pose")
+
+    def image_topics(self) -> list[str]:
+        data = self.request("GET", "/api/ros/image/topics", timeout=3.0)
+        return list((data or {}).get("topics", []))
+
+    def image_frame(self, topic: str | None) -> tuple[bytes | None, str | None]:
+        params = {"topic": topic} if topic else None
+        request = urllib.request.Request(
+            self._url("/api/ros/image/frame", params=params),
+            headers={"accept": "image/jpeg"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3.0) as response:
+                active = response.headers.get("X-Active-Topic") or None
+                if response.status == 204:
+                    return None, active
+                return response.read(), active
+        except urllib.error.HTTPError as exc:
+            raise HostClientError(f"{exc.code}: image frame fetch failed") from exc
+        except OSError as exc:
+            raise HostClientError(str(exc)) from exc
+
+    def arm_trajectory(self, positions: list[float], time_from_start: float = 0.3) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/api/ros/arm/trajectory",
+            {"positions": positions, "time_from_start": time_from_start},
+        )

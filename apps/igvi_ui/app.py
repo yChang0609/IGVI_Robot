@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
     def __init__(self, client: HostClient):
         super().__init__()
         self.client = client
-        self.setWindowTitle("IGVI Robot Control Center")
+        self.setWindowTitle(f"IGVI Robot Control Center  —  {client.base_url}")
         self.resize(1480, 900)
         self._build_ui()
 

@@ -138,4 +138,13 @@ class RobotPoseResponse(BaseModel):
     ok: bool = False
 
 
+class ImageTopicsResponse(BaseModel):
+    topics: list[str] = Field(default_factory=list)
+
+
+class ArmTrajectoryRequest(BaseModel):
+    positions: list[float]
+    time_from_start: float = 0.3
+
+
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

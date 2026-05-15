@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.parse
 import urllib.request
 from typing import Any
 
 from .config import HostSettings
-from .models import CmdVelRequest, Pose2DRequest, RobotMapResponse, RobotPoseResponse, RosActionResponse, RosConnectionResponse, RosServiceCallRequest
+from .models import (
+    ArmTrajectoryRequest,
+    CmdVelRequest,
+    ImageTopicsResponse,
+    Pose2DRequest,
+    RobotMapResponse,
+    RobotPoseResponse,
+    RosActionResponse,
+    RosConnectionResponse,
+    RosServiceCallRequest,
+)
 
 
 class RosbridgeClient:
@@ -104,5 +115,40 @@ class RosbridgeClient:
             return RobotPoseResponse(ok=True, x=data.get("x", 0.0), y=data.get("y", 0.0), yaw=data.get("yaw", 0.0))
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def list_image_topics(self) -> ImageTopicsResponse:
+        return await asyncio.to_thread(self._fetch_image_topics)
+
+    def _fetch_image_topics(self) -> ImageTopicsResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/image/topics"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return ImageTopicsResponse(topics=list(data.get("topics", [])))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def fetch_image_frame(self, topic: str | None) -> tuple[bytes | None, str | None]:
+        return await asyncio.to_thread(self._fetch_image_frame, topic)
+
+    def _fetch_image_frame(self, topic: str | None) -> tuple[bytes | None, str | None]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/image/frame"
+        if topic:
+            url += f"?topic={urllib.parse.quote(topic)}"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                active = r.headers.get("X-Active-Topic") or None
+                if r.status == 204:
+                    return None, active
+                return r.read(), active
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def publish_arm_trajectory(self, request: ArmTrajectoryRequest) -> RosActionResponse:
+        await asyncio.to_thread(
+            self._bridge_post, "/api/arm/trajectory",
+            {"positions": request.positions, "time_from_start": request.time_from_start},
+        )
+        return RosActionResponse(ok=True, action="arm_trajectory", message="arm trajectory published")
 
 

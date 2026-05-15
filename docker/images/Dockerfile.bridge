@@ -4,7 +4,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-jazzy-nav-msgs \
         ros-jazzy-geometry-msgs \
+        ros-jazzy-sensor-msgs \
+        ros-jazzy-trajectory-msgs \
         python3-colcon-common-extensions \
+        python3-pil \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

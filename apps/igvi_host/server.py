@@ -5,6 +5,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from .config import HostSettings, load_settings, save_settings
 from .docker_clients import (
@@ -15,6 +16,7 @@ from .docker_clients import (
     DockerUnavailableError,
 )
 from .models import (
+    ArmTrajectoryRequest,
     CmdVelRequest,
     ComposeActionRequest,
     ComposeActionResponse,
@@ -22,6 +24,7 @@ from .models import (
     ContainerStatus,
     DevModeRequest,
     HealthResponse,
+    ImageTopicsResponse,
     LogsResponse,
     Pose2DRequest,
     RobotMapResponse,
@@ -258,6 +261,30 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.get("/api/ros/pose", response_model=RobotPoseResponse)
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())
+
+    @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
+    async def ros_image_topics() -> ImageTopicsResponse:
+        client = RosbridgeClient(current_settings())
+        try:
+            return await client.list_image_topics()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/ros/image/frame")
+    async def ros_image_frame(topic: str | None = None) -> Response:
+        client = RosbridgeClient(current_settings())
+        try:
+            payload, active = await client.fetch_image_frame(topic)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        headers = {"X-Active-Topic": active or ""}
+        if payload is None:
+            return Response(status_code=204, headers=headers)
+        return Response(content=payload, media_type="image/jpeg", headers=headers)
+
+    @app.post("/api/ros/arm/trajectory", response_model=RosActionResponse)
+    async def ros_arm_trajectory(request: ArmTrajectoryRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.publish_arm_trajectory(request))
 
     @app.get("/api/ui-bridge/health", response_model=UiBridgeHealth)
     def ui_bridge_health() -> UiBridgeHealth:
