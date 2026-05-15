@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -31,7 +31,7 @@ class BridgeNode(Node):
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
 
-        self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._cmd_vel_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
@@ -88,9 +88,10 @@ class BridgeNode(Node):
             }
 
     def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
-        msg = Twist()
-        msg.linear.x = linear_x
-        msg.angular.z = angular_z
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.twist.linear.x = linear_x
+        msg.twist.angular.z = angular_z
         self._cmd_vel_pub.publish(msg)
 
     def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
