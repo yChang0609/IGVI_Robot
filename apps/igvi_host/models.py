@@ -189,4 +189,22 @@ class NavStatusResponse(BaseModel):
     visible_actions: list[str] = Field(default_factory=list)
 
 
+class ImuCalibrationStatusResponse(BaseModel):
+    ok: bool = False
+    state: str = "unavailable"
+    message: str = ""
+    stationary: bool = False
+    converged: bool = False
+    online: bool = False
+    manual_required: bool = False
+    manual_active: bool = False
+    calibration_active: bool = False
+    manual_remaining_s: float = 0.0
+    stationary_age_s: float = 0.0
+    convergence_age_s: float = 0.0
+    gyro_error_rad_s: float = 0.0
+    gyro_bias: list[float] = Field(default_factory=list)
+    raw: str = ""
+
+
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

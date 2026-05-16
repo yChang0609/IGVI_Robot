@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
@@ -16,13 +16,60 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
+from igvi_ui.widgets.status_badge import StatusBadge
+
+
+class _ImuCalibrationPoller(QThread):
+    status_received = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, client: HostClient) -> None:
+        super().__init__()
+        self.client = client
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:
+        while self._running:
+            try:
+                self.status_received.emit(self.client.imu_calibration_status())
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(str(exc))
+            self.msleep(1200)
+
+
+_IMU_STATE_LABELS = {
+    "idle": "Idle",
+    "disabled": "Disabled",
+    "moving": "Moving",
+    "waiting": "Waiting",
+    "stationary": "Stationary",
+    "converging": "Converging",
+    "converged": "Converged",
+    "unavailable": "Unavailable",
+}
+
+_IMU_STATE_STYLES = {
+    "idle": "muted",
+    "disabled": "danger",
+    "moving": "muted",
+    "waiting": "warn",
+    "stationary": "warn",
+    "converging": "accent",
+    "converged": "ok",
+    "unavailable": "danger",
+}
 
 
 class SettingsPage(QWidget):
     def __init__(self, client: HostClient):
         super().__init__()
         self.client = client
+        self._imu_poller: _ImuCalibrationPoller | None = None
         self._build_ui()
         self.refresh()
 
@@ -157,6 +204,10 @@ class SettingsPage(QWidget):
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("IMU gyro bias seed + online calibration"))
         toolbar.addStretch(1)
+        start = QPushButton("Start Calibration")
+        start.setObjectName("Primary")
+        start.clicked.connect(self._start_imu_calibration)
+        toolbar.addWidget(start)
         save = QPushButton("Save")
         save.setObjectName("Primary")
         save.clicked.connect(self._save_calibration)
@@ -177,6 +228,13 @@ class SettingsPage(QWidget):
         form.addRow("Gyro bias Y (rad/s)", self.gyro_y)
         form.addRow("Gyro bias Z (rad/s)", self.gyro_z)
         outer.addWidget(frame)
+
+        self.imu_status_badge = StatusBadge("IMU calibration: unavailable", "muted")
+        outer.addWidget(self.imu_status_badge)
+        self.imu_status_detail = QLabel("Start SLAM/localization to receive online calibration status.")
+        self.imu_status_detail.setObjectName("Muted")
+        self.imu_status_detail.setWordWrap(True)
+        outer.addWidget(self.imu_status_detail)
         outer.addStretch(1)
         self.tabs.addTab(page, "IMU")
 
@@ -318,5 +376,55 @@ class SettingsPage(QWidget):
             return
         QMessageBox.information(self, "Restarted", f"{', '.join(services)} restarted.")
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._imu_poller is None:
+            self._imu_poller = _ImuCalibrationPoller(self.client)
+            self._imu_poller.status_received.connect(self._on_imu_status)
+            self._imu_poller.error.connect(self._on_imu_status_error)
+            self._imu_poller.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self.shutdown()
+
+    def _on_imu_status(self, status: dict) -> None:
+        state = str(status.get("state") or "unavailable")
+        label = _IMU_STATE_LABELS.get(state, state.title())
+        style = _IMU_STATE_STYLES.get(state, "muted")
+        self.imu_status_badge.set_state(f"IMU calibration: {label}", style)
+
+        bias = status.get("gyro_bias") or []
+        if state in ("converging", "converged") and len(bias) == 3:
+            self.gyro_x.setValue(float(bias[0]))
+            self.gyro_y.setValue(float(bias[1]))
+            self.gyro_z.setValue(float(bias[2]))
+        if len(bias) == 3:
+            bias_text = f"[{bias[0]:.6f}, {bias[1]:.6f}, {bias[2]:.6f}]"
+        else:
+            bias_text = "[]"
+        self.imu_status_detail.setText(
+            f"gyro error {float(status.get('gyro_error_rad_s') or 0.0):.6f} rad/s  ·  "
+            f"remaining {float(status.get('manual_remaining_s') or 0.0):.1f}s  ·  "
+            f"stationary {float(status.get('stationary_age_s') or 0.0):.1f}s  ·  "
+            f"converged {float(status.get('convergence_age_s') or 0.0):.1f}s  ·  "
+            f"bias {bias_text}  ·  Save to persist"
+        )
+
+    def _on_imu_status_error(self, message: str) -> None:
+        self.imu_status_badge.set_state("IMU calibration: unavailable", "danger")
+        self.imu_status_detail.setText(message)
+
+    def _start_imu_calibration(self) -> None:
+        try:
+            self.client.start_imu_calibration()
+        except HostClientError as exc:
+            QMessageBox.warning(self, "IMU calibration failed", str(exc))
+            return
+        self.imu_status_badge.set_state("IMU calibration: Waiting", "warn")
+        self.imu_status_detail.setText("Keep the robot still while the calibration window is active.")
+
     def shutdown(self) -> None:
-        pass
+        if self._imu_poller is not None:
+            stop_thread(self._imu_poller)
+            self._imu_poller = None

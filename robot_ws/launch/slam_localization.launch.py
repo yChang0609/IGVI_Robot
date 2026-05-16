@@ -45,6 +45,7 @@ def generate_launch_description():
             ('imu/in', '/imu'),
             ('imu/out', '/imu/calibrated'),
             ('imu/calibration_state', '/imu/calibration_state'),
+            ('calibration/start', '/imu/calibration/start'),
         ],
     )
 

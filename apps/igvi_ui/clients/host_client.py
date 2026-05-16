@@ -162,6 +162,12 @@ class HostClient:
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
 
+    def imu_calibration_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)
+
+    def start_imu_calibration(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/imu/calibration/start", {}, timeout=3.0)
+
     def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
         return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)
 

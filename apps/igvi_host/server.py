@@ -30,6 +30,7 @@ from .models import (
     DevModeRequest,
     HealthResponse,
     ImageTopicsResponse,
+    ImuCalibrationStatusResponse,
     LogsResponse,
     NavGoalRequest,
     NavStatusResponse,
@@ -390,6 +391,18 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             return await client.get_nav_status()
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/ros/imu/calibration", response_model=ImuCalibrationStatusResponse)
+    async def ros_imu_calibration() -> ImuCalibrationStatusResponse:
+        client = RosbridgeClient(current_settings())
+        try:
+            return await client.get_imu_calibration_status()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/ros/imu/calibration/start", response_model=RosActionResponse)
+    async def ros_imu_calibration_start() -> RosActionResponse:
+        return await run_ros(lambda client: client.start_imu_calibration())
 
     @app.get("/api/ui-bridge/health", response_model=UiBridgeHealth)
     def ui_bridge_health() -> UiBridgeHealth:

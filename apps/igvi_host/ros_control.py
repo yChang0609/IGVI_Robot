@@ -11,6 +11,7 @@ from .models import (
     ArmTrajectoryRequest,
     CmdVelRequest,
     ImageTopicsResponse,
+    ImuCalibrationStatusResponse,
     NavGoalRequest,
     NavStatusResponse,
     Pose2DRequest,
@@ -44,6 +45,37 @@ class RosbridgeClient:
 
         async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
             await websocket.send(json.dumps(payload))
+
+    async def _publish_empty_topic(self, topic: str) -> None:
+        try:
+            import websockets  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("Python package 'websockets' is not installed") from exc
+
+        async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
+            await websocket.send(json.dumps({"op": "advertise", "topic": topic, "type": "std_msgs/Empty"}))
+            await websocket.send(json.dumps({"op": "publish", "topic": topic, "msg": {}}))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({"op": "unadvertise", "topic": topic}))
+
+    async def _receive_string_topic(self, topic: str, timeout: float = 2.0) -> str:
+        try:
+            import websockets  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("Python package 'websockets' is not installed") from exc
+
+        async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
+            await websocket.send(json.dumps({"op": "subscribe", "topic": topic, "type": "std_msgs/String"}))
+            try:
+                while True:
+                    raw = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+                    data = json.loads(raw)
+                    if data.get("op") != "publish" or data.get("topic") != topic:
+                        continue
+                    msg = data.get("msg") or {}
+                    return str(msg.get("data", ""))
+            finally:
+                await websocket.send(json.dumps({"op": "unsubscribe", "topic": topic}))
 
     async def ping(self) -> RosConnectionResponse:
         def _check() -> dict[str, Any]:
@@ -204,4 +236,70 @@ class RosbridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def get_imu_calibration_status(self) -> ImuCalibrationStatusResponse:
+        try:
+            raw = await self._receive_string_topic("/imu/calibration_state", timeout=2.0)
+        except asyncio.TimeoutError:
+            return ImuCalibrationStatusResponse(
+                ok=False,
+                state="unavailable",
+                message="No /imu/calibration_state message received",
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+        return _parse_imu_calibration_status(raw)
 
+    async def start_imu_calibration(self) -> RosActionResponse:
+        await self._publish_empty_topic("/imu/calibration/start")
+        return RosActionResponse(
+            ok=True,
+            action="imu_calibration_start",
+            message="IMU calibration window started",
+        )
+
+
+def _parse_imu_calibration_status(raw: str) -> ImuCalibrationStatusResponse:
+    fields: dict[str, str] = {}
+    for token in raw.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        fields[key] = value
+
+    state = fields.get("state", "unknown")
+    gyro_bias: list[float] = []
+    bias_text = fields.get("gyro_bias", "").strip("[]")
+    if bias_text:
+        try:
+            gyro_bias = [float(item) for item in bias_text.split(",")]
+        except ValueError:
+            gyro_bias = []
+
+    return ImuCalibrationStatusResponse(
+        ok=state != "unknown",
+        state=state,
+        message=raw,
+        stationary=_as_bool(fields.get("stationary")),
+        converged=_as_bool(fields.get("converged")),
+        online=_as_bool(fields.get("online")),
+        manual_required=_as_bool(fields.get("manual_required")),
+        manual_active=_as_bool(fields.get("manual_active")),
+        calibration_active=_as_bool(fields.get("calibration_active")),
+        manual_remaining_s=_as_float(fields.get("manual_remaining_s")),
+        stationary_age_s=_as_float(fields.get("stationary_age_s")),
+        convergence_age_s=_as_float(fields.get("convergence_age_s")),
+        gyro_error_rad_s=_as_float(fields.get("gyro_error_rad_s")),
+        gyro_bias=gyro_bias,
+        raw=raw,
+    )
+
+
+def _as_bool(value: str | None) -> bool:
+    return str(value).lower() == "true"
+
+
+def _as_float(value: str | None) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except ValueError:
+        return 0.0
