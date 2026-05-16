@@ -17,6 +17,23 @@ def generate_launch_description():
         float(imu.get('gyro_bias_z', 0.0)),
     ]
 
+    kinect_node = Node(
+        package='azure_kinect_ros_driver',
+        executable='node',
+        name='azure_kinect',
+        output='screen',
+        parameters=[{
+            'depth_enabled': True,
+            'color_enabled': True,
+            'color_resolution': '720P',
+            'depth_mode': 'NFOV_UNBINNED',
+            'fps': 15,
+            'imu_rate_target': 0,
+            'point_cloud': True,
+            'rgb_point_cloud': True,
+        }],
+    )
+
     imu_calibrator_node = Node(
         package='igvi_imu',
         executable='imu_bias_calibrator',
@@ -34,4 +51,7 @@ def generate_launch_description():
         ],
     )
 
-    return LaunchDescription([imu_calibrator_node])
+    return LaunchDescription([
+        kinect_node,
+        imu_calibrator_node,
+    ])

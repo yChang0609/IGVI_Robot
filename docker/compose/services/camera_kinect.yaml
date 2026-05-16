@@ -7,6 +7,8 @@ x-base-service: &base_service
     - robot_net
 
 x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
+x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/workspaces/src/igvi_imu/igvi_imu:ro
 
 services:
   camera_kinect:
@@ -22,20 +24,15 @@ services:
       - /dev/bus/usb:/dev/bus/usb
     volumes:
       - *config_volume
+      - *launch_volume
+      - *igvi_imu_volume
       - /dev/shm:/dev/shm
     command:
       - /bin/bash
       - -c
       - >-
-        ros2 run azure_kinect_ros_driver node --ros-args
-        -p depth_enabled:=true
-        -p color_enabled:=true
-        -p color_resolution:=720P
-        -p depth_mode:=NFOV_UNBINNED
-        -p fps:=15
-        -p imu_rate_target:=0
-        -p point_cloud:=true
-        -p rgb_point_cloud:=true
+        source /workspaces/install/setup.bash &&
+        ros2 launch /workspace/launch/kinect_bringup.launch.py
 
 networks:
   robot_net:
