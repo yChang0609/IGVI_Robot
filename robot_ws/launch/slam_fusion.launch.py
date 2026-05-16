@@ -14,6 +14,12 @@ def generate_launch_description():
     with open(calib_path, 'r') as f:
         calib = yaml.safe_load(f) or {}
     cam = calib.get('camera_extrinsics', {})
+    imu = calib.get('imu', {})
+    gyro_bias = [
+        float(imu.get('gyro_bias_x', 0.0)),
+        float(imu.get('gyro_bias_y', 0.0)),
+        float(imu.get('gyro_bias_z', 0.0)),
+    ]
 
     delete_db_on_start = LaunchConfiguration('delete_db_on_start')
     database_path      = LaunchConfiguration('database_path')
@@ -31,10 +37,30 @@ def generate_launch_description():
         ),
     ]
 
-    # ── 1. Madgwick IMU filter ────────────────────────────────────────────────
-    # Converts raw Kinect /imu (accel + gyro, no mag) → orientation estimate.
+    # ── 1. Online IMU bias calibration ───────────────────────────────────────
+    # Kinect SDK/driver handles factory sensor calibration. This node subtracts
+    # robot-runtime gyro bias and slowly refines it only while the robot is
+    # stationary, then republishes /imu/calibrated for downstream consumers.
+    imu_calibrator_node = Node(
+        package='igvi_imu',
+        executable='imu_bias_calibrator',
+        name='imu_bias_calibrator',
+        output='screen',
+        parameters=[
+            os.path.join(configs_dir, 'imu_calibrator_kinect.yaml'),
+            {'gyro_bias': gyro_bias},
+        ],
+        remappings=[
+            ('imu/in', '/imu'),
+            ('imu/out', '/imu/calibrated'),
+            ('imu/calibration_state', '/imu/calibration_state'),
+        ],
+    )
+
+    # ── 2. Madgwick IMU filter ────────────────────────────────────────────────
+    # Converts calibrated Kinect IMU (accel + gyro, no mag) → orientation estimate.
     # /imu/filtered is consumed by RTAB-Map for gravity-aligned loop closure.
-    # rgbd_odometry subscribes to raw /imu for IMU pre-integration.
+    # rgbd_odometry subscribes to filtered orientation for IMU initialization.
     imu_filter_node = Node(
         package='imu_filter_madgwick',
         executable='imu_filter_madgwick_node',
@@ -42,12 +68,12 @@ def generate_launch_description():
         output='screen',
         parameters=[os.path.join(configs_dir, 'imu_filter_kinect.yaml')],
         remappings=[
-            ('imu/data_raw', '/imu'),
+            ('imu/data_raw', '/imu/calibrated'),
             ('imu/data',     '/imu/filtered'),
         ],
     )
 
-    # ── 2. Static TF: base_link → camera_base ────────────────────────────────
+    # ── 3. Static TF: base_link → camera_base ────────────────────────────────
     # Locates the Kinect body in the robot frame.  The Kinect driver then
     # publishes camera_base → camera_color_left, camera_imu_frame, etc.,
     # completing the full TF chain needed for gravity alignment and map fusion.
@@ -66,7 +92,7 @@ def generate_launch_description():
         ],
     )
 
-    # ── 3. RGBD Odometry ─────────────────────────────────────────────────────
+    # ── 4. RGBD Odometry ─────────────────────────────────────────────────────
     # Visual feature tracking on RGB + depth.  Works with a narrow-FoV depth
     # camera; does not need a 360° LiDAR or a geometrically complex scan.
     rgbd_odom_node = Node(
@@ -108,7 +134,7 @@ def generate_launch_description():
         parameters=[os.path.join(configs_dir, 'ekf_wheel_imu.yaml')],
     )
 
-    # ── 4. RTAB-Map SLAM (RGBD mode) ─────────────────────────────────────────
+    # ── 5. RTAB-Map SLAM (RGBD mode) ─────────────────────────────────────────
     # Builds and maintains a persistent 2-D occupancy grid + 3-D point-cloud map
     # from Kinect RGBD frames.  Loop closure uses bag-of-words visual place
     # recognition so revisited areas are correctly merged without LiDAR.
@@ -166,6 +192,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
+        imu_calibrator_node,
         imu_filter_node,
         base_to_camera_tf,
         ekf_node,

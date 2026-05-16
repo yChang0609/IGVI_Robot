@@ -41,8 +41,8 @@ ekf_filter_node:
     odom0_relative: false
     odom0_nodelay: true
 
-    # Kinect IMU — yaw rate (gyro Z) only. No orientation, no acceleration.
-    imu0: /imu
+    # Kinect IMU — calibrated yaw rate (gyro Z) only. No orientation, no acceleration.
+    imu0: /imu/calibrated
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
