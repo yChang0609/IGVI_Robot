@@ -84,7 +84,10 @@ def generate_launch_description():
         parameters=[{
             'frame_id':           'base_link',
             'odom_frame_id':      'odom',
-            'publish_tf':         True,
+            # No longer the TF authority: the robot_localization EKF owns
+            # odom->base_link (low latency). Visual odom is kept only as an
+            # input for RTAB-Map / future fusion, on /odom_visual.
+            'publish_tf':         False,
             'wait_imu_to_init':   True,
             'Reg/Force3DoF':      'true',
             'Vis/EstimationType': '0',
@@ -97,8 +100,20 @@ def generate_launch_description():
             ('rgb/camera_info', '/rgb/camera_info'),
             ('depth/image',     '/depth_to_rgb/image_raw'),
             ('imu',             '/imu/filtered'),
-            ('odom',            '/odom'),
+            ('odom',            '/odom_visual'),
         ],
+    )
+
+    # ── Low-latency state estimator ──────────────────────────────────────────
+    # Fuses wheel odometry (/base_controller/odom) + Kinect IMU yaw rate and
+    # publishes odom->base_link at 50 Hz. This replaces the laggy RGBD visual
+    # odometry on the real-time path; see configs/ekf_wheel_imu.yaml.
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[os.path.join(configs_dir, 'ekf_wheel_imu.yaml')],
     )
 
     # ── 4. RTAB-Map SLAM (RGBD mode) ─────────────────────────────────────────
@@ -135,7 +150,8 @@ def generate_launch_description():
         ('rgb/image',       '/rgb/image_raw'),
         ('rgb/camera_info', '/rgb/camera_info'),
         ('depth/image',     '/depth_to_rgb/image_raw'),
-        ('odom',            '/odom'),
+        # RTAB-Map runs on the fused EKF odom and publishes only map->odom.
+        ('odom',            '/odometry/filtered'),
     ]
 
     rtabmap_keep = Node(
@@ -160,6 +176,7 @@ def generate_launch_description():
     return LaunchDescription(declared_arguments + [
         imu_filter_node,
         base_to_camera_tf,
+        ekf_node,
         rgbd_odom_node,
         rtabmap_keep,
         rtabmap_fresh,
