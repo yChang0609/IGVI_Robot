@@ -157,6 +157,23 @@ class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 
 
+class CalibrationModel(BaseModel):
+    camera_x: float = 0.17
+    camera_y: float = 0.0
+    camera_z: float = 0.25
+    camera_roll: float = 0.0
+    camera_pitch: float = 0.48
+    camera_yaw: float = 0.0
+    gyro_bias_x: float = 0.0
+    gyro_bias_y: float = 0.0
+    gyro_bias_z: float = 0.0
+    wheel_separation: float = 0.274
+    wheel_separation_multiplier: float = 2.21
+    wheel_radius: float = 0.05035
+    ekf_frequency: int = 50
+    ekf_sensor_timeout: float = 0.2
+
+
 class SaveMapResponse(BaseModel):
     ok: bool
     message: str = ""

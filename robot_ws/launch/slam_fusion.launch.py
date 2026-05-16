@@ -1,4 +1,5 @@
 import os
+import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
@@ -9,14 +10,13 @@ from launch_ros.actions import Node
 def generate_launch_description():
     configs_dir = '/configs'
 
+    calib_path = os.path.join(configs_dir, 'calibration.yaml')
+    with open(calib_path, 'r') as f:
+        calib = yaml.safe_load(f) or {}
+    cam = calib.get('camera_extrinsics', {})
+
     delete_db_on_start = LaunchConfiguration('delete_db_on_start')
     database_path      = LaunchConfiguration('database_path')
-    cam_tx = LaunchConfiguration('camera_mount_x')
-    cam_ty = LaunchConfiguration('camera_mount_y')
-    cam_tz = LaunchConfiguration('camera_mount_z')
-    cam_rr = LaunchConfiguration('camera_mount_roll')
-    cam_rp = LaunchConfiguration('camera_mount_pitch')
-    cam_ry = LaunchConfiguration('camera_mount_yaw')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -29,18 +29,6 @@ def generate_launch_description():
             default_value='/root/.ros/rtabmap.db',
             description='Path to the RTAB-Map database file inside the container.',
         ),
-        # Camera mount position relative to base_link.
-        # Run ./scripts/show_base_link.sh and open Foxglove to visualise base_link,
-        # then measure the Kinect camera_base origin from it and set these values.
-        DeclareLaunchArgument('camera_mount_x', default_value='0.0',
-                              description='Kinect camera_base X from base_link (m, forward+)'),
-        DeclareLaunchArgument('camera_mount_y', default_value='0.0',
-                              description='Kinect camera_base Y from base_link (m, left+)'),
-        DeclareLaunchArgument('camera_mount_z', default_value='0.0',
-                              description='Kinect camera_base Z from base_link (m, up+)'),
-        DeclareLaunchArgument('camera_mount_roll',  default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_pitch', default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_yaw',   default_value='0.0'),
     ]
 
     # ── 1. Madgwick IMU filter ────────────────────────────────────────────────
@@ -68,8 +56,12 @@ def generate_launch_description():
         executable='static_transform_publisher',
         name='base_link_to_camera_base',
         arguments=[
-            '--x',     cam_tx, '--y',     cam_ty, '--z',   cam_tz,
-            '--roll',  cam_rr, '--pitch', cam_rp, '--yaw', cam_ry,
+            '--x',     str(cam.get('x', 0.0)),
+            '--y',     str(cam.get('y', 0.0)),
+            '--z',     str(cam.get('z', 0.0)),
+            '--roll',  str(cam.get('roll', 0.0)),
+            '--pitch', str(cam.get('pitch', 0.0)),
+            '--yaw',   str(cam.get('yaw', 0.0)),
             '--frame-id', 'base_link', '--child-frame-id', 'camera_base',
         ],
     )

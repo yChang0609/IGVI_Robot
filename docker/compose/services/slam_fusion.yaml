@@ -28,12 +28,6 @@ services:
       - -c
       - >-
         ros2 launch /workspace/launch/slam_fusion.launch.py
-        camera_mount_x:=0.17
-        camera_mount_y:=0.0
-        camera_mount_z:=0.25
-        camera_mount_roll:=0.0
-        camera_mount_pitch:=0.48
-        camera_mount_yaw:=0.0
         delete_db_on_start:=false
 
 networks:

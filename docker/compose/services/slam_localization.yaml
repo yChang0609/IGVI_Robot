@@ -29,12 +29,6 @@ services:
       - >-
         ros2 launch /workspace/launch/slam_localization.launch.py
         database_path:=/root/.ros/rtabmap.db
-        camera_mount_x:=0.17
-        camera_mount_y:=0.0
-        camera_mount_z:=0.25
-        camera_mount_roll:=0.0
-        camera_mount_pitch:=0.11
-        camera_mount_yaw:=0.0
 
 networks:
   robot_net:

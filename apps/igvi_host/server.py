@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from contextlib import suppress
+from pathlib import Path
 from typing import Callable
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -17,6 +21,7 @@ from .docker_clients import (
 )
 from .models import (
     ArmTrajectoryRequest,
+    CalibrationModel,
     CmdVelRequest,
     ComposeActionRequest,
     ComposeActionResponse,
@@ -133,6 +138,81 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         state_settings.dev_mode = request.enabled
         save_settings(state_settings)
         return SettingsModel(**state_settings.to_json_dict())
+
+    @app.get("/api/calibration", response_model=CalibrationModel)
+    def get_calibration() -> CalibrationModel:
+        configs = current_settings().repo_root / "robot_ws" / "configs"
+        calib_file = configs / "calibration.yaml"
+        ctrl_file = configs / "controllers.yaml"
+        result: dict = {}
+        if calib_file.exists():
+            data = yaml.safe_load(calib_file.read_text()) or {}
+            cam = data.get("camera_extrinsics", {})
+            result.update(camera_x=cam.get("x", 0.17), camera_y=cam.get("y", 0.0),
+                          camera_z=cam.get("z", 0.25), camera_roll=cam.get("roll", 0.0),
+                          camera_pitch=cam.get("pitch", 0.48), camera_yaw=cam.get("yaw", 0.0))
+            imu = data.get("imu", {})
+            result.update(gyro_bias_x=imu.get("gyro_bias_x", 0.0),
+                          gyro_bias_y=imu.get("gyro_bias_y", 0.0),
+                          gyro_bias_z=imu.get("gyro_bias_z", 0.0))
+            ekf = data.get("ekf", {})
+            result.update(ekf_frequency=ekf.get("frequency", 50),
+                          ekf_sensor_timeout=ekf.get("sensor_timeout", 0.2))
+        if ctrl_file.exists():
+            ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
+            bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
+            result.update(wheel_separation=bc.get("wheel_separation", 0.274),
+                          wheel_separation_multiplier=bc.get("wheel_separation_multiplier", 2.21),
+                          wheel_radius=bc.get("wheel_radius", 0.05035))
+        return CalibrationModel(**result)
+
+    @app.post("/api/calibration", response_model=CalibrationModel)
+    def set_calibration(request: CalibrationModel) -> CalibrationModel:
+        configs = current_settings().repo_root / "robot_ws" / "configs"
+        calib_file = configs / "calibration.yaml"
+        ctrl_file = configs / "controllers.yaml"
+        d = request.model_dump()
+        calib_data = {
+            "camera_extrinsics": {
+                "x": d["camera_x"], "y": d["camera_y"], "z": d["camera_z"],
+                "roll": d["camera_roll"], "pitch": d["camera_pitch"], "yaw": d["camera_yaw"],
+            },
+            "imu": {
+                "gyro_bias_x": d["gyro_bias_x"],
+                "gyro_bias_y": d["gyro_bias_y"],
+                "gyro_bias_z": d["gyro_bias_z"],
+            },
+            "ekf": {"frequency": d["ekf_frequency"], "sensor_timeout": d["ekf_sensor_timeout"]},
+        }
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
+        try:
+            os.write(tmp_fd, yaml.dump(calib_data, default_flow_style=False).encode())
+            os.close(tmp_fd)
+            os.replace(tmp_path, str(calib_file))
+        except Exception:
+            with suppress(OSError):
+                os.close(tmp_fd)
+            with suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        if ctrl_file.exists():
+            ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
+            bc = ctrl.setdefault("base_controller", {}).setdefault("ros__parameters", {})
+            bc["wheel_separation"] = d["wheel_separation"]
+            bc["wheel_separation_multiplier"] = d["wheel_separation_multiplier"]
+            bc["wheel_radius"] = d["wheel_radius"]
+            tmp_fd2, tmp_path2 = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
+            try:
+                os.write(tmp_fd2, yaml.dump(ctrl, default_flow_style=False).encode())
+                os.close(tmp_fd2)
+                os.replace(tmp_path2, str(ctrl_file))
+            except Exception:
+                with suppress(OSError):
+                    os.close(tmp_fd2)
+                with suppress(OSError):
+                    os.unlink(tmp_path2)
+                raise
+        return request
 
     @app.get("/api/compose/profiles", response_model=list[str])
     def list_profiles() -> list[str]:

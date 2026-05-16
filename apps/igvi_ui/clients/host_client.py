@@ -164,3 +164,9 @@ class HostClient:
 
     def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
         return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)
+
+    def calibration(self) -> dict[str, Any]:
+        return self.request("GET", "/api/calibration")
+
+    def set_calibration(self, data: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/calibration", data)
