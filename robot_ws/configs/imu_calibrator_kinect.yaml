@@ -13,3 +13,4 @@ imu_bias_calibrator:
     convergence_gyro_threshold: 0.005
     convergence_min_duration: 5.0
     publish_state_period: 1.0
+    auto_start_on_boot: true

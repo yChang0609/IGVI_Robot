@@ -429,6 +429,14 @@ class SettingsPage(QWidget):
         self.imu_status_badge.set_state("IMU calibration: Waiting", "warn")
         self.imu_status_detail.setText("Keep the robot still while the calibration window is active.")
 
+    def _prompt_save_on_converged(self) -> None:
+        reply = QMessageBox.question(
+            self, "IMU Calibration Converged",
+            "IMU calibration has converged. Save bias values now?",
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._save_calibration()
+
     def shutdown(self) -> None:
         if self._imu_poller is not None:
             stop_thread(self._imu_poller)

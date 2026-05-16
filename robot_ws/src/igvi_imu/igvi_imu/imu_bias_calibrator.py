@@ -4,7 +4,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import SensorDataQoS
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Empty, String
 
@@ -56,10 +56,9 @@ class ImuBiasCalibrator(Node):
         self._convergence_age = 0.0
         self._gyro_error = 0.0
 
-        qos = SensorDataQoS()
-        self._pub = self.create_publisher(Imu, "imu/out", qos)
+        self._pub = self.create_publisher(Imu, "imu/out", qos_profile_sensor_data)
         self._state_pub = self.create_publisher(String, "imu/calibration_state", 10)
-        self.create_subscription(Imu, "imu/in", self._on_imu, qos)
+        self.create_subscription(Imu, "imu/in", self._on_imu, qos_profile_sensor_data)
         self.create_subscription(Empty, "calibration/start", self._on_start_calibration, 10)
 
         state_period = max(0.1, float(self.get_parameter("publish_state_period").value))
