@@ -29,6 +29,7 @@ services:
       - /bin/bash
       - -c
       - >-
+        source /workspaces/install/setup.bash &&
         ros2 launch /workspace/launch/slam_fusion.launch.py
         delete_db_on_start:=false
 
