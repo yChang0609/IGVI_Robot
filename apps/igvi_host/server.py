@@ -21,6 +21,7 @@ from .docker_clients import (
 )
 from .models import (
     ArmTrajectoryRequest,
+    ClearCostmapRequest,
     CalibrationModel,
     CmdVelRequest,
     ComposeActionRequest,
@@ -39,7 +40,6 @@ from .models import (
     RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
-    RosServiceCallRequest,
     SaveMapRequest,
     SaveMapResponse,
     ServiceDescriptor,
@@ -47,7 +47,7 @@ from .models import (
     UiBridgeHealth,
 )
 from .progress import get_progress_buffer
-from .ros_control import RosbridgeClient
+from .ros_control import RobotBridgeClient
 from .service_registry import ServiceRegistry
 from .ui_bridge import read_ui_bridge_health
 
@@ -97,8 +97,8 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         service = reg.validate_service(request.service)
         return [service] if service else None
 
-    async def run_ros(action: Callable[[RosbridgeClient], object]) -> RosActionResponse:
-        client = RosbridgeClient(current_settings())
+    async def run_ros(action: Callable[[RobotBridgeClient], object]) -> RosActionResponse:
+        client = RobotBridgeClient(current_settings())
         try:
             result = action(client)
             if hasattr(result, "__await__"):
@@ -317,7 +317,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/connection", response_model=RosConnectionResponse)
     async def ros_connection() -> RosConnectionResponse:
-        return await RosbridgeClient(current_settings()).ping()
+        return await RobotBridgeClient(current_settings()).ping()
 
     @app.post("/api/ros/cmd_vel", response_model=RosActionResponse)
     async def cmd_vel(request: CmdVelRequest) -> RosActionResponse:
@@ -335,10 +335,6 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def initial_pose(request: Pose2DRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.publish_initial_pose(request))
 
-    @app.post("/api/ros/service_call", response_model=RosActionResponse)
-    async def service_call(request: RosServiceCallRequest) -> RosActionResponse:
-        return await run_ros(lambda client: client.call_service(request))
-
     @app.get("/api/ros/map", response_model=RobotMapResponse)
     async def ros_map() -> RobotMapResponse:
         return await run_ros(lambda client: client.get_map())
@@ -349,7 +345,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             return await client.list_image_topics()
         except Exception as exc:
@@ -357,7 +353,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/image/frame")
     async def ros_image_frame(topic: str | None = None) -> Response:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             payload, active = await client.fetch_image_frame(topic)
         except Exception as exc:
@@ -379,6 +375,11 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_nav_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.cancel_nav_goal())
 
+    @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
+    async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:
+        target = request.target if request else "local"
+        return await run_ros(lambda client: client.clear_costmap(target))
+
     @app.post("/api/ros/map/save", response_model=SaveMapResponse)
     async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
         filename = request.filename if request else "arena_map"
@@ -386,7 +387,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
     async def ros_nav_status() -> NavStatusResponse:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             return await client.get_nav_status()
         except Exception as exc:
@@ -394,7 +395,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/imu/calibration", response_model=ImuCalibrationStatusResponse)
     async def ros_imu_calibration() -> ImuCalibrationStatusResponse:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             return await client.get_imu_calibration_status()
         except Exception as exc:

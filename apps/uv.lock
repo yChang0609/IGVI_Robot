@@ -273,7 +273,6 @@ dependencies = [
     { name = "python-on-whales" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "vispy" },
-    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -287,7 +286,6 @@ requires-dist = [
     { name = "python-on-whales", specifier = ">=0.72" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "vispy", specifier = ">=0.14" },
-    { name = "websockets", specifier = ">=12.0" },
 ]
 
 [[package]]

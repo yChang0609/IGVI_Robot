@@ -2,7 +2,7 @@
 
 Local Python tools for the IGVI robot stack:
 
-- `igvi-host`: localhost FastAPI host agent for Docker/Compose, rosbridge control, and UI bridge health.
+- `igvi-host`: localhost FastAPI host agent for Docker/Compose, IGVI bridge control, and UI bridge health.
 - `igvi-ui`: PySide6 desktop control center.
 
 Run:

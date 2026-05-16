@@ -19,12 +19,11 @@ from .models import (
     RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
-    RosServiceCallRequest,
     SaveMapResponse,
 )
 
 
-class RosbridgeClient:
+class RobotBridgeClient:
     def __init__(self, settings: HostSettings):
         self.settings = settings
 
@@ -36,46 +35,6 @@ class RosbridgeClient:
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
-
-    async def _send(self, payload: dict[str, Any]) -> None:
-        try:
-            import websockets  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("Python package 'websockets' is not installed") from exc
-
-        async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
-            await websocket.send(json.dumps(payload))
-
-    async def _publish_empty_topic(self, topic: str) -> None:
-        try:
-            import websockets  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("Python package 'websockets' is not installed") from exc
-
-        async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
-            await websocket.send(json.dumps({"op": "advertise", "topic": topic, "type": "std_msgs/Empty"}))
-            await websocket.send(json.dumps({"op": "publish", "topic": topic, "msg": {}}))
-            await asyncio.sleep(0.05)
-            await websocket.send(json.dumps({"op": "unadvertise", "topic": topic}))
-
-    async def _receive_string_topic(self, topic: str, timeout: float = 2.0) -> str:
-        try:
-            import websockets  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("Python package 'websockets' is not installed") from exc
-
-        async with websockets.connect(self.settings.rosbridge_url, open_timeout=2) as websocket:
-            await websocket.send(json.dumps({"op": "subscribe", "topic": topic, "type": "std_msgs/String"}))
-            try:
-                while True:
-                    raw = await asyncio.wait_for(websocket.recv(), timeout=timeout)
-                    data = json.loads(raw)
-                    if data.get("op") != "publish" or data.get("topic") != topic:
-                        continue
-                    msg = data.get("msg") or {}
-                    return str(msg.get("data", ""))
-            finally:
-                await websocket.send(json.dumps({"op": "unsubscribe", "topic": topic}))
 
     async def ping(self) -> RosConnectionResponse:
         def _check() -> dict[str, Any]:
@@ -114,16 +73,6 @@ class RosbridgeClient:
             {"x": request.x, "y": request.y, "yaw": request.yaw, "frame_id": request.frame_id},
         )
         return RosActionResponse(ok=True, action="initial_pose", message="initial pose published")
-
-    async def call_service(self, request: RosServiceCallRequest) -> RosActionResponse:
-        payload = {
-            "op": "call_service",
-            "service": request.service,
-            "type": request.service_type,
-            "args": request.args,
-        }
-        await self._send(payload)
-        return RosActionResponse(ok=True, action="service_call", message=f"service called: {request.service}")
 
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
@@ -207,6 +156,19 @@ class RosbridgeClient:
             message=str(result.get("message", "")),
         )
 
+    async def clear_costmap(self, target: str = "local") -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/costmap/clear",
+            {"target": target},
+            4.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "costmap_clear")),
+            message=str(result.get("message", "")),
+        )
+
     async def save_map(self, filename: str = "arena_map") -> SaveMapResponse:
         result = await asyncio.to_thread(
             self._bridge_post, "/api/map/save", {"filename": filename}, 10.0,
@@ -237,69 +199,42 @@ class RosbridgeClient:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
     async def get_imu_calibration_status(self) -> ImuCalibrationStatusResponse:
+        return await asyncio.to_thread(self._fetch_imu_calibration_status)
+
+    def _fetch_imu_calibration_status(self) -> ImuCalibrationStatusResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/imu/calibration"
         try:
-            raw = await self._receive_string_topic("/imu/calibration_state", timeout=2.0)
-        except asyncio.TimeoutError:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
             return ImuCalibrationStatusResponse(
-                ok=False,
-                state="unavailable",
-                message="No /imu/calibration_state message received",
+                ok=bool(data.get("ok", False)),
+                state=str(data.get("state", "unavailable")),
+                message=str(data.get("message", "")),
+                stationary=bool(data.get("stationary", False)),
+                converged=bool(data.get("converged", False)),
+                online=bool(data.get("online", False)),
+                manual_required=bool(data.get("manual_required", False)),
+                manual_active=bool(data.get("manual_active", False)),
+                calibration_active=bool(data.get("calibration_active", False)),
+                manual_remaining_s=float(data.get("manual_remaining_s") or 0.0),
+                stationary_age_s=float(data.get("stationary_age_s") or 0.0),
+                convergence_age_s=float(data.get("convergence_age_s") or 0.0),
+                gyro_error_rad_s=float(data.get("gyro_error_rad_s") or 0.0),
+                gyro_bias=[float(v) for v in list(data.get("gyro_bias") or [])],
+                raw=str(data.get("raw", "")),
             )
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
-        return _parse_imu_calibration_status(raw)
 
     async def start_imu_calibration(self) -> RosActionResponse:
-        await self._publish_empty_topic("/imu/calibration/start")
-        return RosActionResponse(
-            ok=True,
-            action="imu_calibration_start",
-            message="IMU calibration window started",
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/imu/calibration/start",
+            {},
+            2.0,
         )
-
-
-def _parse_imu_calibration_status(raw: str) -> ImuCalibrationStatusResponse:
-    fields: dict[str, str] = {}
-    for token in raw.split():
-        if "=" not in token:
-            continue
-        key, value = token.split("=", 1)
-        fields[key] = value
-
-    state = fields.get("state", "unknown")
-    gyro_bias: list[float] = []
-    bias_text = fields.get("gyro_bias", "").strip("[]")
-    if bias_text:
-        try:
-            gyro_bias = [float(item) for item in bias_text.split(",")]
-        except ValueError:
-            gyro_bias = []
-
-    return ImuCalibrationStatusResponse(
-        ok=state != "unknown",
-        state=state,
-        message=raw,
-        stationary=_as_bool(fields.get("stationary")),
-        converged=_as_bool(fields.get("converged")),
-        online=_as_bool(fields.get("online")),
-        manual_required=_as_bool(fields.get("manual_required")),
-        manual_active=_as_bool(fields.get("manual_active")),
-        calibration_active=_as_bool(fields.get("calibration_active")),
-        manual_remaining_s=_as_float(fields.get("manual_remaining_s")),
-        stationary_age_s=_as_float(fields.get("stationary_age_s")),
-        convergence_age_s=_as_float(fields.get("convergence_age_s")),
-        gyro_error_rad_s=_as_float(fields.get("gyro_error_rad_s")),
-        gyro_bias=gyro_bias,
-        raw=raw,
-    )
-
-
-def _as_bool(value: str | None) -> bool:
-    return str(value).lower() == "true"
-
-
-def _as_float(value: str | None) -> float:
-    try:
-        return float(value) if value is not None else 0.0
-    except ValueError:
-        return 0.0
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "imu_calibration_start")),
+            message=str(result.get("message", "")),
+        )

@@ -15,12 +15,13 @@ from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -60,6 +61,25 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
 
+        self._imu_lock = threading.Lock()
+        self._imu_calibration_status: dict[str, Any] = {
+            "ok": False,
+            "state": "unavailable",
+            "message": "No /imu/calibration_state message received",
+            "stationary": False,
+            "converged": False,
+            "online": False,
+            "manual_required": False,
+            "manual_active": False,
+            "calibration_active": False,
+            "manual_remaining_s": 0.0,
+            "stationary_age_s": 0.0,
+            "convergence_age_s": 0.0,
+            "gyro_error_rad_s": 0.0,
+            "gyro_bias": [],
+            "raw": "",
+        }
+
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
@@ -72,12 +92,20 @@ class BridgeNode(Node):
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_controller/joint_trajectory", 10)
+        self._imu_calibration_start_pub = self.create_publisher(Empty, "/imu/calibration/start", 10)
+        self._local_costmap_clear_client = self.create_client(
+            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
+        )
+        self._global_costmap_clear_client = self.create_client(
+            ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
+        )
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
         self._motion_state: str = "unknown"
         self.create_subscription(String, "/motion/state", self._on_motion_state, 10)
+        self.create_subscription(String, "/imu/calibration_state", self._on_imu_calibration_state, 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -125,6 +153,11 @@ class BridgeNode(Node):
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
         self._motion_state = str(getattr(msg, "data", ""))
 
+    def _on_imu_calibration_state(self, msg: String) -> None:
+        status = _parse_imu_calibration_status(str(msg.data))
+        with self._imu_lock:
+            self._imu_calibration_status = status
+
     def _on_image(self, msg: Image) -> None:
         jpeg = _encode_jpeg(msg)
         if jpeg is None:
@@ -166,6 +199,13 @@ class BridgeNode(Node):
 
     def snapshot_motion_state(self) -> str:
         return self._motion_state
+
+    def snapshot_imu_calibration(self) -> dict[str, Any]:
+        with self._imu_lock:
+            return dict(self._imu_calibration_status)
+
+    def start_imu_calibration(self) -> None:
+        self._imu_calibration_start_pub.publish(Empty())
 
     def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
         msg = PoseStamped()
@@ -270,6 +310,36 @@ class BridgeNode(Node):
 
         self.get_logger().info(f"Map saved to {yaml_path}")
         return True, yaml_path
+
+    def clear_costmap(self, target: str = "local") -> tuple[bool, str]:
+        if target == "global":
+            client = self._global_costmap_clear_client
+            name = "/global_costmap/clear_entirely_global_costmap"
+        else:
+            client = self._local_costmap_clear_client
+            name = "/local_costmap/clear_entirely_local_costmap"
+
+        if not client.wait_for_service(timeout_sec=1.0):
+            return False, f"{name} service not available"
+
+        done = threading.Event()
+        result: dict[str, Any] = {"ok": False, "message": f"{name} timed out"}
+        future = client.call_async(ClearEntireCostmap.Request())
+
+        def _finished(_future: Any) -> None:
+            try:
+                _future.result()
+                result["ok"] = True
+                result["message"] = f"{target} costmap cleared"
+            except Exception as exc:  # noqa: BLE001
+                result["ok"] = False
+                result["message"] = str(exc)
+            finally:
+                done.set()
+
+        future.add_done_callback(_finished)
+        done.wait(timeout=3.0)
+        return bool(result["ok"]), str(result["message"])
 
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
@@ -458,6 +528,53 @@ def _encode_jpeg(msg: Image) -> bytes | None:
     return buf.getvalue()
 
 
+def _parse_imu_calibration_status(raw: str) -> dict[str, Any]:
+    fields: dict[str, str] = {}
+    for token in raw.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        fields[key] = value
+
+    state = fields.get("state", "unknown")
+    bias_text = fields.get("gyro_bias", "").strip("[]")
+    gyro_bias: list[float] = []
+    if bias_text:
+        try:
+            gyro_bias = [float(item) for item in bias_text.split(",")]
+        except ValueError:
+            gyro_bias = []
+
+    return {
+        "ok": state != "unknown",
+        "state": state,
+        "message": raw,
+        "stationary": _as_bool(fields.get("stationary")),
+        "converged": _as_bool(fields.get("converged")),
+        "online": _as_bool(fields.get("online")),
+        "manual_required": _as_bool(fields.get("manual_required")),
+        "manual_active": _as_bool(fields.get("manual_active")),
+        "calibration_active": _as_bool(fields.get("calibration_active")),
+        "manual_remaining_s": _as_float(fields.get("manual_remaining_s")),
+        "stationary_age_s": _as_float(fields.get("stationary_age_s")),
+        "convergence_age_s": _as_float(fields.get("convergence_age_s")),
+        "gyro_error_rad_s": _as_float(fields.get("gyro_error_rad_s")),
+        "gyro_bias": gyro_bias,
+        "raw": raw,
+    }
+
+
+def _as_bool(value: str | None) -> bool:
+    return str(value).lower() == "true"
+
+
+def _as_float(value: str | None) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except ValueError:
+        return 0.0
+
+
 # ── HTTP server ──────────────────────────────────────────────────────────────
 
 def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
@@ -487,6 +604,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_nav())
             elif path == "/api/motion/state":
                 self._json({"state": node.snapshot_motion_state()})
+            elif path == "/api/imu/calibration":
+                self._json(node.snapshot_imu_calibration())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -562,6 +681,13 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 filename = str(body.get("filename", "arena_map"))
                 ok, msg = node.save_map(filename=filename)
                 self._json({"ok": ok, "action": "map_save", "message": msg})
+            elif path == "/api/costmap/clear":
+                target = str(body.get("target", "local"))
+                ok, msg = node.clear_costmap(target=target)
+                self._json({"ok": ok, "action": "costmap_clear", "message": msg})
+            elif path == "/api/imu/calibration/start":
+                node.start_imu_calibration()
+                self._json({"ok": True, "action": "imu_calibration_start", "message": "IMU calibration window started"})
             else:
                 self.send_response(404)
                 self.end_headers()

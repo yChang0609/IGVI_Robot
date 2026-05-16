@@ -227,15 +227,7 @@ class _DriveControl(QWidget):
 
     def _clear_costmap(self) -> None:
         try:
-            self.client.request(
-                "POST",
-                "/api/ros/service_call",
-                {
-                    "service": "/local_costmap/clear_entirely_local_costmap",
-                    "service_type": "nav2_msgs/ClearEntireCostmap",
-                    "args": {},
-                },
-            )
+            self.client.clear_costmap("local")
         except HostClientError as exc:
             QMessageBox.warning(self, "Clear costmap failed", str(exc))
 

@@ -62,7 +62,7 @@ Useful profiles:
 - `localization`: RTAB-Map localization
 - `navigation`: Nav2
 - `monitoring`: Foxglove bridge
-- `bridge`: rosbridge websocket
+- `bridge`: IGVI HTTP bridge
 - `unity`: Unity/simulation helpers
 - `debug`: URDF and TF visualization helpers
 

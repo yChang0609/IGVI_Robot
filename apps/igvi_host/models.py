@@ -20,7 +20,7 @@ class SettingsModel(BaseModel):
     project_name: str
     host: str
     port: int
-    rosbridge_url: str
+    bridge_url: str
     shm_path: str
     dev_mode: bool
 
@@ -91,10 +91,8 @@ class Pose2DRequest(BaseModel):
     frame_id: str = "map"
 
 
-class RosServiceCallRequest(BaseModel):
-    service: str
-    service_type: str
-    args: dict = Field(default_factory=dict)
+class ClearCostmapRequest(BaseModel):
+    target: Literal["local", "global"] = "local"
 
 
 class RosActionResponse(BaseModel):

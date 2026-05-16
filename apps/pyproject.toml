@@ -10,7 +10,6 @@ dependencies = [
   "pydantic>=2.8",
   "docker>=7.1",
   "python-on-whales>=0.72",
-  "websockets>=12.0",
   "pyqtgraph>=0.13",
   "vispy>=0.14",
   "pytest>=8.0",

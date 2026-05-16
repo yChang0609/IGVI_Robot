@@ -159,6 +159,9 @@ class HostClient:
     def nav_cancel(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/nav/cancel", {}, timeout=5.0)
 
+    def clear_costmap(self, target: str = "local") -> dict[str, Any]:
+        return self.request("POST", "/api/ros/costmap/clear", {"target": target}, timeout=5.0)
+
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
 

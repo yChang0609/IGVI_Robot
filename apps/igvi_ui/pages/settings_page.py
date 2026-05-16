@@ -116,13 +116,13 @@ class SettingsPage(QWidget):
         self.project_name = QLineEdit()
         self.host = QLineEdit()
         self.port = QLineEdit()
-        self.rosbridge_url = QLineEdit()
+        self.bridge_url = QLineEdit()
         self.shm_path = QLineEdit()
         form.addRow("Repo root", self.repo_root)
         form.addRow("Compose project", self.project_name)
         form.addRow("Host", self.host)
         form.addRow("Port", self.port)
-        form.addRow("rosbridge", self.rosbridge_url)
+        form.addRow("IGVI bridge", self.bridge_url)
         form.addRow("UI bridge shm", self.shm_path)
         outer.addWidget(frame)
         outer.addStretch(1)
@@ -293,7 +293,7 @@ class SettingsPage(QWidget):
         self.project_name.setText(str(settings.get("project_name") or ""))
         self.host.setText(str(settings.get("host") or ""))
         self.port.setText(str(settings.get("port") or ""))
-        self.rosbridge_url.setText(str(settings.get("rosbridge_url") or ""))
+        self.bridge_url.setText(str(settings.get("bridge_url") or ""))
         self.shm_path.setText(str(settings.get("shm_path") or ""))
         self.health_label.setText(
             f"Docker: {'ok' if health.get('docker_available') else 'unavailable'}    "
@@ -326,7 +326,7 @@ class SettingsPage(QWidget):
             "project_name": self.project_name.text().strip(),
             "host": self.host.text().strip(),
             "port": int(self.port.text().strip() or 0),
-            "rosbridge_url": self.rosbridge_url.text().strip(),
+            "bridge_url": self.bridge_url.text().strip(),
             "shm_path": self.shm_path.text().strip(),
             "dev_mode": False,
         }

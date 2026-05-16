@@ -31,8 +31,8 @@ def test_compose_files_skip_empty_dev_override(tmp_path: Path) -> None:
 
 
 def test_settings_round_trip(tmp_path: Path) -> None:
-    settings = HostSettings(repo_root=tmp_path, dev_mode=True, rosbridge_url="ws://example:9090")
+    settings = HostSettings(repo_root=tmp_path, dev_mode=True, bridge_url="http://example:8771")
     restored = HostSettings.from_json_dict(settings.to_json_dict())
     assert restored.repo_root == tmp_path
     assert restored.dev_mode is True
-    assert restored.rosbridge_url == "ws://example:9090"
+    assert restored.bridge_url == "http://example:8771"
