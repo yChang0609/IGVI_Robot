@@ -14,12 +14,6 @@ def generate_launch_description():
     with open(calib_path, 'r') as f:
         calib = yaml.safe_load(f) or {}
     cam = calib.get('camera_extrinsics', {})
-    imu = calib.get('imu', {})
-    gyro_bias = [
-        float(imu.get('gyro_bias_x', 0.0)),
-        float(imu.get('gyro_bias_y', 0.0)),
-        float(imu.get('gyro_bias_z', 0.0)),
-    ]
 
     database_path = LaunchConfiguration('database_path')
 
@@ -30,24 +24,6 @@ def generate_launch_description():
             description='Path to the RTAB-Map database file inside the container.',
         ),
     ]
-
-    # Same online IMU bias calibration as mapping.
-    imu_calibrator_node = Node(
-        package='igvi_imu',
-        executable='imu_bias_calibrator',
-        name='imu_bias_calibrator',
-        output='screen',
-        parameters=[
-            os.path.join(configs_dir, 'imu_calibrator_kinect.yaml'),
-            {'gyro_bias': gyro_bias},
-        ],
-        remappings=[
-            ('imu/in', '/imu'),
-            ('imu/out', '/imu/calibrated'),
-            ('imu/calibration_state', '/imu/calibration_state'),
-            ('calibration/start', '/imu/calibration/start'),
-        ],
-    )
 
     # Same IMU filter as mapping.
     imu_filter_node = Node(
@@ -152,7 +128,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
-        imu_calibrator_node,
         imu_filter_node,
         base_to_camera_tf,
         ekf_node,

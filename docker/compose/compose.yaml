@@ -3,6 +3,7 @@ name: igvi_robot
 include:
   - services/kros_car.yaml
   - services/camera_kinect.yaml
+  - services/imu_calibrator.yaml
   - services/foxglove_bridge.yaml
   - services/slam_fusion.yaml
   - services/slam_localization.yaml

@@ -28,6 +28,7 @@ class ImuBiasCalibrator(Node):
         self.declare_parameter("convergence_gyro_threshold", 0.005)
         self.declare_parameter("convergence_min_duration", 5.0)
         self.declare_parameter("publish_state_period", 1.0)
+        self.declare_parameter("auto_start_on_boot", True)
 
         self._bias = self._read_bias_parameter()
         self._online_calibration = bool(self.get_parameter("online_calibration").value)
@@ -63,10 +64,17 @@ class ImuBiasCalibrator(Node):
 
         state_period = max(0.1, float(self.get_parameter("publish_state_period").value))
         self.create_timer(state_period, self._publish_state)
+        auto_start = bool(self.get_parameter("auto_start_on_boot").value)
+        if auto_start and self._manual_required:
+            self._manual_started_at = self.get_clock().now()
+            self._manual_active = True
+            self._manual_remaining_s = self._manual_duration
+
         self.get_logger().info(
             "imu_bias_calibrator started "
             f"bias=[{self._bias[0]:.6f}, {self._bias[1]:.6f}, {self._bias[2]:.6f}] "
-            f"online={self._online_calibration} manual_required={self._manual_required}"
+            f"online={self._online_calibration} manual_required={self._manual_required} "
+            f"auto_start={auto_start}"
         )
 
     def _read_bias_parameter(self) -> list[float]:

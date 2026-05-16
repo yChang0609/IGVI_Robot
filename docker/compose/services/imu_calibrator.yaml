@@ -11,15 +11,9 @@ x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
 x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/workspaces/src/igvi_imu/igvi_imu:ro
 
 services:
-  slam_fusion:
+  imu_calibrator:
     <<: *base_service
-    profiles: ["slam"]
-    depends_on:
-      imu_calibrator:
-        condition: service_started
-    build:
-      context: ../../..
-      dockerfile: docker/images/Dockerfile.fusion
+    profiles: ["sensors", "slam", "localization"]
     image: wildbot_slam_fusion:latest
     environment:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
@@ -27,14 +21,12 @@ services:
       - *config_volume
       - *launch_volume
       - *igvi_imu_volume
-      - ../../../data/slam:/root/.ros
     command:
       - /bin/bash
       - -c
       - >-
         source /workspaces/install/setup.bash &&
-        ros2 launch /workspace/launch/slam_fusion.launch.py
-        delete_db_on_start:=false
+        ros2 launch /workspace/launch/imu_calibrator.launch.py
 
 networks:
   robot_net:

@@ -29,6 +29,7 @@ class _ImuCalibrationPoller(QThread):
         super().__init__()
         self.client = client
         self._running = True
+        self._last_state = ""
 
     def stop(self) -> None:
         self._running = False
@@ -390,11 +391,15 @@ class SettingsPage(QWidget):
 
     def _on_imu_status(self, status: dict) -> None:
         state = str(status.get("state") or "unavailable")
+        prev_state = getattr(self, "_prev_imu_state", "")
+        self._prev_imu_state = state
         label = _IMU_STATE_LABELS.get(state, state.title())
         style = _IMU_STATE_STYLES.get(state, "muted")
         self.imu_status_badge.set_state(f"IMU calibration: {label}", style)
 
         bias = status.get("gyro_bias") or []
+        if state == "converged" and prev_state != "converged":
+            self._prompt_save_on_converged()
         if state in ("converging", "converged") and len(bias) == 3:
             self.gyro_x.setValue(float(bias[0]))
             self.gyro_y.setValue(float(bias[1]))

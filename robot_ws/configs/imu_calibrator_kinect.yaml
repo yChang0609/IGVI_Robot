@@ -3,6 +3,7 @@ imu_bias_calibrator:
     # Kinect SDK/driver handles the sensor's factory calibration. This node
     # handles robot-runtime gyro bias correction before SLAM/EKF consume /imu.
     online_calibration: true
+    auto_start_on_boot: true
     manual_calibration_required: true
     manual_calibration_duration: 30.0
     stationary_gyro_threshold: 0.03
