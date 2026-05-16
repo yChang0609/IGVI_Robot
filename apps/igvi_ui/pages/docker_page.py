@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 
 
@@ -110,6 +111,20 @@ class DockerPage(QWidget):
 
         self.refresh()
         self._reload_profiles()
+
+    def shutdown(self) -> None:
+        """Stop timers and join all worker threads. Idempotent.
+
+        Docker is the default page, so its workers are the most likely to be
+        alive at exit; a running QThread destroyed here aborts the process.
+        """
+        for timer in (self.refresh_timer, self.log_timer, self.progress_timer):
+            timer.stop()
+        stop_thread(self.log_worker)
+        self.log_worker = None
+        for worker in list(self.action_workers):
+            stop_thread(worker)
+        self.action_workers.clear()
 
     # ------------------------------------------------------------------ build
     def _build_ui(self) -> None:

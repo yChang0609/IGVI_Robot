@@ -147,4 +147,29 @@ class ArmTrajectoryRequest(BaseModel):
     time_from_start: float = 0.3
 
 
+class NavGoalRequest(BaseModel):
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
+class SaveMapRequest(BaseModel):
+    filename: str = "arena_map"
+
+
+class SaveMapResponse(BaseModel):
+    ok: bool
+    message: str = ""
+    path: str = ""
+
+
+class NavStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+    visible_actions: list[str] = Field(default_factory=list)
+
+
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

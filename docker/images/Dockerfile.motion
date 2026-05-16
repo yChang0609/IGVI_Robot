@@ -1,5 +1,4 @@
-FROM ghcr.io/screamlab/wildbot_base_image:latest
-ENV ROS_DISTRO jazzy
+FROM ros:jazzy-ros-base
 
 # --- Pin ROS 2 apt to a fixed, internally-consistent snapshot (2026-04-13) ---
 # Prevents the Fast-CDR/typesupport ABI mismatch (undefined
@@ -17,9 +16,20 @@ RUN apt-get update && \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ros-${ROS_DISTRO}-foxglove-bridge \
-    && \
-    rm -rf /var/lib/apt/lists/*
+        ros-jazzy-nav-msgs \
+        ros-jazzy-geometry-msgs \
+        ros-jazzy-std-msgs \
+        python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["/ros_entrypoint.bash"]
-CMD ["bash", "-l"]
+WORKDIR /workspace
+
+COPY robot_ws/src/motion_arbiter src/motion_arbiter
+
+RUN . /opt/ros/jazzy/setup.sh && \
+    colcon build --packages-select motion_arbiter --symlink-install
+
+CMD ["/bin/bash", "-c", \
+     "source /opt/ros/jazzy/setup.bash && \
+      source /workspace/install/setup.bash && \
+      ros2 run motion_arbiter arbiter_node"]

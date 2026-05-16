@@ -6,10 +6,11 @@ include:
   - services/foxglove_bridge.yaml
   - services/slam_fusion.yaml
   - services/slam_localization.yaml
-  - services/urdf_viz.yaml
   - services/igvi_bridge.yaml
+  - services/nav2.yaml
+  - services/motion_arbiter.yaml
+  # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
-  # - services/nav2.yaml
 
 networks:
   robot_net:

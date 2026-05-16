@@ -4,6 +4,23 @@ COPY . /tmp
 
 WORKDIR /tmp
 
+# --- Pin ROS 2 apt to a fixed, internally-consistent snapshot (2026-04-13) ---
+# The stale base image carried Fast-CDR 2.2.5 (Jan) while later apt installs
+# pulled Apr message packages built against a newer Fast-CDR. The resulting
+# `undefined symbol: eprosima::fastcdr::Cdr::serialize*` made bt_navigator /
+# planner_server die with exit 127 on the first NavigateToPose goal. Aligning
+# every ROS package to one snapshot resolves it; the snapshot repo is signed
+# by a separate key (ROS Snapshot builder, 0xAD19BAB3CBF125EA).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg && \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0xAD19BAB3CBF125EA" \
+      | gpg --dearmor -o /usr/share/keyrings/ros-snapshots.gpg && \
+    rm -f /etc/apt/sources.list.d/ros2.list /etc/apt/sources.list.d/ros2-latest.list && \
+    printf 'Types: deb\nURIs: http://snapshots.ros.org/jazzy/2026-04-13/ubuntu\nSuites: noble\nComponents: main\nSigned-By: /usr/share/keyrings/ros-snapshots.gpg\n' \
+      > /etc/apt/sources.list.d/ros2.sources && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+
 ### list the ros2 packages you want here
 # Copy the ROS workspace and install ROS package dependencies.
 RUN cp -r ./robot_ws/* /workspaces && \

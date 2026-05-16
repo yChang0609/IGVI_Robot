@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.widgets.arm_control import ArmControl
 from igvi_ui.widgets.image_view import ImageView
 from igvi_ui.widgets.map_views import Map2DView
+from igvi_ui.widgets.navigation_control import NavigationControl
 
 _WASD: dict[Qt.Key, tuple[float, float]] = {
     Qt.Key.Key_W: (1.0, 0.0),
@@ -287,8 +289,10 @@ class RobotPage(QWidget):
 
         self.control_tabs = QTabWidget()
         self.drive_control = _DriveControl(self.client, self.map_2d)
+        self.nav_control = NavigationControl(self.client)
         self.arm_control = ArmControl(self.client)
         self.control_tabs.addTab(self.drive_control, "Drive")
+        self.control_tabs.addTab(self.nav_control, "Navigation")
         self.control_tabs.addTab(self.arm_control, "Arm")
         control_layout.addWidget(self.control_tabs, 1)
         layout.addWidget(control_panel, 1, 2)
@@ -309,10 +313,19 @@ class RobotPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
-        if self._poller:
-            self._poller.stop()
-            self._poller.wait(1000)
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        """Stop this page's poller and cascade to thread-owning children.
+
+        Idempotent; called from hideEvent and from MainWindow.closeEvent so no
+        QThread outlives the QApplication.
+        """
+        if self._poller is not None:
+            stop_thread(self._poller)
             self._poller = None
+        self.image_view.shutdown()
+        self.nav_control.shutdown()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -322,11 +335,21 @@ class RobotPage(QWidget):
             f"Pose  x {pose['x']:.2f}  y {pose['y']:.2f}  yaw {pose['yaw']:.2f} rad"
         )
 
-    def _on_goal_clicked(self, world_x: float, world_y: float) -> None:
+    def _on_goal_clicked(self, world_x: float, world_y: float, yaw: float) -> None:
         try:
-            self.client.goal_pose(world_x, world_y, 0.0)
+            result = self.client.nav_goal(world_x, world_y, yaw)
         except HostClientError as exc:
             QMessageBox.warning(self, "Goal failed", str(exc))
+            return
+        if not result.get("ok"):
+            QMessageBox.warning(
+                self, "Goal rejected",
+                str(result.get("message") or "Navigation server unavailable. Is the navigation profile up?"),
+            )
+            return
+        # Auto-switch to Navigation tab so the user sees status feedback
+        if hasattr(self, "control_tabs") and hasattr(self, "nav_control"):
+            self.control_tabs.setCurrentWidget(self.nav_control)
 
     # ── Widget helpers ────────────────────────────────────────────────────────
 

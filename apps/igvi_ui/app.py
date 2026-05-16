@@ -150,12 +150,34 @@ class MainWindow(QMainWindow):
             "ok" if bridge.get("ok") else "warn",
         )
 
+    def shutdown(self) -> None:
+        """Stop every background thread before the QApplication tears down.
+
+        Without this, the currently-visible page's poller (and Docker page
+        workers) are still running when Qt destroys them, which raises
+        "QThread: Destroyed while thread is still running" and aborts with
+        SIGABRT (exit 134). Idempotent so closeEvent and aboutToQuit can both
+        call it.
+        """
+        self.health_timer.stop()
+        for index in range(self.stack.count()):
+            page = self.stack.widget(index)
+            page_shutdown = getattr(page, "shutdown", None)
+            if callable(page_shutdown):
+                page_shutdown()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.shutdown()
+        super().closeEvent(event)
+
 
 def main() -> None:
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE_SHEET)
     base_url = os.environ.get("IGVI_HOST_URL", "http://127.0.0.1:8770")
     window = MainWindow(HostClient(base_url=base_url))
+    # Safety net for paths that bypass closeEvent (app.quit(), signals).
+    app.aboutToQuit.connect(window.shutdown)
     window.show()
     sys.exit(app.exec())
 

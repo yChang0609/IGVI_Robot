@@ -63,7 +63,9 @@ def generate_launch_description():
         parameters=[{
             'frame_id':           'base_link',
             'odom_frame_id':      'odom',
-            'publish_tf':         True,
+            # EKF (wheel + IMU) owns odom->base_link; visual odom is published
+            # on /odom_visual only, not the TF authority.
+            'publish_tf':         False,
             'wait_imu_to_init':   True,
             'Reg/Force3DoF':      'true',
             'Vis/EstimationType': '0',
@@ -76,8 +78,18 @@ def generate_launch_description():
             ('rgb/camera_info', '/rgb/camera_info'),
             ('depth/image',     '/depth_to_rgb/image_raw'),
             ('imu',             '/imu/filtered'),
-            ('odom',            '/odom'),
+            ('odom',            '/odom_visual'),
         ],
+    )
+
+    # Low-latency state estimator: wheel odom + Kinect IMU yaw rate -> 50 Hz
+    # odom->base_link. See configs/ekf_wheel_imu.yaml.
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[os.path.join(configs_dir, 'ekf_wheel_imu.yaml')],
     )
 
     # RTAB-Map in localization mode:
@@ -111,13 +123,15 @@ def generate_launch_description():
             ('rgb/image',       '/rgb/image_raw'),
             ('rgb/camera_info', '/rgb/camera_info'),
             ('depth/image',     '/depth_to_rgb/image_raw'),
-            ('odom',            '/odom'),
+            # RTAB-Map localizes on the fused EKF odom, publishes only map->odom.
+            ('odom',            '/odometry/filtered'),
         ],
     )
 
     return LaunchDescription(declared_arguments + [
         imu_filter_node,
         base_to_camera_tf,
+        ekf_node,
         rgbd_odom_node,
         rtabmap_loc_node,
     ])

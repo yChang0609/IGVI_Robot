@@ -1,0 +1,55 @@
+# robot_localization EKF: low-latency odom->base_link for a fast vehicle.
+#
+# Why this exists: previously odom->base_link came from rgbd_odometry (Kinect
+# RGBD visual odometry) at ~11 Hz with ~140 ms end-to-end delay, so the pose
+# visibly lagged the robot. Wheel odometry (/base_controller/odom) and the
+# 1.2 kHz Kinect IMU are both low-latency; fusing them here and predicting at
+# 50 Hz makes the continuous pose effectively real-time. RTAB-Map is demoted
+# to publishing only the slower map->odom drift correction.
+#
+# Deliberately conservative first cut (IMU/camera NOT yet calibrated — see
+# memo.md): fuse only wheel forward velocity (vx) + IMU yaw rate (gyro z).
+# No linear acceleration (bias-sensitive, uncalibrated) and NO absolute
+# orientation (the Madgwick /imu/filtered yaw-leak documented in
+# ekf_fusion.yaml is avoided by reading raw /imu angular velocity only).
+ekf_filter_node:
+  ros__parameters:
+    frequency: 50.0
+    sensor_timeout: 0.2
+    two_d_mode: true            # flat indoor floor — X, Y, yaw only
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+    publish_tf: true            # EKF owns odom -> base_link
+
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     odom
+
+    # Wheel odometry — trust forward velocity only. Absolute pose drifts and
+    # lateral/rotational terms slip, so they are excluded; yaw comes from IMU.
+    odom0: /base_controller/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+    odom0_nodelay: true
+
+    # Kinect IMU — yaw rate (gyro Z) only. No orientation, no acceleration.
+    imu0: /imu
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_nodelay: true
+    imu0_remove_gravitational_acceleration: true

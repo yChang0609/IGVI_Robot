@@ -26,12 +26,16 @@ from .models import (
     HealthResponse,
     ImageTopicsResponse,
     LogsResponse,
+    NavGoalRequest,
+    NavStatusResponse,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
     RosServiceCallRequest,
+    SaveMapRequest,
+    SaveMapResponse,
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
@@ -285,6 +289,27 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/arm/trajectory", response_model=RosActionResponse)
     async def ros_arm_trajectory(request: ArmTrajectoryRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.publish_arm_trajectory(request))
+
+    @app.post("/api/ros/nav/goal", response_model=RosActionResponse)
+    async def ros_nav_goal(request: NavGoalRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.send_nav_goal(request))
+
+    @app.post("/api/ros/nav/cancel", response_model=RosActionResponse)
+    async def ros_nav_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.cancel_nav_goal())
+
+    @app.post("/api/ros/map/save", response_model=SaveMapResponse)
+    async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
+        filename = request.filename if request else "arena_map"
+        return await run_ros(lambda client: client.save_map(filename))
+
+    @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
+    async def ros_nav_status() -> NavStatusResponse:
+        client = RosbridgeClient(current_settings())
+        try:
+            return await client.get_nav_status()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/ui-bridge/health", response_model=UiBridgeHealth)
     def ui_bridge_health() -> UiBridgeHealth:

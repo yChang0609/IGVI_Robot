@@ -3,18 +3,24 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -47,14 +53,31 @@ class BridgeNode(Node):
         self._image_jpeg: bytes | None = None
         self._image_meta: dict[str, Any] = {}
 
+        self._nav_lock = threading.Lock()
+        self._nav_state: str = "idle"
+        self._nav_message: str = ""
+        self._nav_goal_handle = None
+        self._nav_goal: dict[str, float] | None = None
+        self._nav_feedback: dict[str, float] = {}
+
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
-        self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
 
-        self._cmd_vel_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
+        # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
+        # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
+        # /cmd_vel output onto /base_controller/cmd_vel for the wheel driver.
+        self._motion_cmd_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        self._wheel_cmd_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_controller/joint_trajectory", 10)
+        self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
+        self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
+        # Track latest arbiter state for HTTP diagnostics.
+        self._motion_state: str = "unknown"
+        self.create_subscription(String, "/motion/state", self._on_motion_state, 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -90,6 +113,18 @@ class BridgeNode(Node):
             )
             self._pose_source = "amcl"
 
+    def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
+        # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout
+        # measures against the bridge clock (DDS delivery may lag).
+        out = TwistStamped()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = msg.header.frame_id
+        out.twist = msg.twist
+        self._wheel_cmd_pub.publish(out)
+
+    def _on_motion_state(self, msg) -> None:  # std_msgs/String
+        self._motion_state = str(getattr(msg, "data", ""))
+
     def _on_image(self, msg: Image) -> None:
         jpeg = _encode_jpeg(msg)
         if jpeg is None:
@@ -121,11 +156,16 @@ class BridgeNode(Node):
             }
 
     def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
-        msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.twist.linear.x = linear_x
-        msg.twist.angular.z = angular_z
-        self._cmd_vel_pub.publish(msg)
+        # Manual override flows through motion_arbiter: publish a Twist on
+        # /motion/cmd; arbiter will preempt path tracking and publish the
+        # actual /cmd_vel which the bridge relays to /base_controller/cmd_vel.
+        msg = Twist()
+        msg.linear.x = float(linear_x)
+        msg.angular.z = float(angular_z)
+        self._motion_cmd_pub.publish(msg)
+
+    def snapshot_motion_state(self) -> str:
+        return self._motion_state
 
     def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
         msg = PoseStamped()
@@ -189,6 +229,190 @@ class BridgeNode(Node):
     def snapshot_image(self) -> tuple[bytes | None, str | None, dict[str, Any]]:
         with self._image_lock:
             return self._image_jpeg, self._image_topic, dict(self._image_meta)
+
+    # ── Map saving ────────────────────────────────────────────────────────────
+
+    def save_map(self, filename: str = "arena_map", out_dir: str = "/maps") -> tuple[bool, str]:
+        with self._lock:
+            snap = dict(self._map) if self._map else None
+        if snap is None:
+            return False, "no map data available"
+        w, h = int(snap["width"]), int(snap["height"])
+        res = float(snap["resolution"])
+        ox, oy = float(snap["origin_x"]), float(snap["origin_y"])
+        data = snap["data"]
+
+        os.makedirs(out_dir, exist_ok=True)
+        pgm_path = os.path.join(out_dir, f"{filename}.pgm")
+        yaml_path = os.path.join(out_dir, f"{filename}.yaml")
+
+        with open(pgm_path, "wb") as f:
+            f.write(f"P5\n{w} {h}\n255\n".encode())
+            for row in range(h - 1, -1, -1):
+                for col in range(w):
+                    cell = data[row * w + col]
+                    if cell < 0:
+                        px = 205
+                    else:
+                        px = max(0, min(255, 255 - int(cell * 255 / 100)))
+                    f.write(struct.pack("B", px))
+
+        yaml_content = (
+            f"image: {pgm_path}\n"
+            f"resolution: {res}\n"
+            f"origin: [{ox}, {oy}, 0.0]\n"
+            "negate: 0\n"
+            "occupied_thresh: 0.65\n"
+            "free_thresh: 0.196\n"
+        )
+        with open(yaml_path, "w") as f:
+            f.write(yaml_content)
+
+        self.get_logger().info(f"Map saved to {yaml_path}")
+        return True, yaml_path
+
+    # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
+
+    def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        if not self._nav_client.server_is_ready():
+            if not self._nav_client.wait_for_server(timeout_sec=3.5):
+                hint = self._nav_diagnostic_hint()
+                self._update_nav_state("unavailable", hint)
+                return False, hint
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose.header.frame_id = "map"
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_msg.pose.pose.position.x = float(x)
+        goal_msg.pose.pose.position.y = float(y)
+        half = float(yaw) / 2.0
+        goal_msg.pose.pose.orientation.z = math.sin(half)
+        goal_msg.pose.pose.orientation.w = math.cos(half)
+        with self._nav_lock:
+            self._nav_goal = {"x": float(x), "y": float(y), "yaw": float(yaw)}
+            self._nav_feedback = {}
+        self._update_nav_state("sending", "goal dispatched")
+        future = self._nav_client.send_goal_async(goal_msg, feedback_callback=self._on_nav_feedback)
+        future.add_done_callback(self._on_nav_response)
+        return True, "goal dispatched"
+
+    def cancel_nav_goal(self) -> tuple[bool, str]:
+        with self._nav_lock:
+            handle = self._nav_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_nav_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_nav_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_nav(self) -> dict[str, Any]:
+        with self._nav_lock:
+            return {
+                "state": self._nav_state,
+                "message": self._nav_message,
+                "goal": dict(self._nav_goal) if self._nav_goal else None,
+                "feedback": dict(self._nav_feedback),
+                "server_ready": self._nav_client.server_is_ready(),
+                "visible_actions": self._visible_action_names(),
+            }
+
+    def _visible_action_names(self) -> list[str]:
+        try:
+            from rclpy.action import get_action_names_and_types  # local import to avoid hard dep at module load
+            pairs = get_action_names_and_types(self)
+            return sorted(name for name, _types in pairs)
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _nav_diagnostic_hint(self) -> str:
+        actions = self._visible_action_names()
+        if not actions:
+            return (
+                "/navigate_to_pose action server not discoverable. "
+                "Is nav2 running? (docker compose --profile navigation up -d). "
+                "Also check ROS_DOMAIN_ID and DDS profile match between bridge and nav2."
+            )
+        nav_like = [a for a in actions if "navigate" in a.lower()]
+        if nav_like:
+            return (
+                f"navigate_to_pose action not ready. Discovered similar action names: {', '.join(nav_like)}. "
+                "Either the lifecycle manager hasn't activated bt_navigator yet, or the action is namespaced."
+            )
+        return (
+            f"navigate_to_pose action not ready. {len(actions)} actions visible "
+            f"({', '.join(actions[:6])}{'…' if len(actions) > 6 else ''}). "
+            "Likely nav2 stack is down."
+        )
+
+    def _update_nav_state(self, state: str, message: str = "") -> None:
+        with self._nav_lock:
+            self._nav_state = state
+            self._nav_message = message
+
+    def _on_nav_feedback(self, feedback_msg: Any) -> None:
+        try:
+            fb = feedback_msg.feedback
+            payload = {
+                "distance_remaining": float(getattr(fb, "distance_remaining", 0.0)),
+                "navigation_time": float(getattr(fb.navigation_time, "sec", 0))
+                + float(getattr(fb.navigation_time, "nanosec", 0)) * 1e-9,
+                "estimated_time_remaining": float(getattr(fb.estimated_time_remaining, "sec", 0))
+                + float(getattr(fb.estimated_time_remaining, "nanosec", 0)) * 1e-9,
+                "recoveries": int(getattr(fb, "number_of_recoveries", 0)),
+            }
+        except Exception:  # noqa: BLE001
+            payload = {}
+        with self._nav_lock:
+            self._nav_feedback = payload
+            if self._nav_state in ("sending", "accepted"):
+                self._nav_state = "navigating"
+                self._nav_message = "executing"
+
+    def _on_nav_response(self, future: Any) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"send error: {exc}")
+            return
+        if not goal_handle.accepted:
+            self._update_nav_state("rejected", "goal rejected by server")
+            return
+        with self._nav_lock:
+            self._nav_goal_handle = goal_handle
+            self._nav_state = "accepted"
+            self._nav_message = "goal accepted"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._on_nav_result)
+
+    def _on_nav_result(self, future: Any) -> None:
+        try:
+            wrapped = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"result error: {exc}")
+            with self._nav_lock:
+                self._nav_goal_handle = None
+            return
+        status_map = {
+            GoalStatus.STATUS_SUCCEEDED: ("succeeded", "goal reached"),
+            GoalStatus.STATUS_ABORTED: ("aborted", "goal aborted"),
+            GoalStatus.STATUS_CANCELED: ("canceled", "goal canceled"),
+        }
+        state, message = status_map.get(wrapped.status, ("failed", f"status {wrapped.status}"))
+        with self._nav_lock:
+            self._nav_state = state
+            self._nav_message = message
+            self._nav_goal_handle = None
+
+    def _on_nav_cancel_response(self, future: Any) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._update_nav_state("failed", f"cancel error: {exc}")
+            return
+        if not getattr(response, "goals_canceling", None):
+            self._update_nav_state("canceled", "no active goal to cancel")
+            with self._nav_lock:
+                self._nav_goal_handle = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -259,6 +483,10 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_pose())
             elif path == "/api/health":
                 self._json(node.snapshot_health())
+            elif path == "/api/nav/status":
+                self._json(node.snapshot_nav())
+            elif path == "/api/motion/state":
+                self._json({"state": node.snapshot_motion_state()})
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -320,6 +548,20 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                     self.wfile.write(str(exc).encode())
                     return
                 self._json({"ok": True, "action": "arm_trajectory"})
+            elif path == "/api/nav/goal":
+                ok, msg = node.send_nav_goal(
+                    float(body.get("x", 0.0)),
+                    float(body.get("y", 0.0)),
+                    float(body.get("yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "nav_goal", "message": msg})
+            elif path == "/api/nav/cancel":
+                ok, msg = node.cancel_nav_goal()
+                self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/map/save":
+                filename = str(body.get("filename", "arena_map"))
+                ok, msg = node.save_map(filename=filename)
+                self._json({"ok": ok, "action": "map_save", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()

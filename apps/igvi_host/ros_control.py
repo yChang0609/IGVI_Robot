@@ -11,12 +11,15 @@ from .models import (
     ArmTrajectoryRequest,
     CmdVelRequest,
     ImageTopicsResponse,
+    NavGoalRequest,
+    NavStatusResponse,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
     RosServiceCallRequest,
+    SaveMapResponse,
 )
 
 
@@ -24,13 +27,13 @@ class RosbridgeClient:
     def __init__(self, settings: HostSettings):
         self.settings = settings
 
-    def _bridge_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _bridge_post(self, path: str, payload: dict[str, Any], timeout: float = 2.0) -> dict[str, Any]:
         url = self.settings.bridge_url.rstrip("/") + path
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
 
     async def _send(self, payload: dict[str, Any]) -> None:
@@ -150,5 +153,55 @@ class RosbridgeClient:
             {"positions": request.positions, "time_from_start": request.time_from_start},
         )
         return RosActionResponse(ok=True, action="arm_trajectory", message="arm trajectory published")
+
+    async def send_nav_goal(self, request: NavGoalRequest) -> RosActionResponse:
+        # Bridge may block up to 3.5s in wait_for_server; allow some slack.
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/nav/goal",
+            {"x": request.x, "y": request.y, "yaw": request.yaw},
+            6.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="nav_goal",
+            message=str(result.get("message", "")),
+        )
+
+    async def cancel_nav_goal(self) -> RosActionResponse:
+        result = await asyncio.to_thread(self._bridge_post, "/api/nav/cancel", {}, 4.0)
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="nav_cancel",
+            message=str(result.get("message", "")),
+        )
+
+    async def save_map(self, filename: str = "arena_map") -> SaveMapResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/map/save", {"filename": filename}, 10.0,
+        )
+        return SaveMapResponse(
+            ok=bool(result.get("ok", False)),
+            message=str(result.get("message", "")),
+            path=str(result.get("message", "")) if result.get("ok") else "",
+        )
+
+    async def get_nav_status(self) -> NavStatusResponse:
+        return await asyncio.to_thread(self._fetch_nav_status)
+
+    def _fetch_nav_status(self) -> NavStatusResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/nav/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return NavStatusResponse(
+                state=str(data.get("state", "idle")),
+                message=str(data.get("message", "")),
+                server_ready=bool(data.get("server_ready", False)),
+                goal=data.get("goal"),
+                feedback=dict(data.get("feedback") or {}),
+                visible_actions=list(data.get("visible_actions") or []),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
 

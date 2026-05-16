@@ -152,3 +152,15 @@ class HostClient:
             "/api/ros/arm/trajectory",
             {"positions": positions, "time_from_start": time_from_start},
         )
+
+    def nav_goal(self, x: float, y: float, yaw: float = 0.0) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/nav/goal", {"x": x, "y": y, "yaw": yaw}, timeout=8.0)
+
+    def nav_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/nav/cancel", {}, timeout=5.0)
+
+    def nav_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/nav/status")
+
+    def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
+        return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)
