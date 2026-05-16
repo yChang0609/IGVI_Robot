@@ -80,7 +80,7 @@ class MotionArbiter(Node):
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
-        self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
 
         output_topic = str(self.get_parameter("output_topic").value)
         self._cmd_pub = self.create_publisher(TwistStamped, output_topic, 10)

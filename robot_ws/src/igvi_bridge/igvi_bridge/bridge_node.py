@@ -61,7 +61,7 @@ class BridgeNode(Node):
         self._nav_feedback: dict[str, float] = {}
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
-        self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
