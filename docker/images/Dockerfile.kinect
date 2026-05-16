@@ -4,6 +4,21 @@ ENV ROS_DISTRO=jazzy
 # 避免安裝過程中的互動提示
 ENV DEBIAN_FRONTEND=noninteractive
 
+# --- Pin ROS 2 apt to a fixed, internally-consistent snapshot (2026-04-13) ---
+# Prevents the Fast-CDR/typesupport ABI mismatch (undefined
+# eprosima::fastcdr::Cdr::serialize* -> exit 127 when serializing ROS msgs).
+# Must run before any ROS apt install / rosdep / colcon below. Snapshot repo
+# is signed by ROS Snapshot builder key 0xAD19BAB3CBF125EA.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg && \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0xAD19BAB3CBF125EA" \
+      | gpg --dearmor -o /usr/share/keyrings/ros-snapshots.gpg && \
+    rm -f /etc/apt/sources.list.d/ros2.list /etc/apt/sources.list.d/ros2-latest.list && \
+    printf 'Types: deb\nURIs: http://snapshots.ros.org/jazzy/2026-04-13/ubuntu\nSuites: noble\nComponents: main\nSigned-By: /usr/share/keyrings/ros-snapshots.gpg\n' \
+      > /etc/apt/sources.list.d/ros2.sources && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+
 # 1. 安裝編譯 SDK 與 ROS 2 驅動所需的依賴工具
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build pkg-config \

@@ -53,6 +53,8 @@ global_costmap:
       use_sim_time: false
       robot_radius: 0.22
       resolution: 0.05
+      initial_transform_timeout: 120.0
+      transform_tolerance: 1.0
       map_subscribe_transient_local: true
       map_topic: /map
       plugins: ["static_layer", "inflation_layer"]
