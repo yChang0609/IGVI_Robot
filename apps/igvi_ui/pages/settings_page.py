@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -41,6 +43,70 @@ class _ImuCalibrationPoller(QThread):
             except Exception as exc:  # noqa: BLE001
                 self.error.emit(str(exc))
             self.msleep(1200)
+
+
+class _ImuCalibrationDialog(QDialog):
+    """Modal dialog showing calibration countdown with cancel."""
+
+    def __init__(self, duration: float, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("IMU Calibration")
+        self.setMinimumWidth(360)
+        self._duration = duration
+        self._remaining = duration
+        self._state = "waiting"
+
+        layout = QVBoxLayout(self)
+        self._info_label = QLabel(
+            f"Keep the robot still.\nCalibration window: {duration:.0f} seconds."
+        )
+        self._info_label.setWordWrap(True)
+        layout.addWidget(self._info_label)
+
+        self._state_label = QLabel("State: Waiting...")
+        layout.addWidget(self._state_label)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, int(duration))
+        self._progress.setValue(0)
+        self._progress.setFormat("%vs remaining")
+        layout.addWidget(self._progress)
+
+        self._bias_label = QLabel("Bias: --")
+        layout.addWidget(self._bias_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self._cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def update_status(self, status: dict) -> None:
+        state = str(status.get("state") or "waiting")
+        self._state = state
+        remaining = float(status.get("manual_remaining_s") or 0.0)
+        self._remaining = remaining
+        elapsed = self._duration - remaining
+        self._progress.setValue(int(max(0, remaining)))
+        self._progress.setFormat(f"{remaining:.1f}s remaining")
+
+        state_text = _IMU_STATE_LABELS.get(state, state.title())
+        self._state_label.setText(f"State: {state_text}")
+
+        bias = status.get("gyro_bias") or []
+        if len(bias) == 3:
+            self._bias_label.setText(
+                f"Bias: [{bias[0]:.6f}, {bias[1]:.6f}, {bias[2]:.6f}]"
+            )
+
+        if state == "converged":
+            self._info_label.setText("Calibration converged!")
+            self._cancel_btn.setText("Close")
+            self.accept()
+        elif remaining <= 0.0 and elapsed > 1.0:
+            self._info_label.setText("Calibration window ended.")
+            self._cancel_btn.setText("Close")
 
 
 _IMU_STATE_LABELS = {
@@ -397,6 +463,10 @@ class SettingsPage(QWidget):
         style = _IMU_STATE_STYLES.get(state, "muted")
         self.imu_status_badge.set_state(f"IMU calibration: {label}", style)
 
+        dialog = getattr(self, "_calib_dialog", None)
+        if dialog is not None:
+            dialog.update_status(status)
+
         bias = status.get("gyro_bias") or []
         if state == "converged" and prev_state != "converged":
             self._prompt_save_on_converged()
@@ -428,6 +498,12 @@ class SettingsPage(QWidget):
             return
         self.imu_status_badge.set_state("IMU calibration: Waiting", "warn")
         self.imu_status_detail.setText("Keep the robot still while the calibration window is active.")
+        self._calib_dialog = _ImuCalibrationDialog(30.0, parent=self)
+        self._calib_dialog.finished.connect(self._on_calib_dialog_closed)
+        self._calib_dialog.open()
+
+    def _on_calib_dialog_closed(self) -> None:
+        self._calib_dialog = None
 
     def _prompt_save_on_converged(self) -> None:
         reply = QMessageBox.question(
