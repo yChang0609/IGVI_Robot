@@ -8,6 +8,7 @@ x-base-service: &base_service
 
 x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
+x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/workspaces/src/igvi_imu/igvi_imu:ro
 
 services:
   slam_localization:
@@ -22,6 +23,7 @@ services:
     volumes:
       - *config_volume
       - *launch_volume
+      - *igvi_imu_volume
       - ../../../data/slam:/root/.ros
     command:
       - /bin/bash
