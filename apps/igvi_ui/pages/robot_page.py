@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.widgets.arm_control import ArmControl
 from igvi_ui.widgets.image_view import ImageView
@@ -312,10 +313,19 @@ class RobotPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
-        if self._poller:
-            self._poller.stop()
-            self._poller.wait(1000)
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        """Stop this page's poller and cascade to thread-owning children.
+
+        Idempotent; called from hideEvent and from MainWindow.closeEvent so no
+        QThread outlives the QApplication.
+        """
+        if self._poller is not None:
+            stop_thread(self._poller)
             self._poller = None
+        self.image_view.shutdown()
+        self.nav_control.shutdown()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

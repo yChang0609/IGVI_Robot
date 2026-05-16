@@ -102,7 +102,13 @@ class Map2DView(QWidget):
             painter.fillRect(self.rect(), QColor(0, 0, 0, 55))
             font = painter.font()
             font.setBold(True)
-            font.setPointSize(font.pointSize() + 1)
+            # The painter's font may be pixel-sized (pointSize() == -1 with the
+            # app stylesheet); -1 + 1 == 0 spams "QFont::setPointSize <= 0".
+            point_size = font.pointSize()
+            if point_size > 0:
+                font.setPointSize(point_size + 1)
+            else:
+                font.setPixelSize(max(13, font.pixelSize() + 2))
             painter.setFont(font)
             painter.setPen(QColor("#f59e0b"))
             banner = self.rect().adjusted(0, 6, 0, 0)

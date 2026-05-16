@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 
 _STATE_TONE = {
@@ -121,9 +122,12 @@ class NavigationControl(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
-        if self._poller:
-            self._poller.stop()
-            self._poller.wait(1000)
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        """Stop the status poller. Idempotent; safe to call on app exit."""
+        if self._poller is not None:
+            stop_thread(self._poller)
             self._poller = None
 
     # ── Slots ─────────────────────────────────────────────────────────────────
