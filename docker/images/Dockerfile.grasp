@@ -1,0 +1,17 @@
+FROM ghcr.io/screamlab/wildbot_base_image:latest
+ENV ROS_DISTRO=jazzy
+
+WORKDIR /workspace
+
+# Build wildbot_grasp once into /workspace/install. The compose service mounts
+# robot_ws/src/wildbot_grasp back onto this same source path, so Python-only
+# changes can be picked up by restarting the container instead of rebuilding.
+COPY robot_ws/src/wildbot_grasp src/wildbot_grasp
+
+RUN /bin/bash -lc "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build --symlink-install --packages-select wildbot_grasp"
+
+CMD ["/bin/bash", "-lc", \
+     "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+      source /workspace/install/setup.bash && \
+      ros2 run wildbot_grasp grab_object_server"]

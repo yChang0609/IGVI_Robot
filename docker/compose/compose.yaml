@@ -9,6 +9,7 @@ include:
   - services/igvi_bridge.yaml
   - services/nav2.yaml
   - services/motion_arbiter.yaml
+  - services/wildbot_grasp.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 

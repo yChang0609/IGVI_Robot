@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from wildbot_grasp_nodes.grab_object_server import main
+
+
+if __name__ == "__main__":
+    main()

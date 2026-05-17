@@ -16,6 +16,7 @@ from .docker_clients import (
     DockerUnavailableError,
 )
 from .models import (
+    ArmTemperaturesResponse,
     ArmTrajectoryRequest,
     CmdVelRequest,
     ComposeActionRequest,
@@ -285,6 +286,11 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         if payload is None:
             return Response(status_code=204, headers=headers)
         return Response(content=payload, media_type="image/jpeg", headers=headers)
+
+
+    @app.get("/api/ros/arm/temperatures", response_model=ArmTemperaturesResponse)
+    async def ros_arm_temperatures() -> ArmTemperaturesResponse:
+        return await run_ros(lambda client: client.get_arm_temperatures())
 
     @app.post("/api/ros/arm/trajectory", response_model=RosActionResponse)
     async def ros_arm_trajectory(request: ArmTrajectoryRequest) -> RosActionResponse:

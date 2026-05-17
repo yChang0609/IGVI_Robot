@@ -20,7 +20,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -60,9 +60,14 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
 
+        self._arm_temp_lock = threading.Lock()
+        self._arm_temperatures: list[float] = []
+        self._arm_temperature_stamp_sec: float | None = None
+
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        self.create_subscription(Float64MultiArray, "/arm_joint_temperatures", self._on_arm_temperatures, 10)
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
@@ -125,6 +130,12 @@ class BridgeNode(Node):
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
         self._motion_state = str(getattr(msg, "data", ""))
 
+    def _on_arm_temperatures(self, msg: Float64MultiArray) -> None:
+        now = self.get_clock().now().nanoseconds / 1_000_000_000.0
+        with self._arm_temp_lock:
+            self._arm_temperatures = [float(value) for value in msg.data]
+            self._arm_temperature_stamp_sec = now
+
     def _on_image(self, msg: Image) -> None:
         jpeg = _encode_jpeg(msg)
         if jpeg is None:
@@ -166,6 +177,20 @@ class BridgeNode(Node):
 
     def snapshot_motion_state(self) -> str:
         return self._motion_state
+
+    def snapshot_arm_temperatures(self) -> dict[str, Any]:
+        with self._arm_temp_lock:
+            temperatures = list(self._arm_temperatures)
+            stamp_sec = self._arm_temperature_stamp_sec
+        gripper_index = 2
+        gripper_temperature = temperatures[gripper_index] if gripper_index < len(temperatures) else None
+        return {
+            "ok": bool(temperatures),
+            "temperatures": temperatures,
+            "gripper_index": gripper_index,
+            "gripper_temperature": gripper_temperature,
+            "stamp_sec": stamp_sec,
+        }
 
     def publish_goal_pose(self, x: float, y: float, yaw: float, frame_id: str = "map") -> None:
         msg = PoseStamped()
@@ -487,6 +512,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_nav())
             elif path == "/api/motion/state":
                 self._json({"state": node.snapshot_motion_state()})
+            elif path == "/api/arm/temperatures":
+                self._json(node.snapshot_arm_temperatures())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":

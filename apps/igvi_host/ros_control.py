@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import HostSettings
 from .models import (
+    ArmTemperaturesResponse,
     ArmTrajectoryRequest,
     CmdVelRequest,
     ImageTopicsResponse,
@@ -144,6 +145,25 @@ class RosbridgeClient:
                 if r.status == 204:
                     return None, active
                 return r.read(), active
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+
+    async def get_arm_temperatures(self) -> ArmTemperaturesResponse:
+        return await asyncio.to_thread(self._fetch_arm_temperatures)
+
+    def _fetch_arm_temperatures(self) -> ArmTemperaturesResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/arm/temperatures"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return ArmTemperaturesResponse(
+                ok=bool(data.get("ok", False)),
+                temperatures=[float(value) for value in data.get("temperatures", [])],
+                gripper_index=int(data.get("gripper_index", 2)),
+                gripper_temperature=data.get("gripper_temperature"),
+                stamp_sec=data.get("stamp_sec"),
+            )
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 

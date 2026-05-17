@@ -146,6 +146,10 @@ class HostClient:
         except OSError as exc:
             raise HostClientError(str(exc)) from exc
 
+
+    def arm_temperatures(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/arm/temperatures")
+
     def arm_trajectory(self, positions: list[float], time_from_start: float = 0.3) -> dict[str, Any]:
         return self.request(
             "POST",

@@ -1,0 +1,13 @@
+# High-level grasp request.
+# The server moves to the calibrated grasp pose, checks whether the object was held,
+# then moves to the calibrated place/release pose.
+string object_label
+float32 distance_m
+---
+bool success
+bool object_grasped
+string message
+---
+string stage
+float32 progress
+string detail

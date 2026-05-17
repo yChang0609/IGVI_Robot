@@ -326,6 +326,7 @@ class RobotPage(QWidget):
             self._poller = None
         self.image_view.shutdown()
         self.nav_control.shutdown()
+        self.arm_control.shutdown()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

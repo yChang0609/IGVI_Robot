@@ -142,6 +142,16 @@ class ImageTopicsResponse(BaseModel):
     topics: list[str] = Field(default_factory=list)
 
 
+
+
+class ArmTemperaturesResponse(BaseModel):
+    ok: bool = False
+    temperatures: list[float] = Field(default_factory=list)
+    gripper_index: int = 2
+    gripper_temperature: float | None = None
+    stamp_sec: float | None = None
+
+
 class ArmTrajectoryRequest(BaseModel):
     positions: list[float]
     time_from_start: float = 0.3

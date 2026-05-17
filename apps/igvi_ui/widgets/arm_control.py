@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QCoreApplication, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 
 # Joint limits in degrees (matched to physical mechanism)
@@ -33,9 +34,34 @@ DEFAULT_GRIPPER = GRIPPER_MAX
 ARM_RATE_DEG_PER_SEC = 25.0
 TICK_MS = 80
 TRAJ_TIME_FROM_START = 0.25
+TEMP_WARN_C = 60.0
+TEMP_MAX_C = 68.0
 
 # u/j → arm_1 ; i/k → arm_2 ; o open / l close gripper
 _HELD_KEYS = {Qt.Key.Key_U, Qt.Key.Key_J, Qt.Key.Key_I, Qt.Key.Key_K}
+
+
+
+
+class _TemperaturePoller(QThread):
+    temperatures_received = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, client: HostClient) -> None:
+        super().__init__()
+        self.client = client
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:
+        while self._running:
+            try:
+                self.temperatures_received.emit(self.client.arm_temperatures())
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(str(exc))
+            self.msleep(1000)
 
 
 class ArmControl(QWidget):
@@ -57,6 +83,7 @@ class ArmControl(QWidget):
         self._retract_timer = QTimer(self)
         self._retract_timer.setSingleShot(True)
         self._retract_timer.timeout.connect(self._do_retract)
+        self._temperature_poller: _TemperaturePoller | None = None
         self._build_ui()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._refresh_labels()
@@ -79,6 +106,11 @@ class ArmControl(QWidget):
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        self.temperature_label = QLabel("Temperatures —")
+        self.temperature_label.setObjectName("Muted")
+        self.temperature_label.setWordWrap(True)
+        layout.addWidget(self.temperature_label)
 
         self.arm1_slider, self.arm1_label = self._slider_row(
             "arm_1", ARM1_MIN, ARM1_MAX, DEFAULT_ARM1, lambda v: self._set_arm1(float(v), publish=True)
@@ -178,11 +210,58 @@ class ArmControl(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         QCoreApplication.instance().installEventFilter(self)
+        if self._temperature_poller is None:
+            self._temperature_poller = _TemperaturePoller(self.client)
+            self._temperature_poller.temperatures_received.connect(self._on_temperatures)
+            self._temperature_poller.error.connect(self._on_temperature_error)
+            self._temperature_poller.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         QCoreApplication.instance().removeEventFilter(self)
         self._exit_keyboard_mode()
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        if self._temperature_poller is not None:
+            stop_thread(self._temperature_poller)
+            self._temperature_poller = None
+
+
+    def _on_temperatures(self, data: dict) -> None:
+        temperatures = [float(value) for value in data.get("temperatures") or []]
+        if not data.get("ok") or not temperatures:
+            self.temperature_label.setText("Temperatures unavailable")
+            self.temperature_label.setStyleSheet("color: #94a3b8;")
+            return
+
+        names = ["arm_1", "arm_2", "gripper"]
+        parts = []
+        for index, value in enumerate(temperatures):
+            name = names[index] if index < len(names) else f"joint_{index + 1}"
+            parts.append(f"{name} {value:.1f}°C")
+
+        gripper_index = int(data.get("gripper_index", 2))
+        gripper_temp = temperatures[gripper_index] if gripper_index < len(temperatures) else None
+        if gripper_temp is None or math.isnan(gripper_temp):
+            tone = "#94a3b8"
+            state = "unknown"
+        elif gripper_temp >= TEMP_MAX_C:
+            tone = "#ef4444"
+            state = "overheat"
+        elif gripper_temp >= TEMP_WARN_C:
+            tone = "#fbbf24"
+            state = "warm"
+        else:
+            tone = "#22c55e"
+            state = "ok"
+
+        self.temperature_label.setText("Temperatures: " + "  ·  ".join(parts) + f"  ·  gripper {state}")
+        self.temperature_label.setStyleSheet(f"font-weight: 600; color: {tone};")
+
+    def _on_temperature_error(self, message: str) -> None:
+        self.temperature_label.setText(f"Temperatures unavailable: {message}")
+        self.temperature_label.setStyleSheet("color: #ef4444;")
 
     # ── Keyboard mode toggle ──────────────────────────────────────────────────
 
