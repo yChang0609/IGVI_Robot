@@ -5,12 +5,15 @@ import json
 import math
 import os
 import struct
+import tempfile
 import threading
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+import yaml
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
@@ -38,6 +41,9 @@ _MAP_QOS = QoSProfile(
 ARM_JOINT_NAMES = ["arm_1_joint", "arm_2_joint", "gripper_joint"]
 JPEG_MAX_WIDTH = 800
 JPEG_QUALITY = 70
+# Persisted next to saved maps (/maps is the bridge's only writable volume;
+# /configs is mounted read-only). Survives container restarts.
+WAYPOINTS_PATH = "/maps/waypoints.yaml"
 
 
 class BridgeNode(Node):
@@ -60,6 +66,9 @@ class BridgeNode(Node):
         self._nav_goal_handle = None
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
+
+        self._waypoints_lock = threading.Lock()
+        self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
 
         self._imu_lock = threading.Lock()
         self._imu_calibration_status: dict[str, Any] = {
@@ -341,6 +350,100 @@ class BridgeNode(Node):
         done.wait(timeout=3.0)
         return bool(result["ok"]), str(result["message"])
 
+    # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
+
+    def _load_waypoints(self) -> dict[str, dict[str, float]]:
+        try:
+            with open(WAYPOINTS_PATH) as f:
+                data = yaml.safe_load(f) or {}
+        except (FileNotFoundError, OSError, yaml.YAMLError):
+            return {}
+        raw = data.get("waypoints") if isinstance(data, dict) else None
+        out: dict[str, dict[str, float]] = {}
+        if isinstance(raw, dict):
+            for name, pose in raw.items():
+                if not isinstance(pose, dict):
+                    continue
+                out[str(name)] = {
+                    "x": float(pose.get("x", 0.0)),
+                    "y": float(pose.get("y", 0.0)),
+                    "yaw": float(pose.get("yaw", 0.0)),
+                }
+        return out
+
+    def _write_waypoints(self) -> None:
+        """Atomic write; caller must hold _waypoints_lock."""
+        os.makedirs(os.path.dirname(WAYPOINTS_PATH), exist_ok=True)
+        payload = yaml.dump({"waypoints": self._waypoints}, default_flow_style=False)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(WAYPOINTS_PATH), suffix=".yaml"
+        )
+        try:
+            os.write(tmp_fd, payload.encode())
+            os.close(tmp_fd)
+            os.replace(tmp_path, WAYPOINTS_PATH)
+        except Exception:
+            with suppress(OSError):
+                os.close(tmp_fd)
+            with suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    def list_waypoints(self) -> dict[str, dict[str, float]]:
+        with self._waypoints_lock:
+            return {k: dict(v) for k, v in self._waypoints.items()}
+
+    def save_waypoint(
+        self,
+        name: str,
+        x: float | None = None,
+        y: float | None = None,
+        yaw: float | None = None,
+    ) -> tuple[bool, str]:
+        name = str(name).strip()
+        if not name:
+            return False, "waypoint name is required"
+        if x is None or y is None:
+            # "Mark where I am": snapshot the current map-frame pose.
+            pose = self.snapshot_pose()
+            wp = {
+                "x": float(pose["x"]),
+                "y": float(pose["y"]),
+                "yaw": float(pose["yaw"]),
+            }
+        else:
+            wp = {"x": float(x), "y": float(y), "yaw": float(yaw or 0.0)}
+        with self._waypoints_lock:
+            self._waypoints[name] = wp
+            try:
+                self._write_waypoints()
+            except OSError as exc:
+                del self._waypoints[name]
+                return False, f"failed to persist waypoint: {exc}"
+        return True, f"saved waypoint '{name}'"
+
+    def delete_waypoint(self, name: str) -> tuple[bool, str]:
+        name = str(name).strip()
+        with self._waypoints_lock:
+            if name not in self._waypoints:
+                return False, f"no waypoint named '{name}'"
+            removed = self._waypoints.pop(name)
+            try:
+                self._write_waypoints()
+            except OSError as exc:
+                self._waypoints[name] = removed
+                return False, f"failed to persist deletion: {exc}"
+        return True, f"deleted waypoint '{name}'"
+
+    def goto_waypoint(self, name: str) -> tuple[bool, str]:
+        name = str(name).strip()
+        with self._waypoints_lock:
+            wp = self._waypoints.get(name)
+            wp = dict(wp) if wp else None
+        if wp is None:
+            return False, f"no waypoint named '{name}'"
+        return self.send_nav_goal(wp["x"], wp["y"], wp["yaw"])
+
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
     def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
@@ -602,6 +705,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/waypoints":
+                self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
                 self._json({"state": node.snapshot_motion_state()})
             elif path == "/api/imu/calibration":
@@ -677,6 +782,22 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/nav/cancel":
                 ok, msg = node.cancel_nav_goal()
                 self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/waypoints/save":
+                x = body.get("x")
+                y = body.get("y")
+                ok, msg = node.save_waypoint(
+                    str(body.get("name", "")),
+                    None if x is None else float(x),
+                    None if y is None else float(y),
+                    float(body.get("yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "waypoint_save", "message": msg})
+            elif path == "/api/waypoints/delete":
+                ok, msg = node.delete_waypoint(str(body.get("name", "")))
+                self._json({"ok": ok, "action": "waypoint_delete", "message": msg})
+            elif path == "/api/waypoints/goto":
+                ok, msg = node.goto_waypoint(str(body.get("name", "")))
+                self._json({"ok": ok, "action": "waypoint_goto", "message": msg})
             elif path == "/api/map/save":
                 filename = str(body.get("filename", "arena_map"))
                 ok, msg = node.save_map(filename=filename)
