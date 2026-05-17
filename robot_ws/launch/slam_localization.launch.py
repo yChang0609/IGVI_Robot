@@ -105,6 +105,12 @@ def generate_launch_description():
             'subscribe_rgb':             True,
             'subscribe_scan':            False,
             'approx_sync':               True,
+            # Kinect frames arrive ~475 ms after their timestamp (driver +
+            # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
+            # 200 ms of history → odom messages matching the camera stamp are
+            # dropped before the frame arrives. 100 = 2 s of backlog, plenty.
+            'sync_queue_size':           100,
+            'topic_queue_size':          100,
             'Mem/IncrementalMemory':     'False',
             'Mem/InitWMWithAllNodes':    'True',
             'Reg/Strategy':              '0',
@@ -117,6 +123,16 @@ def generate_launch_description():
             'Grid/MinGroundHeight':      '-0.1',
             'Mem/UseOdomGravity':        'true',
             'Optimizer/GravitySigma':    '0.25',
+            'RTAB-Map/TimeThr':          '0',
+            'RTAB-Map/DetectionRate':    '5.0',   # start at 5 Hz; raise toward 10 only if CPU/latency allows
+            'Mem/STMSize':               '10',    # localization needs little short-term memory
+            'RGBD/LinearUpdate':         '0.05',  # re-localize every 5 cm
+            'RGBD/AngularUpdate':        '0.02',  # re-localize every ~1.1°
+            # Localization mode adds no new nodes, so /map only republishes on
+            # loop closure. These force the full stored grid to be pushed every
+            # cycle, so Foxglove sees the whole arena from startup.
+            'map_always_update':         True,
+            'map_empty_ray_tracing':     True,
         }],
         remappings=[
             ('rgb/image',       '/rgb/image_raw'),

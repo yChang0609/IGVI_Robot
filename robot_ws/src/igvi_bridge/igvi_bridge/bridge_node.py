@@ -25,6 +25,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, Float64MultiArray, String
+from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -112,6 +113,9 @@ class BridgeNode(Node):
         self._global_costmap_clear_client = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
         )
+        # RTAB-Map's backup service snapshots the active DB to <db_path>.back.
+        # Used by save_map() to freeze the live mapping into arena_map.db.
+        self._rtabmap_backup_client = self.create_client(EmptySrv, "/rtabmap/backup")
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
@@ -303,44 +307,45 @@ class BridgeNode(Node):
 
     # ── Map saving ────────────────────────────────────────────────────────────
 
-    def save_map(self, filename: str = "arena_map", out_dir: str = "/maps") -> tuple[bool, str]:
-        with self._lock:
-            snap = dict(self._map) if self._map else None
-        if snap is None:
-            return False, "no map data available"
-        w, h = int(snap["width"]), int(snap["height"])
-        res = float(snap["resolution"])
-        ox, oy = float(snap["origin_x"]), float(snap["origin_y"])
-        data = snap["data"]
+    def save_map(self, filename: str = "arena_map", out_dir: str = "/slam") -> tuple[bool, str]:
+        # Snapshot the active RTAB-Map DB into <db>.back, then copy it to
+        # <out_dir>/<filename>.db so localization can load it next boot.
+        # Requires slam_fusion's database_path to live on a host volume that's
+        # also mounted into this container at out_dir.
+        if not self._rtabmap_backup_client.wait_for_service(timeout_sec=2.0):
+            return False, "/rtabmap/backup service not available — is slam_fusion running?"
 
-        os.makedirs(out_dir, exist_ok=True)
-        pgm_path = os.path.join(out_dir, f"{filename}.pgm")
-        yaml_path = os.path.join(out_dir, f"{filename}.yaml")
+        done = threading.Event()
+        result: dict[str, Any] = {"ok": False, "message": "/rtabmap/backup timed out"}
+        future = self._rtabmap_backup_client.call_async(EmptySrv.Request())
 
-        with open(pgm_path, "wb") as f:
-            f.write(f"P5\n{w} {h}\n255\n".encode())
-            for row in range(h - 1, -1, -1):
-                for col in range(w):
-                    cell = data[row * w + col]
-                    if cell < 0:
-                        px = 205
-                    else:
-                        px = max(0, min(255, 255 - int(cell * 255 / 100)))
-                    f.write(struct.pack("B", px))
+        def _finished(_future: Any) -> None:
+            try:
+                _future.result()
+                result["ok"] = True
+            except Exception as exc:  # noqa: BLE001
+                result["message"] = f"/rtabmap/backup failed: {exc}"
+            finally:
+                done.set()
 
-        yaml_content = (
-            f"image: {pgm_path}\n"
-            f"resolution: {res}\n"
-            f"origin: [{ox}, {oy}, 0.0]\n"
-            "negate: 0\n"
-            "occupied_thresh: 0.65\n"
-            "free_thresh: 0.196\n"
-        )
-        with open(yaml_path, "w") as f:
-            f.write(yaml_content)
+        future.add_done_callback(_finished)
+        if not done.wait(timeout=15.0) or not result["ok"]:
+            return False, str(result["message"])
 
-        self.get_logger().info(f"Map saved to {yaml_path}")
-        return True, yaml_path
+        backup_src = os.path.join(out_dir, "rtabmap.db.back")
+        dest = os.path.join(out_dir, f"{filename}.db")
+        if not os.path.exists(backup_src):
+            return False, f"backup ran but {backup_src} not found — check slam_fusion's database_path bind mount"
+
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            import shutil
+            shutil.copyfile(backup_src, dest)
+        except OSError as exc:
+            return False, f"copy to {dest} failed: {exc}"
+
+        self.get_logger().info(f"Arena map saved to {dest}")
+        return True, dest
 
     def clear_costmap(self, target: str = "local") -> tuple[bool, str]:
         if target == "global":

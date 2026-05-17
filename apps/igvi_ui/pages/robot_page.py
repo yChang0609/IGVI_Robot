@@ -282,7 +282,7 @@ class RobotPage(QWidget):
 
         self.control_tabs = QTabWidget()
         self.drive_control = _DriveControl(self.client, self.map_2d)
-        self.nav_control = NavigationControl(self.client)
+        self.nav_control = NavigationControl(self.client, self.map_2d)
         self.waypoint_control = WaypointControl(self.client, self.map_2d)
         self.arm_control = ArmControl(self.client)
         self.control_tabs.addTab(self.drive_control, "Drive")

@@ -14,9 +14,6 @@ services:
   slam_localization:
     <<: *base_service
     profiles: ["localization"]
-    depends_on:
-      imu_calibrator:
-        condition: service_started
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.fusion
@@ -34,7 +31,7 @@ services:
       - >-
         source /workspaces/install/setup.bash &&
         ros2 launch /workspace/launch/slam_localization.launch.py
-        database_path:=/root/.ros/rtabmap.db
+        database_path:=/root/.ros/arena_map.db
 
 networks:
   robot_net:
