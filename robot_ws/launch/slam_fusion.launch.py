@@ -119,6 +119,12 @@ def generate_launch_description():
         'subscribe_rgb':              True,
         'subscribe_scan':             False,  # depth camera handles mapping; scan only used for odometry
         'approx_sync':                True,
+        # Kinect frames arrive ~475 ms after their timestamp (driver +
+        # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
+        # 200 ms of history → odom messages matching the camera stamp are
+        # dropped before the frame arrives. 100 = 2 s of backlog.
+        'sync_queue_size':            100,
+        'topic_queue_size':           100,
         'Mem/IncrementalMemory':      'true',
         'Reg/Strategy':               '0',   # 0 = Visual (depth camera)
         'Reg/Force3DoF':              'true',
