@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -195,41 +198,125 @@ class SettingsPage(QWidget):
         outer.addStretch(1)
         self.tabs.addTab(page, "Host")
 
-    # ── Camera Extrinsics Tab ─────────────────────────────────────────────────
+    # ── Camera Tab ────────────────────────────────────────────────────────────
 
     def _build_camera_tab(self) -> None:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 8, 0, 0)
+        outer.setSpacing(0)
+
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Camera mount (base_link -> camera_base)"))
+        toolbar.setContentsMargins(14, 0, 14, 8)
+        auto_calib = QPushButton("Auto Calibrate Position")
+        auto_calib.clicked.connect(self._start_camera_auto_calibration)
+        toolbar.addWidget(auto_calib)
         toolbar.addStretch(1)
         save = QPushButton("Save")
         save.setObjectName("Primary")
         save.clicked.connect(self._save_calibration)
         toolbar.addWidget(save)
-        restart = QPushButton("Restart SLAM")
-        restart.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"]))
-        toolbar.addWidget(restart)
+        restart_kinect = QPushButton("Restart Kinect")
+        restart_kinect.clicked.connect(lambda: self._restart_services(["camera_kinect"]))
+        toolbar.addWidget(restart_kinect)
+        restart_slam = QPushButton("Restart SLAM")
+        restart_slam.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"]))
+        toolbar.addWidget(restart_slam)
         outer.addLayout(toolbar)
 
-        frame = QFrame()
-        frame.setObjectName("Panel")
-        form = QFormLayout(frame)
-        form.setContentsMargins(14, 14, 14, 14)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(14, 0, 14, 14)
+        vbox.setSpacing(10)
+
+        # ── Extrinsics ────────────────────────────────────────────────────────
+        lbl1 = QLabel("Position (base_link → camera_base)")
+        lbl1.setObjectName("Muted")
+        vbox.addWidget(lbl1)
+        extr = QFrame()
+        extr.setObjectName("Panel")
+        f1 = QFormLayout(extr)
+        f1.setContentsMargins(14, 14, 14, 14)
         self.cam_x = self._spin(-2.0, 2.0, 0.01, 4)
         self.cam_y = self._spin(-2.0, 2.0, 0.01, 4)
         self.cam_z = self._spin(-2.0, 2.0, 0.01, 4)
         self.cam_roll = self._spin(-3.15, 3.15, 0.01, 4)
         self.cam_pitch = self._spin(-3.15, 3.15, 0.01, 4)
         self.cam_yaw = self._spin(-3.15, 3.15, 0.01, 4)
-        form.addRow("X (m, forward+)", self.cam_x)
-        form.addRow("Y (m, left+)", self.cam_y)
-        form.addRow("Z (m, up+)", self.cam_z)
-        form.addRow("Roll (rad)", self.cam_roll)
-        form.addRow("Pitch (rad)", self.cam_pitch)
-        form.addRow("Yaw (rad)", self.cam_yaw)
-        outer.addWidget(frame)
-        outer.addStretch(1)
+        f1.addRow("X (m, forward+)", self.cam_x)
+        f1.addRow("Y (m, left+)", self.cam_y)
+        f1.addRow("Z (m, up+)", self.cam_z)
+        f1.addRow("Roll (rad)", self.cam_roll)
+        f1.addRow("Pitch (rad)", self.cam_pitch)
+        f1.addRow("Yaw (rad)", self.cam_yaw)
+        vbox.addWidget(extr)
+
+        # ── Kinect Image Mode ─────────────────────────────────────────────────
+        lbl2 = QLabel("Kinect Image Mode")
+        lbl2.setObjectName("Muted")
+        vbox.addWidget(lbl2)
+        mode_frame = QFrame()
+        mode_frame.setObjectName("Panel")
+        f2 = QFormLayout(mode_frame)
+        f2.setContentsMargins(14, 14, 14, 14)
+        self.kinect_resolution = QComboBox()
+        self.kinect_resolution.addItems(["720P", "1080P", "1440P", "1536P", "2160P", "3072P"])
+        self.kinect_depth_mode_combo = QComboBox()
+        self.kinect_depth_mode_combo.addItems(
+            ["NFOV_UNBINNED", "NFOV_2X2BINNED", "WFOV_UNBINNED", "WFOV_2X2BINNED", "PASSIVE_IR"]
+        )
+        self.kinect_fps_combo = QComboBox()
+        self.kinect_fps_combo.addItems(["5", "15", "30"])
+        self.kinect_backlight = QCheckBox()
+        self.kinect_powerline_combo = QComboBox()
+        self.kinect_powerline_combo.addItems(["50", "60"])
+        f2.addRow("Color resolution", self.kinect_resolution)
+        f2.addRow("Depth mode", self.kinect_depth_mode_combo)
+        f2.addRow("FPS", self.kinect_fps_combo)
+        f2.addRow("Backlight compensation", self.kinect_backlight)
+        f2.addRow("Powerline frequency (Hz)", self.kinect_powerline_combo)
+        vbox.addWidget(mode_frame)
+
+        # ── Exposure & Color ──────────────────────────────────────────────────
+        lbl3 = QLabel("Exposure & Color")
+        lbl3.setObjectName("Muted")
+        vbox.addWidget(lbl3)
+        exp_frame = QFrame()
+        exp_frame.setObjectName("Panel")
+        f3 = QFormLayout(exp_frame)
+        f3.setContentsMargins(14, 14, 14, 14)
+        self.kinect_auto_exposure, self.kinect_exposure_spin, exp_w = self._auto_int_row(
+            33333, 0, 1000000, "μs"
+        )
+        self.kinect_auto_gain, self.kinect_gain_spin, gain_w = self._auto_int_row(128, 0, 255)
+        self.kinect_auto_wb, self.kinect_wb_spin, wb_w = self._auto_int_row(4500, 2500, 12500, "K")
+        self.kinect_brightness_spin = QSpinBox()
+        self.kinect_brightness_spin.setRange(0, 255)
+        self.kinect_brightness_spin.setValue(128)
+        self.kinect_contrast_spin = QSpinBox()
+        self.kinect_contrast_spin.setRange(0, 10)
+        self.kinect_contrast_spin.setValue(5)
+        self.kinect_saturation_spin = QSpinBox()
+        self.kinect_saturation_spin.setRange(0, 63)
+        self.kinect_saturation_spin.setValue(32)
+        self.kinect_sharpness_spin = QSpinBox()
+        self.kinect_sharpness_spin.setRange(0, 4)
+        self.kinect_sharpness_spin.setValue(2)
+        f3.addRow("Exposure time", exp_w)
+        f3.addRow("Gain", gain_w)
+        f3.addRow("White balance", wb_w)
+        f3.addRow("Brightness", self.kinect_brightness_spin)
+        f3.addRow("Contrast", self.kinect_contrast_spin)
+        f3.addRow("Saturation", self.kinect_saturation_spin)
+        f3.addRow("Sharpness", self.kinect_sharpness_spin)
+        vbox.addWidget(exp_frame)
+
+        vbox.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
         self.tabs.addTab(page, "Camera")
 
     # ── Wheel Odometry Tab ────────────────────────────────────────────────────
@@ -346,6 +433,28 @@ class SettingsPage(QWidget):
         s.setDecimals(decimals)
         return s
 
+    @staticmethod
+    def _auto_int_row(
+        default: int, min_val: int, max_val: int, suffix: str = ""
+    ) -> tuple[QCheckBox, QSpinBox, QWidget]:
+        container = QWidget()
+        h = QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        auto_cb = QCheckBox("Auto")
+        auto_cb.setChecked(True)
+        spin = QSpinBox()
+        spin.setRange(min_val, max_val)
+        spin.setValue(default)
+        spin.setDisabled(True)
+        if suffix:
+            spin.setSuffix(f" {suffix}")
+        auto_cb.toggled.connect(lambda checked: spin.setDisabled(checked))
+        h.addWidget(auto_cb)
+        h.addWidget(spin)
+        h.addStretch(1)
+        return auto_cb, spin, container
+
     # ── Data ──────────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
@@ -386,6 +495,29 @@ class SettingsPage(QWidget):
         self.gyro_z.setValue(calib.get("gyro_bias_z", 0.0))
         self.ekf_freq.setValue(int(calib.get("ekf_frequency", 50)))
         self.ekf_timeout.setValue(calib.get("ekf_sensor_timeout", 0.2))
+        # kinect image mode
+        self.kinect_resolution.setCurrentText(str(calib.get("kinect_color_resolution", "720P")))
+        self.kinect_depth_mode_combo.setCurrentText(str(calib.get("kinect_depth_mode", "NFOV_UNBINNED")))
+        self.kinect_fps_combo.setCurrentText(str(calib.get("kinect_fps", 15)))
+        self.kinect_backlight.setChecked(bool(calib.get("kinect_backlight_compensation", False)))
+        self.kinect_powerline_combo.setCurrentText(str(calib.get("kinect_powerline_frequency", 60)))
+        # kinect exposure & color
+        exp_val = int(calib.get("kinect_exposure_time_absolute", -1))
+        self.kinect_auto_exposure.setChecked(exp_val < 0)
+        if exp_val >= 0:
+            self.kinect_exposure_spin.setValue(exp_val)
+        gain_val = int(calib.get("kinect_gain", -1))
+        self.kinect_auto_gain.setChecked(gain_val < 0)
+        if gain_val >= 0:
+            self.kinect_gain_spin.setValue(gain_val)
+        wb_val = int(calib.get("kinect_white_balance", -1))
+        self.kinect_auto_wb.setChecked(wb_val < 0)
+        if wb_val >= 0:
+            self.kinect_wb_spin.setValue(wb_val)
+        self.kinect_brightness_spin.setValue(int(calib.get("kinect_brightness", 128)))
+        self.kinect_contrast_spin.setValue(int(calib.get("kinect_contrast", 5)))
+        self.kinect_saturation_spin.setValue(int(calib.get("kinect_saturation", 32)))
+        self.kinect_sharpness_spin.setValue(int(calib.get("kinect_sharpness", 2)))
 
     def _save_host(self) -> None:
         payload = {
@@ -421,6 +553,24 @@ class SettingsPage(QWidget):
             "wheel_radius": self.wheel_radius.value(),
             "ekf_frequency": self.ekf_freq.value(),
             "ekf_sensor_timeout": self.ekf_timeout.value(),
+            "kinect_color_resolution": self.kinect_resolution.currentText(),
+            "kinect_depth_mode": self.kinect_depth_mode_combo.currentText(),
+            "kinect_fps": int(self.kinect_fps_combo.currentText()),
+            "kinect_exposure_time_absolute": (
+                -1 if self.kinect_auto_exposure.isChecked() else self.kinect_exposure_spin.value()
+            ),
+            "kinect_gain": (
+                -1 if self.kinect_auto_gain.isChecked() else self.kinect_gain_spin.value()
+            ),
+            "kinect_white_balance": (
+                -1 if self.kinect_auto_wb.isChecked() else self.kinect_wb_spin.value()
+            ),
+            "kinect_brightness": self.kinect_brightness_spin.value(),
+            "kinect_contrast": self.kinect_contrast_spin.value(),
+            "kinect_saturation": self.kinect_saturation_spin.value(),
+            "kinect_sharpness": self.kinect_sharpness_spin.value(),
+            "kinect_backlight_compensation": self.kinect_backlight.isChecked(),
+            "kinect_powerline_frequency": int(self.kinect_powerline_combo.currentText()),
         }
         try:
             self.client.set_calibration(payload)
@@ -428,6 +578,14 @@ class SettingsPage(QWidget):
             QMessageBox.critical(self, "Save failed", str(exc))
             return
         QMessageBox.information(self, "Saved", "Calibration saved to YAML. Restart relevant service to apply.")
+
+    def _start_camera_auto_calibration(self) -> None:
+        QMessageBox.information(
+            self,
+            "Auto Calibrate Position",
+            "Automatic camera position calibration is not yet implemented.\n\n"
+            "Manually adjust the extrinsics above and save.",
+        )
 
     def _restart_services(self, services: list[str]) -> None:
         reply = QMessageBox.question(

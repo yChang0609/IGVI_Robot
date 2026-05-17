@@ -170,6 +170,18 @@ class CalibrationModel(BaseModel):
     wheel_radius: float = 0.05035
     ekf_frequency: int = 50
     ekf_sensor_timeout: float = 0.2
+    kinect_color_resolution: str = "720P"
+    kinect_depth_mode: str = "NFOV_UNBINNED"
+    kinect_fps: int = 15
+    kinect_exposure_time_absolute: int = -1
+    kinect_gain: int = -1
+    kinect_white_balance: int = -1
+    kinect_brightness: int = 128
+    kinect_contrast: int = 5
+    kinect_saturation: int = 32
+    kinect_sharpness: int = 2
+    kinect_backlight_compensation: bool = False
+    kinect_powerline_frequency: int = 60
 
 
 class SaveMapResponse(BaseModel):
