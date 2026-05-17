@@ -21,6 +21,7 @@ from .models import (
     RosActionResponse,
     RosConnectionResponse,
     SaveMapResponse,
+    WaypointListResponse,
 )
 
 
@@ -197,6 +198,54 @@ class RobotBridgeClient:
             ok=bool(result.get("ok", False)),
             message=str(result.get("message", "")),
             path=str(result.get("message", "")) if result.get("ok") else "",
+        )
+
+    async def list_waypoints(self) -> WaypointListResponse:
+        return await asyncio.to_thread(self._fetch_waypoints)
+
+    def _fetch_waypoints(self) -> WaypointListResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/waypoints"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return WaypointListResponse(waypoints=dict(data.get("waypoints") or {}))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def save_waypoint(
+        self, name: str, x: float | None, y: float | None, yaw: float
+    ) -> RosActionResponse:
+        payload: dict[str, Any] = {"name": name, "yaw": yaw}
+        if x is not None and y is not None:
+            payload["x"] = x
+            payload["y"] = y
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/waypoints/save", payload, 3.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="waypoint_save",
+            message=str(result.get("message", "")),
+        )
+
+    async def delete_waypoint(self, name: str) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/waypoints/delete", {"name": name}, 3.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="waypoint_delete",
+            message=str(result.get("message", "")),
+        )
+
+    async def goto_waypoint(self, name: str) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/waypoints/goto", {"name": name}, 6.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="waypoint_goto",
+            message=str(result.get("message", "")),
         )
 
     async def get_nav_status(self) -> NavStatusResponse:
