@@ -33,7 +33,7 @@ class ArmCommander:
         self.publisher = self.node.create_publisher(JointTrajectory, topic, 10)
 
     def _declare_parameters(self):
-        self.node.declare_parameter("arm_topic", "/arm_controller/joint_trajectory")
+        self.node.declare_parameter("arm_topic", "/arm_safeguard/target_trajectory")
         self.node.declare_parameter("move_duration_sec", 1.0)
         self.node.declare_parameter("settle_sec", 0.5)
         self.node.declare_parameter("grasp_pose_deg", [167.0, 75.0, 170.6])
