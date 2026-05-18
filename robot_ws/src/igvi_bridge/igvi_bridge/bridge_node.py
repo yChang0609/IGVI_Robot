@@ -93,6 +93,13 @@ class BridgeNode(Node):
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        # RTAB-Map publishes this only after visual loop closure confirms the
+        # robot's location on the saved map. Highest priority because it's the
+        # only map-frame pose when no AMCL/lidar is in the loop.
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/rtabmap/localization_pose",
+            self._on_rtabmap_loc, 10,
+        )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
@@ -135,7 +142,7 @@ class BridgeNode(Node):
             }
 
     def _on_odom(self, msg: Odometry) -> None:
-        if self._pose_source == "amcl":
+        if self._pose_source in ("amcl", "rtabmap_loc"):
             return
         with self._lock:
             self._pose = _pose_from_q(
@@ -146,6 +153,8 @@ class BridgeNode(Node):
             self._pose_source = "odom"
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        if self._pose_source == "rtabmap_loc":
+            return
         with self._lock:
             self._pose = _pose_from_q(
                 msg.pose.pose.position.x,
@@ -153,6 +162,15 @@ class BridgeNode(Node):
                 msg.pose.pose.orientation,
             )
             self._pose_source = "amcl"
+
+    def _on_rtabmap_loc(self, msg: PoseWithCovarianceStamped) -> None:
+        with self._lock:
+            self._pose = _pose_from_q(
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+                msg.pose.pose.orientation,
+            )
+            self._pose_source = "rtabmap_loc"
 
     def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
         # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout

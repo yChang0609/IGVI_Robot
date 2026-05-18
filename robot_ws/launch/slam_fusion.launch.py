@@ -96,6 +96,47 @@ def generate_launch_description():
         ],
     )
 
+    # ── ICP Laser Odometry ───────────────────────────────────────────────────
+    # Scan-matches consecutive /scan messages to estimate motion independently
+    # of the wheels. Critical for skid-steer on carpet: wheels can lie during
+    # rotation scrub, but walls don't lie. Publishes Odometry on /odom_lidar
+    # without claiming the TF authority — the EKF fuses its twist (vx, vy)
+    # alongside wheel vx and IMU yaw rate.
+    #
+    # Degraded scan handling: only the back 200° of the lidar is usable
+    # (camera obstructs the front), so ICP only works on the rear arc.
+    # CorrespondenceRatio is loosened a bit to tolerate the smaller overlap.
+    icp_odom_node = Node(
+        package='rtabmap_odom',
+        executable='icp_odometry',
+        name='icp_odometry',
+        output='screen',
+        parameters=[{
+            'frame_id':              'base_link',
+            'odom_frame_id':         'odom',
+            'publish_tf':            False,
+            'expected_update_rate':  15.0,
+            'wait_for_transform':    0.2,
+            'Reg/Strategy':          '1',     # 1 = ICP only
+            'Reg/Force3DoF':         'true',
+            'Icp/Iterations':        '10',
+            'Icp/VoxelSize':         '0.05',
+            'Icp/PointToPlane':      'true',
+            'Icp/Epsilon':           '0.001',
+            'Icp/MaxCorrespondenceDistance': '0.1',
+            'Icp/CorrespondenceRatio':       '0.05',  # loosened for 200° arc
+            'Icp/RangeMin':          '0.1',
+            'Icp/RangeMax':          '12.0',
+            'Odom/ResetCountdown':   '0',
+            'Odom/Strategy':         '0',     # frame-to-frame
+            'Odom/ScanKeyFrameThr':  '0.7',
+        }],
+        remappings=[
+            ('scan', '/scan'),
+            ('odom', '/odom_lidar'),
+        ],
+    )
+
     # ── Low-latency state estimator ──────────────────────────────────────────
     # Fuses wheel odometry (/base_controller/odom) + Kinect IMU yaw rate and
     # publishes odom->base_link at 50 Hz. This replaces the laggy RGBD visual
@@ -176,6 +217,7 @@ def generate_launch_description():
         base_to_camera_tf,
         ekf_node,
         rgbd_odom_node,
+        icp_odom_node,
         rtabmap_keep,
         rtabmap_fresh,
     ])

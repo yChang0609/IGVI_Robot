@@ -17,8 +17,11 @@ def generate_launch_description():
     lidar_driver = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(ms200_scan_launch),
         launch_arguments={
-            'angle_min': '0.1',
-            'angle_max': '350.9',
+            # Camera obstructs the front ±80°; only the back 200° arc gives
+            # usable returns. Lidar 0° = base_link +X (forward), CCW.
+            # Window 80°→280° = the rear arc centered on 180° (straight back).
+            'angle_min': '80.0',
+            'angle_max': '280.0',
             'range_max': '12.0',
             'scan_topic': '/scan_tmp'
         }.items()

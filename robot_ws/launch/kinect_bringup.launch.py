@@ -26,7 +26,12 @@ def generate_launch_description():
             'depth_enabled': True,
             'color_enabled': True,
             'color_resolution': '720P',
-            'depth_mode': 'NFOV_UNBINNED',
+            # NFOV_2X2BINNED: 320x288 depth (4x fewer pixels than NFOV_UNBINNED's
+            # 640x576) → cuts the depth-to-RGB registration latency that was
+            # driving the ~475 ms camera pipeline delay seen by rtabmap. Same
+            # FOV (75°x65°), slightly extended range (0.5–5.46 m vs 0.5–3.86 m).
+            # Trade-off: small distant obstacles less precise. Plenty for SLAM.
+            'depth_mode': 'NFOV_2X2BINNED',
             'fps': 15,
             'imu_rate_target': 0,
             'point_cloud': True,

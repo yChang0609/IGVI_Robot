@@ -9,6 +9,11 @@ include:
   - services/igvi_bridge.yaml
   - services/nav2.yaml
   - services/motion_arbiter.yaml
+  # LiDAR stack: oradarlidar publishes /scan_tmp, lidar_filter strips NaNs,
+  # lidar_transform re-stamps to /scan for icp_odometry + SLAM consumption.
+  - services/oradarlidar.yaml
+  - services/lidar_filter.yaml
+  - services/lidar_transform.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 
