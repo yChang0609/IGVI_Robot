@@ -60,6 +60,10 @@ WORKDIR /workspaces
 RUN mkdir -p src \
     && cd src \
     && git clone -b humble https://github.com/microsoft/Azure_Kinect_ROS_Driver.git \
+    && echo "套用客製化色彩參數 Patches..." \
+    && cp /workspaces/patches/k4a_ros_device.cpp /workspaces/src/Azure_Kinect_ROS_Driver/src/k4a_ros_device.cpp \
+    && cp /workspaces/patches/k4a_ros_device_params.h /workspaces/src/Azure_Kinect_ROS_Driver/include/azure_kinect_ros_driver/k4a_ros_device_params.h \
+    && echo "進行標頭檔轉型..." \
     && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/cv_bridge\/cv_bridge\.h/cv_bridge\/cv_bridge.hpp/g' {} + \
     && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/image_transport\/image_transport\.h/image_transport\/image_transport.hpp/g' {} + \
     && find Azure_Kinect_ROS_Driver -type f -exec sed -i 's/camera_info_manager\/camera_info_manager\.h/camera_info_manager\/camera_info_manager.hpp/g' {} + \
