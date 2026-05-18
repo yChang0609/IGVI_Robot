@@ -81,6 +81,40 @@ def generate_launch_description():
         ],
     )
 
+    # ICP laser odometry — same as slam_fusion. Cross-references wheel odom
+    # via scan-matching of the back 200° of the lidar. EKF fuses its vx/vy
+    # with wheel vx + IMU gyro_z. Drift-resistant on carpet/skid-steer.
+    icp_odom_node = Node(
+        package='rtabmap_odom',
+        executable='icp_odometry',
+        name='icp_odometry',
+        output='screen',
+        parameters=[{
+            'frame_id':              'base_link',
+            'odom_frame_id':         'odom',
+            'publish_tf':            False,
+            'expected_update_rate':  15.0,
+            'wait_for_transform':    0.2,
+            'Reg/Strategy':          '1',
+            'Reg/Force3DoF':         'true',
+            'Icp/Iterations':        '10',
+            'Icp/VoxelSize':         '0.05',
+            'Icp/PointToPlane':      'true',
+            'Icp/Epsilon':           '0.001',
+            'Icp/MaxCorrespondenceDistance': '0.1',
+            'Icp/CorrespondenceRatio':       '0.05',
+            'Icp/RangeMin':          '0.1',
+            'Icp/RangeMax':          '12.0',
+            'Odom/ResetCountdown':   '0',
+            'Odom/Strategy':         '0',
+            'Odom/ScanKeyFrameThr':  '0.7',
+        }],
+        remappings=[
+            ('scan', '/scan'),
+            ('odom', '/odom_lidar'),
+        ],
+    )
+
     # Low-latency state estimator: wheel odom + Kinect IMU yaw rate -> 50 Hz
     # odom->base_link. See configs/ekf_wheel_imu.yaml.
     ekf_node = Node(
@@ -148,5 +182,6 @@ def generate_launch_description():
         base_to_camera_tf,
         ekf_node,
         rgbd_odom_node,
+        icp_odom_node,
         rtabmap_loc_node,
     ])
