@@ -36,6 +36,15 @@ services:
         -p imu_rate_target:=0
         -p point_cloud:=true
         -p rgb_point_cloud:=true
+        -p color_white_balance:=4500 
+        -p color_exposure_time:=15625 
+        -p color_gain:=128 
+        -p color_brightness:=128 
+        -p color_contrast:=5 
+        -p color_saturation:=32 
+        -p color_sharpness:=2 
+        -p color_backlight_compensation:=0 
+        -p color_powerline_frequency:=2
 
 networks:
   robot_net:

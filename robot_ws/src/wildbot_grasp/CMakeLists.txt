@@ -14,6 +14,7 @@ ament_python_install_package(wildbot_grasp_nodes)
 install(PROGRAMS
   scripts/grab_object_server
   scripts/gripper_command
+  scripts/arm_safeguard_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
