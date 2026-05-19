@@ -10,7 +10,7 @@ include:
   - services/nav2.yaml
   - services/motion_arbiter.yaml
   - services/wildbot_grasp.yaml
-  - services/eto_eye.yaml
+  - services/eto_eye_gpu.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 

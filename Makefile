@@ -80,7 +80,11 @@ endif
 ui:
 	cd $(APP_DIR) && $(UV) run igvi-ui
 
+ifeq ($(strip $(REMOTE_IP)),)
 run: _check-env
+else
+run:
+endif
 ifeq ($(strip $(REMOTE_IP)),)
 	cd $(APP_DIR) && { \
 	$(UV) run igvi-host & \
