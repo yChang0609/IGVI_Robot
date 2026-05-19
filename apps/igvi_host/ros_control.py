@@ -263,6 +263,7 @@ class RobotBridgeClient:
                 goal=data.get("goal"),
                 feedback=dict(data.get("feedback") or {}),
                 visible_actions=list(data.get("visible_actions") or []),
+                fusion_sources=dict(data.get("fusion_sources") or {}),
             )
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc

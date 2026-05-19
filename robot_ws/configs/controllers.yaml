@@ -24,7 +24,7 @@ base_controller:
     wheel_separation_multiplier: 2.21
 
 
-    wheel_radius: 0.05035
+    wheel_radius: 0.0530
 
     publish_rate: 50.0
     odom_frame_id: odom

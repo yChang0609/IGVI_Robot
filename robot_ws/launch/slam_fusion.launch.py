@@ -158,7 +158,7 @@ def generate_launch_description():
         'frame_id':                   'base_link',
         'subscribe_depth':            True,
         'subscribe_rgb':              True,
-        'subscribe_scan':             False,  # depth camera handles mapping; scan only used for odometry
+        'subscribe_scan':             True,   # lidar refines loop closures (see Reg/Strategy=2); grid still built from depth
         'approx_sync':                True,
         # Kinect frames arrive ~475 ms after their timestamp (driver +
         # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
@@ -167,7 +167,7 @@ def generate_launch_description():
         'sync_queue_size':            100,
         'topic_queue_size':           100,
         'Mem/IncrementalMemory':      'true',
-        'Reg/Strategy':               '0',   # 0 = Visual (depth camera)
+        'Reg/Strategy':               '2',   # 2 = Visual + ICP: BoW finds loop candidates, ICP refines/verifies via lidar
         'Reg/Force3DoF':              'true',
         'RGBD/NeighborLinkRefining':  'true',
         # Occupancy grid from depth camera
@@ -189,6 +189,7 @@ def generate_launch_description():
         ('rgb/image',       '/rgb/image_raw'),
         ('rgb/camera_info', '/rgb/camera_info'),
         ('depth/image',     '/depth_to_rgb/image_raw'),
+        ('scan',            '/scan'),
         # RTAB-Map runs on the fused EKF odom and publishes only map->odom.
         ('odom',            '/odometry/filtered'),
     ]

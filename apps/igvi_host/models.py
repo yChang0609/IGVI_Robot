@@ -211,6 +211,9 @@ class NavStatusResponse(BaseModel):
     goal: dict | None = None
     feedback: dict = Field(default_factory=dict)
     visible_actions: list[str] = Field(default_factory=list)
+    # Per-source freshness flags for the EKF inputs (wheel, imu, lidar).
+    # Empty when bridge hasn't reported them yet (older bridge build).
+    fusion_sources: dict = Field(default_factory=dict)
 
 
 class ImuCalibrationStatusResponse(BaseModel):

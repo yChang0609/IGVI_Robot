@@ -90,6 +90,14 @@ class NavigationControl(QWidget):
         self.feedback_label.setWordWrap(True)
         layout.addWidget(self.feedback_label)
 
+        self.fusion_label = QLabel("EKF: —")
+        self.fusion_label.setObjectName("Muted")
+        self.fusion_label.setToolTip(
+            "Which sensor sources the EKF is currently fusing into the robot's "
+            "pose estimate. ● = fresh (last msg <2 s ago), ○ = stale/missing."
+        )
+        layout.addWidget(self.fusion_label)
+
         buttons = QGridLayout()
         buttons.setSpacing(8)
         self.cancel_btn = QPushButton("Cancel Goal")
@@ -174,6 +182,7 @@ class NavigationControl(QWidget):
             )
         else:
             self.feedback_label.setText("")
+        self._update_fusion_label(status.get("fusion_sources") or {})
         self.cancel_btn.setEnabled(state in ("sending", "accepted", "navigating"))
         if state != self._last_state:
             self._last_state = state
@@ -183,6 +192,26 @@ class NavigationControl(QWidget):
         self.state_label.setText("Bridge unavailable")
         self.state_label.setStyleSheet("font-weight: 700; color: #ef4444;")
         self.detail_label.setText(message)
+
+    def _update_fusion_label(self, sources: dict) -> None:
+        # Empty dict = older bridge that didn't include fusion_sources, or
+        # not enough data yet. Show a neutral state instead of "all stale".
+        if not sources:
+            self.fusion_label.setText("EKF: — (no data)")
+            self.fusion_label.setStyleSheet("color: #94a3b8;")
+            return
+        parts = []
+        all_ok = True
+        any_ok = False
+        for name in ("wheel", "imu", "lidar"):
+            ok = bool(sources.get(name, False))
+            any_ok = any_ok or ok
+            all_ok = all_ok and ok
+            glyph = "●" if ok else "○"
+            parts.append(f"{glyph} {name}")
+        color = "#22c55e" if all_ok else ("#fbbf24" if any_ok else "#ef4444")
+        self.fusion_label.setText("EKF:  " + "   ".join(parts))
+        self.fusion_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def _cancel(self) -> None:
         try:

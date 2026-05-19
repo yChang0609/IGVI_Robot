@@ -7,6 +7,7 @@ import os
 import struct
 import tempfile
 import threading
+import time
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -23,7 +24,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -92,6 +93,21 @@ class BridgeNode(Node):
             "gyro_bias": [],
             "raw": "",
         }
+
+        # Freshness tracking for EKF input sources — drives the UI badge that
+        # tells the operator at a glance whether the EKF is fusing all three
+        # (wheel + IMU + lidar) or has lost one of them.
+        self._fusion_lock = threading.Lock()
+        self._fusion_last_seen: dict[str, float] = {}
+        self.create_subscription(
+            Odometry, "/base_controller/odom", self._on_wheel_freshness, 10,
+        )
+        self.create_subscription(
+            Imu, "/imu/calibrated", self._on_imu_freshness, 10,
+        )
+        self.create_subscription(
+            Odometry, "/odom_lidar", self._on_lidar_freshness, 10,
+        )
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
@@ -525,13 +541,41 @@ class BridgeNode(Node):
 
     def snapshot_nav(self) -> dict[str, Any]:
         with self._nav_lock:
-            return {
+            payload = {
                 "state": self._nav_state,
                 "message": self._nav_message,
                 "goal": dict(self._nav_goal) if self._nav_goal else None,
                 "feedback": dict(self._nav_feedback),
                 "server_ready": self._nav_client.server_is_ready(),
                 "visible_actions": self._visible_action_names(),
+            }
+        payload["fusion_sources"] = self.snapshot_fusion_sources()
+        return payload
+
+    # ── EKF fusion source freshness ──────────────────────────────────────────
+
+    def _on_wheel_freshness(self, _msg: Odometry) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["wheel"] = time.monotonic()
+
+    def _on_imu_freshness(self, _msg: Imu) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["imu"] = time.monotonic()
+
+    def _on_lidar_freshness(self, _msg: Odometry) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["lidar"] = time.monotonic()
+
+    def snapshot_fusion_sources(self) -> dict[str, bool]:
+        """Returns {source: True/False} for each EKF input, fresh = last
+        message within 2 s. Drives the UI badge."""
+        now = time.monotonic()
+        fresh = 2.0
+        with self._fusion_lock:
+            return {
+                "wheel": (now - self._fusion_last_seen.get("wheel", 0.0)) < fresh,
+                "imu":   (now - self._fusion_last_seen.get("imu",   0.0)) < fresh,
+                "lidar": (now - self._fusion_last_seen.get("lidar", 0.0)) < fresh,
             }
 
     def _visible_action_names(self) -> list[str]:

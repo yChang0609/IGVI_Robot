@@ -137,7 +137,7 @@ def generate_launch_description():
             'frame_id':                  'base_link',
             'subscribe_depth':           True,
             'subscribe_rgb':             True,
-            'subscribe_scan':            False,
+            'subscribe_scan':            True,   # lidar refines relocalization (see Reg/Strategy=2)
             'approx_sync':               True,
             # Kinect frames arrive ~475 ms after their timestamp (driver +
             # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
@@ -147,7 +147,7 @@ def generate_launch_description():
             'topic_queue_size':          100,
             'Mem/IncrementalMemory':     'False',
             'Mem/InitWMWithAllNodes':    'True',
-            'Reg/Strategy':              '0',
+            'Reg/Strategy':              '2',   # 2 = Visual + ICP: BoW finds relocalization candidates, lidar verifies
             'Reg/Force3DoF':             'true',
             'RGBD/NeighborLinkRefining': 'true',
             'Grid/Sensor':               '1',
@@ -172,6 +172,7 @@ def generate_launch_description():
             ('rgb/image',       '/rgb/image_raw'),
             ('rgb/camera_info', '/rgb/camera_info'),
             ('depth/image',     '/depth_to_rgb/image_raw'),
+            ('scan',            '/scan'),
             # RTAB-Map localizes on the fused EKF odom, publishes only map->odom.
             ('odom',            '/odometry/filtered'),
         ],
