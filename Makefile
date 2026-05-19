@@ -34,6 +34,11 @@ install:
 		echo "  Edit IGVI_DATA_ROOT in $(ENV_FILE) to change the shared data path"; \
 	fi
 	@DATA=$$(grep -E '^IGVI_DATA_ROOT=' $(ENV_FILE) | head -1 | cut -d= -f2-); \
+	if [ -z "$$DATA" ]; then \
+		echo "IGVI_DATA_ROOT=$(DATA_ROOT)" >> $(ENV_FILE) && \
+		DATA=$(DATA_ROOT) && \
+		echo "  Added IGVI_DATA_ROOT=$(DATA_ROOT) to $(ENV_FILE)"; \
+	fi; \
 	mkdir -p "$$DATA/slam" "$$DATA/maps" && \
 	echo "  Data directories ready at $$DATA"
 
