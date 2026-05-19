@@ -18,6 +18,7 @@ services:
       context: ../../..
       dockerfile: docker/images/Dockerfile.kinect
     image: wildbot_kinect:latest
+    restart: unless-stopped
     environment:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
     devices:
@@ -37,7 +38,7 @@ services:
         -p color_resolution:=720P
         -p depth_mode:=NFOV_UNBINNED
         -p fps:=15
-        -p imu_rate_target:=0
+        -p imu_rate_target:=200
         -p point_cloud:=true
         -p rgb_point_cloud:=true
         -p color_white_balance:=4500 
