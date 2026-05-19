@@ -1,63 +1,3 @@
-controller_manager:
-  ros__parameters:
-    # Raised 15 -> 50: this is the hardware-interface read() loop rate, i.e.
-    # how fresh /base_controller/odom is. It is the low-latency backbone for
-    # the robot_localization EKF (odom->base_link). If the wheel serial bus
-    # (115200 on /dev/usb_wheel) cannot sustain 50 Hz, drop back toward 30.
-    update_rate: 50
-
-    joint_state_broadcaster:
-      type: joint_state_broadcaster/JointStateBroadcaster
-
-    base_controller:
-      type: diff_drive_controller/DiffDriveController
-
-    arm_controller:
-      type: joint_trajectory_controller/JointTrajectoryController
-
-base_controller:
-  ros__parameters:
-    left_wheel_names: ["wheel_1_joint", "wheel_2_joint"]
-    right_wheel_names: ["wheel_3_joint", "wheel_4_joint"]
-
-    wheel_separation: 0.274
-    wheel_separation_multiplier: 2.21
-
-
-    wheel_radius: 0.0530
-
-    publish_rate: 50.0
-    odom_frame_id: odom
-    base_frame_id: base_link
-    enable_odom_tf: false
-    cmd_vel_timeout: 0.5
-
-    # robot_localization rejects / mis-weights messages whose covariance is all
-    # zero (the diff_drive_controller default), which is why /base_controller/odom
-    # could not be fused before. These diagonals [x, y, z, roll, pitch, yaw] make
-    # the EKF treat wheel data as a moderately trusted velocity source while the
-    # slip-prone lateral/rotational terms are deweighted (IMU gyro owns yaw,
-    # RTAB-Map owns absolute drift). Starting values — tune per memo.md.
-    pose_covariance_diagonal:  [0.001, 0.001, 1.0e6, 1.0e6, 1.0e6, 0.01]
-    twist_covariance_diagonal: [0.04,  1.0e6, 1.0e6, 1.0e6, 1.0e6, 0.06]
-
-    linear:
-      x:
-        has_velocity_limits: true
-        max_velocity: 0.546
-        has_acceleration_limits: true
-        max_acceleration: 0.5
-        has_deceleration_limits: true
-        max_deceleration: -1.5
-    angular:
-      z:
-        has_velocity_limits: true
-        max_velocity: 3.983
-        has_acceleration_limits: true
-        max_acceleration: 1.0
-        has_deceleration_limits: true
-        max_deceleration: -3.0
-
 arm_controller:
   ros__parameters:
     action_monitor_rate: 10.0
@@ -115,7 +55,7 @@ base_controller:
     - 1.0e6
     - 1.0e6
     - 0.06
-    wheel_radius: 0.05035
+    wheel_radius: 0.053
     wheel_separation: 0.274
     wheel_separation_multiplier: 2.21
 controller_manager:
