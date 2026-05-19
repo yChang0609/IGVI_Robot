@@ -31,25 +31,7 @@ services:
     command:
       - /bin/bash
       - -c
-      - >-
-        ros2 run azure_kinect_ros_driver node --ros-args
-        -p depth_enabled:=true
-        -p color_enabled:=true
-        -p color_resolution:=720P
-        -p depth_mode:=NFOV_UNBINNED
-        -p fps:=15
-        -p imu_rate_target:=200
-        -p point_cloud:=true
-        -p rgb_point_cloud:=true
-        -p color_white_balance:=4500 
-        -p color_exposure_time:=15625 
-        -p color_gain:=128 
-        -p color_brightness:=128 
-        -p color_contrast:=5 
-        -p color_saturation:=32 
-        -p color_sharpness:=2 
-        -p color_backlight_compensation:=0 
-        -p color_powerline_frequency:=2
+      - ros2 launch /workspace/launch/kinect_bringup.launch.py
 
 networks:
   robot_net:

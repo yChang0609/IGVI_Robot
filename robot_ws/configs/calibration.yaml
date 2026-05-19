@@ -14,3 +14,18 @@ imu:
 ekf:
   frequency: 50
   sensor_timeout: 0.2
+
+kinect:
+  color_resolution: '720P'
+  depth_mode: 'NFOV_UNBINNED'
+  fps: 15
+  imu_rate_target: 200
+  exposure_time_absolute: -1
+  gain: -1
+  white_balance: -1
+  brightness: 128
+  contrast: 5
+  saturation: 32
+  sharpness: 2
+  backlight_compensation: false
+  powerline_frequency: 60

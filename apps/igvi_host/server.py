@@ -160,6 +160,21 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             ekf = data.get("ekf", {})
             result.update(ekf_frequency=ekf.get("frequency", 50),
                           ekf_sensor_timeout=ekf.get("sensor_timeout", 0.2))
+            kinect = data.get("kinect", {})
+            result.update(
+                kinect_color_resolution=kinect.get("color_resolution", "720P"),
+                kinect_depth_mode=kinect.get("depth_mode", "NFOV_UNBINNED"),
+                kinect_fps=kinect.get("fps", 15),
+                kinect_exposure_time_absolute=kinect.get("exposure_time_absolute", -1),
+                kinect_gain=kinect.get("gain", -1),
+                kinect_white_balance=kinect.get("white_balance", -1),
+                kinect_brightness=kinect.get("brightness", 128),
+                kinect_contrast=kinect.get("contrast", 5),
+                kinect_saturation=kinect.get("saturation", 32),
+                kinect_sharpness=kinect.get("sharpness", 2),
+                kinect_backlight_compensation=kinect.get("backlight_compensation", False),
+                kinect_powerline_frequency=kinect.get("powerline_frequency", 60),
+            )
         if ctrl_file.exists():
             ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
             bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
@@ -185,6 +200,20 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 "gyro_bias_z": d["gyro_bias_z"],
             },
             "ekf": {"frequency": d["ekf_frequency"], "sensor_timeout": d["ekf_sensor_timeout"]},
+            "kinect": {
+                "color_resolution": d["kinect_color_resolution"],
+                "depth_mode": d["kinect_depth_mode"],
+                "fps": d["kinect_fps"],
+                "exposure_time_absolute": d["kinect_exposure_time_absolute"],
+                "gain": d["kinect_gain"],
+                "white_balance": d["kinect_white_balance"],
+                "brightness": d["kinect_brightness"],
+                "contrast": d["kinect_contrast"],
+                "saturation": d["kinect_saturation"],
+                "sharpness": d["kinect_sharpness"],
+                "backlight_compensation": d["kinect_backlight_compensation"],
+                "powerline_frequency": d["kinect_powerline_frequency"],
+            },
         }
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
         try:
