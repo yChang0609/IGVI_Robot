@@ -3,7 +3,7 @@
 APP_DIR := apps
 UV := uv
 HOST_PORT := 8770
-DATA_ROOT ?= /opt/igvi_robot
+DATA_ROOT ?= $(HOME)/igvi_robot
 ENV_FILE := docker/compose/.env
 ENV_EXAMPLE := docker/compose/.env.example
 
