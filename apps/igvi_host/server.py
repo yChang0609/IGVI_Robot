@@ -252,7 +252,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/compose/services/{service}/logs", response_model=LogsResponse)
     def service_logs(service: str, tail: int = 200) -> LogsResponse:
-        registry().validate_service(service)
+        try:
+            registry().validate_service(service)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         tail = min(max(tail, 1), 2000)
         try:
             logs = docker_engine().get_logs(service, tail=tail)
@@ -297,9 +300,13 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="restart requires at least one service")
         return compose_or_http(lambda: compose_project().restart(services=services))
 
-    @app.post("/api/compose/actions/down", response_model=ComposeActionResponse)
-    def down() -> ComposeActionResponse:
-        return compose_or_http(lambda: compose_project().down())
+    @app.post("/api/compose/actions/stop_all", response_model=ComposeActionResponse)
+    def stop_all() -> ComposeActionResponse:
+        return compose_or_http(lambda: compose_project().stop_all())
+
+    @app.post("/api/compose/actions/remove_all", response_model=ComposeActionResponse)
+    def remove_all() -> ComposeActionResponse:
+        return compose_or_http(lambda: compose_project().remove_all())
 
     @app.get("/api/compose/progress", response_model=ComposeProgressResponse)
     def compose_progress(tail: int = 50, since_seq: int = 0) -> ComposeProgressResponse:

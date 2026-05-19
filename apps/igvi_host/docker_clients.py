@@ -363,7 +363,16 @@ class ComposeProjectClient:
         self._run_compose("restart", lambda: self.client.compose.restart(services=target_services))
         return self._result("restart", target_services, started_at, f"Restarted {', '.join(target_services)}")
 
-    def down(self) -> ComposeActionResponse:
+    def stop_all(self) -> ComposeActionResponse:
         started_at = _utcnow()
-        self._run_compose("down", lambda: self.client.compose.down(quiet=True))
-        return self._result("down", None, started_at, "Compose project stopped and removed")
+        cmd = self._compose_base_cmd()
+        cmd.append("stop")
+        self._stream_subprocess("stop_all", cmd)
+        return self._result("stop_all", None, started_at, "All services stopped")
+
+    def remove_all(self) -> ComposeActionResponse:
+        started_at = _utcnow()
+        cmd = self._compose_base_cmd()
+        cmd.extend(["down", "--remove-orphans"])
+        self._stream_subprocess("remove_all", cmd)
+        return self._result("remove_all", None, started_at, "All containers removed")

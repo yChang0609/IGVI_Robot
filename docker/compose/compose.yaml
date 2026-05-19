@@ -11,6 +11,7 @@ include:
   - services/motion_arbiter.yaml
   - services/wildbot_grasp.yaml
   - services/eto_eye_gpu.yaml
+  # - services/eto_eye_cpu.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 

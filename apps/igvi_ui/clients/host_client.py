@@ -75,8 +75,11 @@ class HostClient:
     def profiles(self) -> list[str]:
         return self.request("GET", "/api/compose/profiles")
 
-    def down(self) -> dict[str, Any]:
-        return self.request("POST", "/api/compose/actions/down", {}, timeout=self.compose_timeout)
+    def stop_all(self) -> dict[str, Any]:
+        return self.request("POST", "/api/compose/actions/stop_all", {}, timeout=self.compose_timeout)
+
+    def remove_all(self) -> dict[str, Any]:
+        return self.request("POST", "/api/compose/actions/remove_all", {}, timeout=self.compose_timeout)
 
     def logs(self, service: str, tail: int = 200) -> str:
         response = self.request("GET", f"/api/compose/services/{service}/logs", params={"tail": tail})
