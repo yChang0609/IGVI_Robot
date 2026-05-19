@@ -4,4 +4,4 @@ import rclpy
 from wildbot_grasp_nodes.arm_safeguard_node import main
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main()
