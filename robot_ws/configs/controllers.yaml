@@ -24,7 +24,7 @@ base_controller:
     wheel_separation_multiplier: 2.21
 
 
-    wheel_radius: 0.05035
+    wheel_radius: 0.0530
 
     publish_rate: 50.0
     odom_frame_id: odom
@@ -60,15 +60,70 @@ base_controller:
 
 arm_controller:
   ros__parameters:
-    joints:
-      - arm_1_joint
-      - arm_2_joint
-      - gripper_joint
-    command_interfaces:
-      - position
-    state_interfaces:
-      - position
-      - velocity
-    state_publish_rate: 15.0
     action_monitor_rate: 10.0
     allow_partial_joints_goal: false
+    command_interfaces:
+    - position
+    joints:
+    - arm_1_joint
+    - arm_2_joint
+    - gripper_joint
+    state_interfaces:
+    - position
+    - velocity
+    state_publish_rate: 15.0
+base_controller:
+  ros__parameters:
+    angular:
+      z:
+        has_acceleration_limits: true
+        has_deceleration_limits: true
+        has_velocity_limits: true
+        max_acceleration: 1.0
+        max_deceleration: -3.0
+        max_velocity: 3.983
+    base_frame_id: base_link
+    cmd_vel_timeout: 0.5
+    enable_odom_tf: false
+    left_wheel_names:
+    - wheel_1_joint
+    - wheel_2_joint
+    linear:
+      x:
+        has_acceleration_limits: true
+        has_deceleration_limits: true
+        has_velocity_limits: true
+        max_acceleration: 0.5
+        max_deceleration: -1.5
+        max_velocity: 0.546
+    odom_frame_id: odom
+    pose_covariance_diagonal:
+    - 0.001
+    - 0.001
+    - 1.0e6
+    - 1.0e6
+    - 1.0e6
+    - 0.01
+    publish_rate: 50.0
+    right_wheel_names:
+    - wheel_3_joint
+    - wheel_4_joint
+    twist_covariance_diagonal:
+    - 0.04
+    - 1.0e6
+    - 1.0e6
+    - 1.0e6
+    - 1.0e6
+    - 0.06
+    wheel_radius: 0.05035
+    wheel_separation: 0.274
+    wheel_separation_multiplier: 2.21
+controller_manager:
+  ros__parameters:
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    base_controller:
+      type: diff_drive_controller/DiffDriveController
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    update_rate: 50

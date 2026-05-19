@@ -10,6 +10,7 @@
 #include <thread>
 #include <iomanip>
 #include <unordered_map>
+#include <algorithm>
 
 // Library headers
 //
@@ -914,9 +915,23 @@ void K4AROSDevice::framePublisherThread()
   {
     if (k4a_device_)
     {
-      if (!k4a_device_.get_capture(&capture, waitTime))
+      bool got_capture = false;
+      try
+      {
+        got_capture = k4a_device_.get_capture(&capture, waitTime);
+      }
+      catch (const k4a::error& e)
+      {
+        RCLCPP_FATAL_STREAM(this->get_logger(), "Failed to poll cameras: " << e.what());
+        running_ = false;
+        rclcpp::shutdown();
+        return;
+      }
+
+      if (!got_capture)
       {
         RCLCPP_FATAL(this->get_logger(),"Failed to poll cameras: node cannot continue.");
+        running_ = false;
         rclcpp::shutdown();
         return;
       }
@@ -1317,7 +1332,8 @@ void K4AROSDevice::imuPublisherThread()
 
   // For IMU throttling
   unsigned int count = 0;
-  unsigned int target_count = IMU_MAX_RATE / params_.imu_rate_target;
+  const unsigned int target_rate = params_.imu_rate_target > 0 ? params_.imu_rate_target : IMU_MAX_RATE;
+  unsigned int target_count = std::max(1U, static_cast<unsigned int>(IMU_MAX_RATE / target_rate));
   std::vector<k4a_imu_sample_t> accumulated_samples;
   accumulated_samples.reserve(target_count);
   bool throttling = target_count > 1;
@@ -1331,7 +1347,17 @@ void K4AROSDevice::imuPublisherThread()
       bool read = false;
       do
       {
-        read = k4a_device_.get_imu_sample(&sample, std::chrono::milliseconds(0));
+        try
+        {
+          read = k4a_device_.get_imu_sample(&sample, std::chrono::milliseconds(0));
+        }
+        catch (const k4a::error& e)
+        {
+          RCLCPP_ERROR_STREAM(this->get_logger(), "Failed to get IMU sample from device: " << e.what());
+          running_ = false;
+          rclcpp::shutdown();
+          break;
+        }
 
         if (read)
         {

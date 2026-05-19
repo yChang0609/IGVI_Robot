@@ -46,6 +46,9 @@ from .models import (
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
+    WaypointListResponse,
+    WaypointNameRequest,
+    WaypointSaveRequest,
 )
 from .progress import get_progress_buffer
 from .ros_control import RobotBridgeClient
@@ -160,6 +163,21 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             ekf = data.get("ekf", {})
             result.update(ekf_frequency=ekf.get("frequency", 50),
                           ekf_sensor_timeout=ekf.get("sensor_timeout", 0.2))
+            kinect = data.get("kinect", {})
+            result.update(
+                kinect_color_resolution=kinect.get("color_resolution", "720P"),
+                kinect_depth_mode=kinect.get("depth_mode", "NFOV_UNBINNED"),
+                kinect_fps=kinect.get("fps", 15),
+                kinect_exposure_time_absolute=kinect.get("exposure_time_absolute", -1),
+                kinect_gain=kinect.get("gain", -1),
+                kinect_white_balance=kinect.get("white_balance", -1),
+                kinect_brightness=kinect.get("brightness", 128),
+                kinect_contrast=kinect.get("contrast", 5),
+                kinect_saturation=kinect.get("saturation", 32),
+                kinect_sharpness=kinect.get("sharpness", 2),
+                kinect_backlight_compensation=kinect.get("backlight_compensation", False),
+                kinect_powerline_frequency=kinect.get("powerline_frequency", 60),
+            )
         if ctrl_file.exists():
             ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
             bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
@@ -185,6 +203,20 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 "gyro_bias_z": d["gyro_bias_z"],
             },
             "ekf": {"frequency": d["ekf_frequency"], "sensor_timeout": d["ekf_sensor_timeout"]},
+            "kinect": {
+                "color_resolution": d["kinect_color_resolution"],
+                "depth_mode": d["kinect_depth_mode"],
+                "fps": d["kinect_fps"],
+                "exposure_time_absolute": d["kinect_exposure_time_absolute"],
+                "gain": d["kinect_gain"],
+                "white_balance": d["kinect_white_balance"],
+                "brightness": d["kinect_brightness"],
+                "contrast": d["kinect_contrast"],
+                "saturation": d["kinect_saturation"],
+                "sharpness": d["kinect_sharpness"],
+                "backlight_compensation": d["kinect_backlight_compensation"],
+                "powerline_frequency": d["kinect_powerline_frequency"],
+            },
         }
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
         try:
@@ -252,7 +284,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/compose/services/{service}/logs", response_model=LogsResponse)
     def service_logs(service: str, tail: int = 200) -> LogsResponse:
-        registry().validate_service(service)
+        try:
+            registry().validate_service(service)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         tail = min(max(tail, 1), 2000)
         try:
             logs = docker_engine().get_logs(service, tail=tail)
@@ -297,9 +332,13 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="restart requires at least one service")
         return compose_or_http(lambda: compose_project().restart(services=services))
 
-    @app.post("/api/compose/actions/down", response_model=ComposeActionResponse)
-    def down() -> ComposeActionResponse:
-        return compose_or_http(lambda: compose_project().down())
+    @app.post("/api/compose/actions/stop_all", response_model=ComposeActionResponse)
+    def stop_all() -> ComposeActionResponse:
+        return compose_or_http(lambda: compose_project().stop_all())
+
+    @app.post("/api/compose/actions/remove_all", response_model=ComposeActionResponse)
+    def remove_all() -> ComposeActionResponse:
+        return compose_or_http(lambda: compose_project().remove_all())
 
     @app.get("/api/compose/progress", response_model=ComposeProgressResponse)
     def compose_progress(tail: int = 50, since_seq: int = 0) -> ComposeProgressResponse:
@@ -390,6 +429,30 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
         filename = request.filename if request else "arena_map"
         return await run_ros(lambda client: client.save_map(filename))
+
+    @app.get("/api/ros/waypoints", response_model=WaypointListResponse)
+    async def ros_waypoints() -> WaypointListResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            return await client.list_waypoints()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/ros/waypoints/save", response_model=RosActionResponse)
+    async def ros_waypoint_save(request: WaypointSaveRequest) -> RosActionResponse:
+        return await run_ros(
+            lambda client: client.save_waypoint(
+                request.name, request.x, request.y, request.yaw
+            )
+        )
+
+    @app.post("/api/ros/waypoints/delete", response_model=RosActionResponse)
+    async def ros_waypoint_delete(request: WaypointNameRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.delete_waypoint(request.name))
+
+    @app.post("/api/ros/waypoints/goto", response_model=RosActionResponse)
+    async def ros_waypoint_goto(request: WaypointNameRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.goto_waypoint(request.name))
 
     @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
     async def ros_nav_status() -> NavStatusResponse:

@@ -15,6 +15,8 @@ def generate_launch_description():
         executable='oradar_scan',      # 改這裡
         name='MS200',                  # 改這裡
         output='screen',
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             {'device_model': 'MS200'},
             {'frame_id': 'laser'},

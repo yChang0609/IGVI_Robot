@@ -96,6 +96,47 @@ def generate_launch_description():
         ],
     )
 
+    # ── ICP Laser Odometry ───────────────────────────────────────────────────
+    # Scan-matches consecutive /scan messages to estimate motion independently
+    # of the wheels. Critical for skid-steer on carpet: wheels can lie during
+    # rotation scrub, but walls don't lie. Publishes Odometry on /odom_lidar
+    # without claiming the TF authority — the EKF fuses its twist (vx, vy)
+    # alongside wheel vx and IMU yaw rate.
+    #
+    # Degraded scan handling: only the back 200° of the lidar is usable
+    # (camera obstructs the front), so ICP only works on the rear arc.
+    # CorrespondenceRatio is loosened a bit to tolerate the smaller overlap.
+    icp_odom_node = Node(
+        package='rtabmap_odom',
+        executable='icp_odometry',
+        name='icp_odometry',
+        output='screen',
+        parameters=[{
+            'frame_id':              'base_link',
+            'odom_frame_id':         'odom',
+            'publish_tf':            False,
+            'expected_update_rate':  15.0,
+            'wait_for_transform':    0.2,
+            'Reg/Strategy':          '1',     # 1 = ICP only
+            'Reg/Force3DoF':         'true',
+            'Icp/Iterations':        '10',
+            'Icp/VoxelSize':         '0.05',
+            'Icp/PointToPlane':      'true',
+            'Icp/Epsilon':           '0.001',
+            'Icp/MaxCorrespondenceDistance': '0.1',
+            'Icp/CorrespondenceRatio':       '0.05',  # loosened for 200° arc
+            'Icp/RangeMin':          '0.1',
+            'Icp/RangeMax':          '12.0',
+            'Odom/ResetCountdown':   '0',
+            'Odom/Strategy':         '0',     # frame-to-frame
+            'Odom/ScanKeyFrameThr':  '0.7',
+        }],
+        remappings=[
+            ('scan', '/scan'),
+            ('odom', '/odom_lidar'),
+        ],
+    )
+
     # ── Low-latency state estimator ──────────────────────────────────────────
     # Fuses wheel odometry (/base_controller/odom) + Kinect IMU yaw rate and
     # publishes odom->base_link at 50 Hz. This replaces the laggy RGBD visual
@@ -117,10 +158,16 @@ def generate_launch_description():
         'frame_id':                   'base_link',
         'subscribe_depth':            True,
         'subscribe_rgb':              True,
-        'subscribe_scan':             False,  # depth camera handles mapping; scan only used for odometry
+        'subscribe_scan':             True,   # lidar refines loop closures (see Reg/Strategy=2); grid still built from depth
         'approx_sync':                True,
+        # Kinect frames arrive ~475 ms after their timestamp (driver +
+        # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
+        # 200 ms of history → odom messages matching the camera stamp are
+        # dropped before the frame arrives. 100 = 2 s of backlog.
+        'sync_queue_size':            100,
+        'topic_queue_size':           100,
         'Mem/IncrementalMemory':      'true',
-        'Reg/Strategy':               '0',   # 0 = Visual (depth camera)
+        'Reg/Strategy':               '2',   # 2 = Visual + ICP: BoW finds loop candidates, ICP refines/verifies via lidar
         'Reg/Force3DoF':              'true',
         'RGBD/NeighborLinkRefining':  'true',
         # Occupancy grid from depth camera
@@ -142,6 +189,7 @@ def generate_launch_description():
         ('rgb/image',       '/rgb/image_raw'),
         ('rgb/camera_info', '/rgb/camera_info'),
         ('depth/image',     '/depth_to_rgb/image_raw'),
+        ('scan',            '/scan'),
         # RTAB-Map runs on the fused EKF odom and publishes only map->odom.
         ('odom',            '/odometry/filtered'),
     ]
@@ -170,6 +218,7 @@ def generate_launch_description():
         base_to_camera_tf,
         ekf_node,
         rgbd_odom_node,
+        icp_odom_node,
         rtabmap_keep,
         rtabmap_fresh,
     ])

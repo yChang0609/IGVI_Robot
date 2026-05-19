@@ -81,6 +81,40 @@ def generate_launch_description():
         ],
     )
 
+    # ICP laser odometry — same as slam_fusion. Cross-references wheel odom
+    # via scan-matching of the back 200° of the lidar. EKF fuses its vx/vy
+    # with wheel vx + IMU gyro_z. Drift-resistant on carpet/skid-steer.
+    icp_odom_node = Node(
+        package='rtabmap_odom',
+        executable='icp_odometry',
+        name='icp_odometry',
+        output='screen',
+        parameters=[{
+            'frame_id':              'base_link',
+            'odom_frame_id':         'odom',
+            'publish_tf':            False,
+            'expected_update_rate':  15.0,
+            'wait_for_transform':    0.2,
+            'Reg/Strategy':          '1',
+            'Reg/Force3DoF':         'true',
+            'Icp/Iterations':        '10',
+            'Icp/VoxelSize':         '0.05',
+            'Icp/PointToPlane':      'true',
+            'Icp/Epsilon':           '0.001',
+            'Icp/MaxCorrespondenceDistance': '0.1',
+            'Icp/CorrespondenceRatio':       '0.05',
+            'Icp/RangeMin':          '0.1',
+            'Icp/RangeMax':          '12.0',
+            'Odom/ResetCountdown':   '0',
+            'Odom/Strategy':         '0',
+            'Odom/ScanKeyFrameThr':  '0.7',
+        }],
+        remappings=[
+            ('scan', '/scan'),
+            ('odom', '/odom_lidar'),
+        ],
+    )
+
     # Low-latency state estimator: wheel odom + Kinect IMU yaw rate -> 50 Hz
     # odom->base_link. See configs/ekf_wheel_imu.yaml.
     ekf_node = Node(
@@ -103,11 +137,17 @@ def generate_launch_description():
             'frame_id':                  'base_link',
             'subscribe_depth':           True,
             'subscribe_rgb':             True,
-            'subscribe_scan':            False,
+            'subscribe_scan':            True,   # lidar refines relocalization (see Reg/Strategy=2)
             'approx_sync':               True,
+            # Kinect frames arrive ~475 ms after their timestamp (driver +
+            # depth->RGB registration). At 50 Hz odom, a queue of 10 only holds
+            # 200 ms of history → odom messages matching the camera stamp are
+            # dropped before the frame arrives. 100 = 2 s of backlog, plenty.
+            'sync_queue_size':           100,
+            'topic_queue_size':          100,
             'Mem/IncrementalMemory':     'False',
             'Mem/InitWMWithAllNodes':    'True',
-            'Reg/Strategy':              '0',
+            'Reg/Strategy':              '2',   # 2 = Visual + ICP: BoW finds relocalization candidates, lidar verifies
             'Reg/Force3DoF':             'true',
             'RGBD/NeighborLinkRefining': 'true',
             'Grid/Sensor':               '1',
@@ -117,11 +157,22 @@ def generate_launch_description():
             'Grid/MinGroundHeight':      '-0.1',
             'Mem/UseOdomGravity':        'true',
             'Optimizer/GravitySigma':    '0.25',
+            'RTAB-Map/TimeThr':          '0',
+            'RTAB-Map/DetectionRate':    '5.0',   # start at 5 Hz; raise toward 10 only if CPU/latency allows
+            'Mem/STMSize':               '10',    # localization needs little short-term memory
+            'RGBD/LinearUpdate':         '0.05',  # re-localize every 5 cm
+            'RGBD/AngularUpdate':        '0.02',  # re-localize every ~1.1°
+            # Localization mode adds no new nodes, so /map only republishes on
+            # loop closure. These force the full stored grid to be pushed every
+            # cycle, so Foxglove sees the whole arena from startup.
+            'map_always_update':         True,
+            'map_empty_ray_tracing':     True,
         }],
         remappings=[
             ('rgb/image',       '/rgb/image_raw'),
             ('rgb/camera_info', '/rgb/camera_info'),
             ('depth/image',     '/depth_to_rgb/image_raw'),
+            ('scan',            '/scan'),
             # RTAB-Map localizes on the fused EKF odom, publishes only map->odom.
             ('odom',            '/odometry/filtered'),
         ],
@@ -132,5 +183,6 @@ def generate_launch_description():
         base_to_camera_tf,
         ekf_node,
         rgbd_odom_node,
+        icp_odom_node,
         rtabmap_loc_node,
     ])

@@ -21,6 +21,7 @@ from igvi_ui.widgets.arm_control import ArmControl
 from igvi_ui.widgets.image_view import ImageView
 from igvi_ui.widgets.map_views import Map2DView
 from igvi_ui.widgets.navigation_control import NavigationControl
+from igvi_ui.widgets.waypoint_control import WaypointControl
 
 _WASD: dict[Qt.Key, tuple[float, float]] = {
     Qt.Key.Key_W: (1.0, 0.0),
@@ -281,10 +282,12 @@ class RobotPage(QWidget):
 
         self.control_tabs = QTabWidget()
         self.drive_control = _DriveControl(self.client, self.map_2d)
-        self.nav_control = NavigationControl(self.client)
+        self.nav_control = NavigationControl(self.client, self.map_2d)
+        self.waypoint_control = WaypointControl(self.client, self.map_2d)
         self.arm_control = ArmControl(self.client)
         self.control_tabs.addTab(self.drive_control, "Drive")
         self.control_tabs.addTab(self.nav_control, "Navigation")
+        self.control_tabs.addTab(self.waypoint_control, "Waypoints")
         self.control_tabs.addTab(self.arm_control, "Arm")
         control_layout.addWidget(self.control_tabs, 1)
         layout.addWidget(control_panel, 1, 2)

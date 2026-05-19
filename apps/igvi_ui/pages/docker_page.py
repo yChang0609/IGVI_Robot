@@ -46,8 +46,10 @@ class ComposeActionWorker(QThread):
 
     def run(self) -> None:
         try:
-            if self.action == "down":
-                result = self.client.down()
+            if self.action == "stop_all":
+                result = self.client.stop_all()
+            elif self.action == "remove_all":
+                result = self.client.remove_all()
             else:
                 result = self.client.compose_action(
                     self.action,
@@ -199,10 +201,15 @@ class DockerPage(QWidget):
         self.rebuild_button.clicked.connect(lambda: self._run_action("rebuild"))
         row.addWidget(self.rebuild_button)
 
-        self.down_button = QPushButton("Down All")
-        self.down_button.setObjectName("Danger")
-        self.down_button.clicked.connect(self._run_down)
-        row.addWidget(self.down_button)
+        self.stop_all_button = QPushButton("Stop All")
+        self.stop_all_button.setObjectName("Danger")
+        self.stop_all_button.clicked.connect(self._run_stop_all)
+        row.addWidget(self.stop_all_button)
+
+        self.remove_all_button = QPushButton("Remove All")
+        self.remove_all_button.setObjectName("Danger")
+        self.remove_all_button.clicked.connect(self._run_remove_all)
+        row.addWidget(self.remove_all_button)
 
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh)
@@ -349,7 +356,8 @@ class DockerPage(QWidget):
         "stop": "stopping…",
         "build": "building…",
         "rebuild": "rebuilding…",
-        "down": "stopping…",
+        "stop_all": "stopping…",
+        "remove_all": "removing…",
     }
 
     def _make_pending_item(self, action: str) -> QTableWidgetItem:
@@ -470,21 +478,31 @@ class DockerPage(QWidget):
             return
         self._start_worker("start", profile=profile)
 
-    def _run_down(self) -> None:
+    def _run_stop_all(self) -> None:
         confirm = QMessageBox.question(
             self,
-            "Down all?",
-            "This will stop and remove every container in the project. Continue?",
+            "Stop all?",
+            "Stop all running containers? They will remain and can be restarted.",
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self._start_worker("down")
+        self._start_worker("stop_all")
+
+    def _run_remove_all(self) -> None:
+        confirm = QMessageBox.question(
+            self,
+            "Remove all?",
+            "Remove all project containers including orphans?\n\nThe list will reset to a clean state.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._start_worker("remove_all")
 
     def _start_worker(self, action: str, services: list[str] | None = None, profile: str | None = None) -> None:
         target = ", ".join(services) if services else profile or "all services"
         self.log_message.emit(f"{action} started for {target}")
         self.summary.setText(f"{action} running for {target}…")
-        pending_targets = services or ([s["service"] for s in self.services] if action == "down" else [])
+        pending_targets = services or ([s["service"] for s in self.services] if action in {"stop_all", "remove_all"} else [])
         for name in pending_targets:
             self._pending_actions[name] = action
         if pending_targets:
@@ -496,7 +514,7 @@ class DockerPage(QWidget):
         self.action_workers.append(worker)
         self.busy_actions.add(action)
         self._progress_target = target
-        if action in {"start", "build", "rebuild"}:
+        if action in {"start", "build", "rebuild", "stop_all", "remove_all"}:
             self._progress_busy = True
             self.progress_timer.start(800)
         self._set_busy(True)
@@ -549,7 +567,8 @@ class DockerPage(QWidget):
             self.stop_button,
             self.build_button,
             self.rebuild_button,
-            self.down_button,
+            self.stop_all_button,
+            self.remove_all_button,
         ):
             button.setEnabled(not busy)
 

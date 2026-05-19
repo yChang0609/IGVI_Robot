@@ -1,6 +1,12 @@
+import os
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
+
+# Source topic — defaults to /scan_tmp (raw driver output). Set IGVI_SCAN_IN
+# in the launch when chaining behind a NaN filter that publishes /scan_clean.
+_SCAN_IN_TOPIC = os.environ.get('IGVI_SCAN_IN', '/scan_tmp')
 
 
 class LidarRePublisher(Node):
@@ -24,10 +30,13 @@ class LidarRePublisher(Node):
         super().__init__('lidar_republisher')
         self.subscription = self.create_subscription(
             LaserScan,
-            '/scan_tmp',
+            _SCAN_IN_TOPIC,
             self.listener_callback,
             10)
         self.publisher_ = self.create_publisher(LaserScan, '/scan', 10)
+        self.get_logger().info(
+            f'Re-stamping: {_SCAN_IN_TOPIC} -> /scan'
+        )
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
@@ -44,7 +53,6 @@ class LidarRePublisher(Node):
 
         # Publish the message to /scan
         self.publisher_.publish(msg)
-        self.get_logger().info('Republishing lidar data with updated timestamp')
 
 
 def main(args=None):

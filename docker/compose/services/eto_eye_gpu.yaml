@@ -28,20 +28,6 @@ x-eto-eye-env: &eto_eye_env
 x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
 
 services:
-  eto_eye_cpu:
-    <<: *base_service
-    profiles: ["eto_eye_cpu"]
-    build:
-      context: ../../..
-      dockerfile: docker/images/Dockerfile.eto_eye_cpu
-    image: wildbot_eto_eye:cpu
-    environment:
-      <<: *eto_eye_env
-      ORT_EP: cpu
-    volumes:
-      - *model_volume
-    restart: unless-stopped
-
   eto_eye_gpu:
     <<: *base_service
     profiles: ["eto_eye_gpu"]
