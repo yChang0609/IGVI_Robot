@@ -14,9 +14,6 @@ services:
   slam_fusion:
     <<: *base_service
     profiles: ["slam"]
-    depends_on:
-      imu_calibrator:
-        condition: service_started
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.fusion
