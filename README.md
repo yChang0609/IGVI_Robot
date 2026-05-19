@@ -25,13 +25,26 @@ IGVI_Robot/
 
 ## Setup
 
-Create a local compose environment file:
+Run the one-time install step on each machine (or worktree, first time only):
 
 ```bash
-cp docker/compose/.env.example docker/compose/.env
+make install
+# or, to use a custom shared data path:
+make install DATA_ROOT=/your/shared/path
 ```
 
+This creates `docker/compose/.env` from the example template and ensures the shared data
+directories (`slam/`, `maps/`) exist at `IGVI_DATA_ROOT`. Because `.env` is gitignored,
+every worktree on the same machine should run `make install` once — they will all point
+to the same absolute path, so robot data is shared regardless of which worktree is running.
+
 Set a unique `ROS_DOMAIN_ID` in `docker/compose/.env` before running on a shared network.
+
+Install Python dependencies:
+
+```bash
+make sync
+```
 
 ## Docker Compose Profiles
 

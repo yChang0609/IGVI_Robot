@@ -22,7 +22,7 @@ services:
     volumes:
       - *config_volume
       - *launch_volume
-      - ../../../data/slam:/root/.ros
+      - ${IGVI_DATA_ROOT}/slam:/root/.ros
     command:
       - /bin/bash
       - -c

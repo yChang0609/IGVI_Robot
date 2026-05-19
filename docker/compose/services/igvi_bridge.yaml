@@ -19,7 +19,7 @@ services:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
     volumes:
       - *config_volume
-      - ../../../data/maps:/maps
+      - ${IGVI_DATA_ROOT}/maps:/maps
       - ../../../robot_ws/src/igvi_bridge/igvi_bridge:/workspace/src/igvi_bridge/igvi_bridge:ro
     ports:
       - "8771:8771"
