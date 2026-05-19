@@ -163,8 +163,23 @@ class HostClient:
     def nav_cancel(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/nav/cancel", {}, timeout=5.0)
 
+    def clear_costmap(self, target: str = "local") -> dict[str, Any]:
+        return self.request("POST", "/api/ros/costmap/clear", {"target": target}, timeout=5.0)
+
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
 
+    def imu_calibration_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)
+
+    def start_imu_calibration(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/imu/calibration/start", {}, timeout=3.0)
+
     def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
         return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)
+
+    def calibration(self) -> dict[str, Any]:
+        return self.request("GET", "/api/calibration")
+
+    def set_calibration(self, data: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/calibration", data)

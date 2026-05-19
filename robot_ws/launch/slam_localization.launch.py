@@ -1,4 +1,5 @@
 import os
+import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -8,13 +9,13 @@ from launch_ros.actions import Node
 def generate_launch_description():
     configs_dir = '/configs'
 
+    # Load camera extrinsics from calibration.yaml (managed by host UI)
+    calib_path = os.path.join(configs_dir, 'calibration.yaml')
+    with open(calib_path, 'r') as f:
+        calib = yaml.safe_load(f) or {}
+    cam = calib.get('camera_extrinsics', {})
+
     database_path = LaunchConfiguration('database_path')
-    cam_tx = LaunchConfiguration('camera_mount_x')
-    cam_ty = LaunchConfiguration('camera_mount_y')
-    cam_tz = LaunchConfiguration('camera_mount_z')
-    cam_rr = LaunchConfiguration('camera_mount_roll')
-    cam_rp = LaunchConfiguration('camera_mount_pitch')
-    cam_ry = LaunchConfiguration('camera_mount_yaw')
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -22,15 +23,9 @@ def generate_launch_description():
             default_value='/root/.ros/map.db',
             description='Path to the RTAB-Map database file inside the container.',
         ),
-        DeclareLaunchArgument('camera_mount_x', default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_y', default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_z', default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_roll',  default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_pitch', default_value='0.0'),
-        DeclareLaunchArgument('camera_mount_yaw',   default_value='0.0'),
     ]
 
-    # Same IMU filter as mapping
+    # Same IMU filter as mapping.
     imu_filter_node = Node(
         package='imu_filter_madgwick',
         executable='imu_filter_madgwick_node',
@@ -38,19 +33,23 @@ def generate_launch_description():
         output='screen',
         parameters=[os.path.join(configs_dir, 'imu_filter_kinect.yaml')],
         remappings=[
-            ('imu/data_raw', '/imu'),
+            ('imu/data_raw', '/imu/calibrated'),
             ('imu/data',     '/imu/filtered'),
         ],
     )
 
-    # Same camera mount TF as mapping
+    # Camera mount TF from calibration.yaml
     base_to_camera_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_camera_base',
         arguments=[
-            '--x',     cam_tx, '--y',     cam_ty, '--z',   cam_tz,
-            '--roll',  cam_rr, '--pitch', cam_rp, '--yaw', cam_ry,
+            '--x',     str(cam.get('x', 0.0)),
+            '--y',     str(cam.get('y', 0.0)),
+            '--z',     str(cam.get('z', 0.0)),
+            '--roll',  str(cam.get('roll', 0.0)),
+            '--pitch', str(cam.get('pitch', 0.0)),
+            '--yaw',   str(cam.get('yaw', 0.0)),
             '--frame-id', 'base_link', '--child-frame-id', 'camera_base',
         ],
     )

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from contextlib import suppress
+from pathlib import Path
 from typing import Callable
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -18,6 +22,8 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    ClearCostmapRequest,
+    CalibrationModel,
     CmdVelRequest,
     ComposeActionRequest,
     ComposeActionResponse,
@@ -26,6 +32,7 @@ from .models import (
     DevModeRequest,
     HealthResponse,
     ImageTopicsResponse,
+    ImuCalibrationStatusResponse,
     LogsResponse,
     NavGoalRequest,
     NavStatusResponse,
@@ -34,7 +41,6 @@ from .models import (
     RobotPoseResponse,
     RosActionResponse,
     RosConnectionResponse,
-    RosServiceCallRequest,
     SaveMapRequest,
     SaveMapResponse,
     ServiceDescriptor,
@@ -42,7 +48,7 @@ from .models import (
     UiBridgeHealth,
 )
 from .progress import get_progress_buffer
-from .ros_control import RosbridgeClient
+from .ros_control import RobotBridgeClient
 from .service_registry import ServiceRegistry
 from .ui_bridge import read_ui_bridge_health
 
@@ -92,8 +98,8 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         service = reg.validate_service(request.service)
         return [service] if service else None
 
-    async def run_ros(action: Callable[[RosbridgeClient], object]) -> RosActionResponse:
-        client = RosbridgeClient(current_settings())
+    async def run_ros(action: Callable[[RobotBridgeClient], object]) -> RosActionResponse:
+        client = RobotBridgeClient(current_settings())
         try:
             result = action(client)
             if hasattr(result, "__await__"):
@@ -134,6 +140,81 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         state_settings.dev_mode = request.enabled
         save_settings(state_settings)
         return SettingsModel(**state_settings.to_json_dict())
+
+    @app.get("/api/calibration", response_model=CalibrationModel)
+    def get_calibration() -> CalibrationModel:
+        configs = current_settings().repo_root / "robot_ws" / "configs"
+        calib_file = configs / "calibration.yaml"
+        ctrl_file = configs / "controllers.yaml"
+        result: dict = {}
+        if calib_file.exists():
+            data = yaml.safe_load(calib_file.read_text()) or {}
+            cam = data.get("camera_extrinsics", {})
+            result.update(camera_x=cam.get("x", 0.17), camera_y=cam.get("y", 0.0),
+                          camera_z=cam.get("z", 0.25), camera_roll=cam.get("roll", 0.0),
+                          camera_pitch=cam.get("pitch", 0.48), camera_yaw=cam.get("yaw", 0.0))
+            imu = data.get("imu", {})
+            result.update(gyro_bias_x=imu.get("gyro_bias_x", 0.0),
+                          gyro_bias_y=imu.get("gyro_bias_y", 0.0),
+                          gyro_bias_z=imu.get("gyro_bias_z", 0.0))
+            ekf = data.get("ekf", {})
+            result.update(ekf_frequency=ekf.get("frequency", 50),
+                          ekf_sensor_timeout=ekf.get("sensor_timeout", 0.2))
+        if ctrl_file.exists():
+            ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
+            bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
+            result.update(wheel_separation=bc.get("wheel_separation", 0.274),
+                          wheel_separation_multiplier=bc.get("wheel_separation_multiplier", 2.21),
+                          wheel_radius=bc.get("wheel_radius", 0.05035))
+        return CalibrationModel(**result)
+
+    @app.post("/api/calibration", response_model=CalibrationModel)
+    def set_calibration(request: CalibrationModel) -> CalibrationModel:
+        configs = current_settings().repo_root / "robot_ws" / "configs"
+        calib_file = configs / "calibration.yaml"
+        ctrl_file = configs / "controllers.yaml"
+        d = request.model_dump()
+        calib_data = {
+            "camera_extrinsics": {
+                "x": d["camera_x"], "y": d["camera_y"], "z": d["camera_z"],
+                "roll": d["camera_roll"], "pitch": d["camera_pitch"], "yaw": d["camera_yaw"],
+            },
+            "imu": {
+                "gyro_bias_x": d["gyro_bias_x"],
+                "gyro_bias_y": d["gyro_bias_y"],
+                "gyro_bias_z": d["gyro_bias_z"],
+            },
+            "ekf": {"frequency": d["ekf_frequency"], "sensor_timeout": d["ekf_sensor_timeout"]},
+        }
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
+        try:
+            os.write(tmp_fd, yaml.dump(calib_data, default_flow_style=False).encode())
+            os.close(tmp_fd)
+            os.replace(tmp_path, str(calib_file))
+        except Exception:
+            with suppress(OSError):
+                os.close(tmp_fd)
+            with suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        if ctrl_file.exists():
+            ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
+            bc = ctrl.setdefault("base_controller", {}).setdefault("ros__parameters", {})
+            bc["wheel_separation"] = d["wheel_separation"]
+            bc["wheel_separation_multiplier"] = d["wheel_separation_multiplier"]
+            bc["wheel_radius"] = d["wheel_radius"]
+            tmp_fd2, tmp_path2 = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
+            try:
+                os.write(tmp_fd2, yaml.dump(ctrl, default_flow_style=False).encode())
+                os.close(tmp_fd2)
+                os.replace(tmp_path2, str(ctrl_file))
+            except Exception:
+                with suppress(OSError):
+                    os.close(tmp_fd2)
+                with suppress(OSError):
+                    os.unlink(tmp_path2)
+                raise
+        return request
 
     @app.get("/api/compose/profiles", response_model=list[str])
     def list_profiles() -> list[str]:
@@ -237,7 +318,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/connection", response_model=RosConnectionResponse)
     async def ros_connection() -> RosConnectionResponse:
-        return await RosbridgeClient(current_settings()).ping()
+        return await RobotBridgeClient(current_settings()).ping()
 
     @app.post("/api/ros/cmd_vel", response_model=RosActionResponse)
     async def cmd_vel(request: CmdVelRequest) -> RosActionResponse:
@@ -255,10 +336,6 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def initial_pose(request: Pose2DRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.publish_initial_pose(request))
 
-    @app.post("/api/ros/service_call", response_model=RosActionResponse)
-    async def service_call(request: RosServiceCallRequest) -> RosActionResponse:
-        return await run_ros(lambda client: client.call_service(request))
-
     @app.get("/api/ros/map", response_model=RobotMapResponse)
     async def ros_map() -> RobotMapResponse:
         return await run_ros(lambda client: client.get_map())
@@ -269,7 +346,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             return await client.list_image_topics()
         except Exception as exc:
@@ -277,7 +354,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/image/frame")
     async def ros_image_frame(topic: str | None = None) -> Response:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             payload, active = await client.fetch_image_frame(topic)
         except Exception as exc:
@@ -304,6 +381,11 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_nav_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.cancel_nav_goal())
 
+    @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
+    async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:
+        target = request.target if request else "local"
+        return await run_ros(lambda client: client.clear_costmap(target))
+
     @app.post("/api/ros/map/save", response_model=SaveMapResponse)
     async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
         filename = request.filename if request else "arena_map"
@@ -311,11 +393,23 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
     async def ros_nav_status() -> NavStatusResponse:
-        client = RosbridgeClient(current_settings())
+        client = RobotBridgeClient(current_settings())
         try:
             return await client.get_nav_status()
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/ros/imu/calibration", response_model=ImuCalibrationStatusResponse)
+    async def ros_imu_calibration() -> ImuCalibrationStatusResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            return await client.get_imu_calibration_status()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/ros/imu/calibration/start", response_model=RosActionResponse)
+    async def ros_imu_calibration_start() -> RosActionResponse:
+        return await run_ros(lambda client: client.start_imu_calibration())
 
     @app.get("/api/ui-bridge/health", response_model=UiBridgeHealth)
     def ui_bridge_health() -> UiBridgeHealth:

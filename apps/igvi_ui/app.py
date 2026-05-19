@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("IGVI Robot Control Center")
         title.setObjectName("Title")
-        subtitle = QLabel("Docker Compose · ROS2 rosbridge · UI bridge")
+        subtitle = QLabel("Docker Compose · IGVI bridge · UI bridge")
         subtitle.setObjectName("Muted")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)

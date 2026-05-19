@@ -20,7 +20,7 @@ class SettingsModel(BaseModel):
     project_name: str
     host: str
     port: int
-    rosbridge_url: str
+    bridge_url: str
     shm_path: str
     dev_mode: bool
 
@@ -91,10 +91,8 @@ class Pose2DRequest(BaseModel):
     frame_id: str = "map"
 
 
-class RosServiceCallRequest(BaseModel):
-    service: str
-    service_type: str
-    args: dict = Field(default_factory=dict)
+class ClearCostmapRequest(BaseModel):
+    target: Literal["local", "global"] = "local"
 
 
 class RosActionResponse(BaseModel):
@@ -167,6 +165,23 @@ class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 
 
+class CalibrationModel(BaseModel):
+    camera_x: float = 0.17
+    camera_y: float = 0.0
+    camera_z: float = 0.25
+    camera_roll: float = 0.0
+    camera_pitch: float = 0.48
+    camera_yaw: float = 0.0
+    gyro_bias_x: float = 0.0
+    gyro_bias_y: float = 0.0
+    gyro_bias_z: float = 0.0
+    wheel_separation: float = 0.274
+    wheel_separation_multiplier: float = 2.21
+    wheel_radius: float = 0.05035
+    ekf_frequency: int = 50
+    ekf_sensor_timeout: float = 0.2
+
+
 class SaveMapResponse(BaseModel):
     ok: bool
     message: str = ""
@@ -180,6 +195,24 @@ class NavStatusResponse(BaseModel):
     goal: dict | None = None
     feedback: dict = Field(default_factory=dict)
     visible_actions: list[str] = Field(default_factory=list)
+
+
+class ImuCalibrationStatusResponse(BaseModel):
+    ok: bool = False
+    state: str = "unavailable"
+    message: str = ""
+    stationary: bool = False
+    converged: bool = False
+    online: bool = False
+    manual_required: bool = False
+    manual_active: bool = False
+    calibration_active: bool = False
+    manual_remaining_s: float = 0.0
+    stationary_age_s: float = 0.0
+    convergence_age_s: float = 0.0
+    gyro_error_rad_s: float = 0.0
+    gyro_bias: list[float] = Field(default_factory=list)
+    raw: str = ""
 
 
 DockerAction = Literal["build", "rebuild", "start", "stop", "restart", "down"]

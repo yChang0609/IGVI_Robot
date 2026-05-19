@@ -8,11 +8,15 @@ x-base-service: &base_service
 
 x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
+x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/workspaces/src/igvi_imu/igvi_imu:ro
 
 services:
   slam_fusion:
     <<: *base_service
     profiles: ["slam"]
+    depends_on:
+      imu_calibrator:
+        condition: service_started
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.fusion
@@ -23,17 +27,13 @@ services:
       - *config_volume
       - *launch_volume
       - ${IGVI_DATA_ROOT}/slam:/root/.ros
+      - *igvi_imu_volume
     command:
       - /bin/bash
       - -c
       - >-
+        source /workspaces/install/setup.bash &&
         ros2 launch /workspace/launch/slam_fusion.launch.py
-        camera_mount_x:=0.17
-        camera_mount_y:=0.0
-        camera_mount_z:=0.25
-        camera_mount_roll:=0.0
-        camera_mount_pitch:=0.48
-        camera_mount_yaw:=0.0
         delete_db_on_start:=false
 
 networks:

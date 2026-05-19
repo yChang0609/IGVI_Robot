@@ -1,0 +1,69 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-eto-eye-env: &eto_eye_env
+  MODEL_PATH: /models/best.onnx
+  IMAGE_TOPIC: /rgb/image_raw
+  DETECTION_FORMAT: json
+  DETECTION_TOPIC: /detections_json
+  ENABLE_ANNOTATED_IMAGE: "true"
+  ANNOTATED_TOPIC: /eto_eye/annotated_image/compressed
+  ANNOTATED_MAX_FPS: "5"
+  ANNOTATED_SCALE: "0.5"
+  ANNOTATED_JPEG_QUALITY: "80"
+  ENABLE_DETECTION_LOGGING: "true"
+  DETECTION_LOG_INTERVAL: "5"
+  ENABLE_DEPTH: "true"
+  DEPTH_TOPIC: /depth_to_rgb/image_raw
+  DEPTH_UNIT_SCALE: "0.001"
+  DEPTH_ROI_SCALE: "0.5"
+  DEPTH_MIN_VALID_PIXELS: "20"
+  DEPTH_MAX_AGE_SEC: "0.5"
+
+x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
+
+services:
+  eto_eye_cpu:
+    <<: *base_service
+    profiles: ["eto_eye_cpu"]
+    build:
+      context: ../../..
+      dockerfile: docker/images/Dockerfile.eto_eye_cpu
+    image: wildbot_eto_eye:cpu
+    environment:
+      <<: *eto_eye_env
+      ORT_EP: cpu
+    volumes:
+      - *model_volume
+    restart: unless-stopped
+
+  eto_eye_gpu:
+    <<: *base_service
+    profiles: ["eto_eye_gpu"]
+    build:
+      context: ../../..
+      dockerfile: docker/images/Dockerfile.eto_eye_gpu
+    image: wildbot_eto_eye:gpu
+    environment:
+      <<: *eto_eye_env
+      ORT_EP: migraphx
+      ORT_MIGRAPHX_MODEL_CACHE_PATH: /migraphx_cache/model
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    volumes:
+      - *model_volume
+      - ../../../data/migraphx_cache/eto_eye:/migraphx_cache
+    restart: unless-stopped
+
+networks:
+  robot_net:
+    driver: bridge
