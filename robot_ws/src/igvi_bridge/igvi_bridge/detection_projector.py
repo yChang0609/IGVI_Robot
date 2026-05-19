@@ -56,7 +56,7 @@ class DetectionProjector(Node):
         self.declare_parameter("depth_topic", "/depth_to_rgb/image_raw")
         self.declare_parameter("camera_info_topic", "/rgb/camera_info")
         self.declare_parameter("output_topic", "/task/target_candidates")
-        self.declare_parameter("target_classes", ["xiong_qiao", "bear"])
+        self.declare_parameter("target_classes", ["xiong", "xiong_qiao", "bear"])
         self.declare_parameter("fallback_to_any_class", False)
         self.declare_parameter("min_score", 0.20)
         self.declare_parameter("depth_window_px", 9)
