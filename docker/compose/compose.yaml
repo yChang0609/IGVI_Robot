@@ -12,6 +12,8 @@ include:
   - services/wildbot_grasp.yaml
   - services/eto_eye_gpu.yaml
   # - services/eto_eye_cpu.yaml
+  # LiDAR: single container running driver + NaN filter + timestamp re-stamper.
+  - services/lidar.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 

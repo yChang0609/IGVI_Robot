@@ -181,6 +181,29 @@ class HostClient:
     def save_map(self, filename: str = "arena_map") -> dict[str, Any]:
         return self.request("POST", "/api/ros/map/save", {"filename": filename}, timeout=10.0)
 
+    def list_waypoints(self) -> dict[str, Any]:
+        data = self.request("GET", "/api/ros/waypoints", timeout=3.0)
+        return dict((data or {}).get("waypoints", {}))
+
+    def save_waypoint(
+        self,
+        name: str,
+        x: float | None = None,
+        y: float | None = None,
+        yaw: float = 0.0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": name, "yaw": yaw}
+        if x is not None and y is not None:
+            payload["x"] = x
+            payload["y"] = y
+        return self.request("POST", "/api/ros/waypoints/save", payload, timeout=5.0)
+
+    def delete_waypoint(self, name: str) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/waypoints/delete", {"name": name}, timeout=5.0)
+
+    def goto_waypoint(self, name: str) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/waypoints/goto", {"name": name}, timeout=8.0)
+
     def calibration(self) -> dict[str, Any]:
         return self.request("GET", "/api/calibration")
 

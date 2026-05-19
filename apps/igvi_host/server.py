@@ -46,6 +46,9 @@ from .models import (
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
+    WaypointListResponse,
+    WaypointNameRequest,
+    WaypointSaveRequest,
 )
 from .progress import get_progress_buffer
 from .ros_control import RobotBridgeClient
@@ -426,6 +429,30 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_map_save(request: SaveMapRequest | None = None) -> SaveMapResponse:
         filename = request.filename if request else "arena_map"
         return await run_ros(lambda client: client.save_map(filename))
+
+    @app.get("/api/ros/waypoints", response_model=WaypointListResponse)
+    async def ros_waypoints() -> WaypointListResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            return await client.list_waypoints()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/ros/waypoints/save", response_model=RosActionResponse)
+    async def ros_waypoint_save(request: WaypointSaveRequest) -> RosActionResponse:
+        return await run_ros(
+            lambda client: client.save_waypoint(
+                request.name, request.x, request.y, request.yaw
+            )
+        )
+
+    @app.post("/api/ros/waypoints/delete", response_model=RosActionResponse)
+    async def ros_waypoint_delete(request: WaypointNameRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.delete_waypoint(request.name))
+
+    @app.post("/api/ros/waypoints/goto", response_model=RosActionResponse)
+    async def ros_waypoint_goto(request: WaypointNameRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.goto_waypoint(request.name))
 
     @app.get("/api/ros/nav/status", response_model=NavStatusResponse)
     async def ros_nav_status() -> NavStatusResponse:

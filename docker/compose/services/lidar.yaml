@@ -1,0 +1,37 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+
+services:
+  lidar:
+    <<: *base_service
+    profiles: ["sensors", "lidar"]
+    image: ghcr.io/screamlab/wildbot_base_image:latest
+    restart: unless-stopped
+    environment:
+      # Must match other containers (slam_fusion, camera_kinect, etc.) so DDS
+      # discovery uses the same transport. Without this the lidar publishes
+      # over default UDP while SLAM listens only on SHM — they never meet.
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    devices:
+      - /dev/oradar:/dev/oradar
+    volumes:
+      - *config_volume
+      - *launch_volume
+      # Override the installed package's ms200_scan launch with our copy that
+      # accepts angle_min / angle_max / scan_topic args.
+      - ../../../robot_ws/launch/ms200_scan.launch.py:/robot_ws/src/oradar_ros/launch/ms200_scan.launch.py:ro
+      # The timestamp re-stamper script (run by lidar.launch.py via ExecuteProcess).
+      - ../../../robot_ws/scripts/lidar_transformer_node.py:/lidar_transformer_node.py:ro
+    command: ros2 launch /workspace/launch/lidar.launch.py
+
+networks:
+  robot_net:
+    driver: bridge

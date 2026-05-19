@@ -20,6 +20,7 @@ services:
     volumes:
       - *config_volume
       - ${IGVI_DATA_ROOT}/maps:/maps
+      - ${IGVI_DATA_ROOT}/slam:/slam
       - ../../../robot_ws/src/igvi_bridge/igvi_bridge:/workspace/src/igvi_bridge/igvi_bridge:ro
     ports:
       - "8771:8771"
