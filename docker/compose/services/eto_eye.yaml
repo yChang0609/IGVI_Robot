@@ -18,6 +18,12 @@ x-eto-eye-env: &eto_eye_env
   ANNOTATED_JPEG_QUALITY: "80"
   ENABLE_DETECTION_LOGGING: "true"
   DETECTION_LOG_INTERVAL: "5"
+  ENABLE_DEPTH: "true"
+  DEPTH_TOPIC: /depth_to_rgb/image_raw
+  DEPTH_UNIT_SCALE: "0.001"
+  DEPTH_ROI_SCALE: "0.5"
+  DEPTH_MIN_VALID_PIXELS: "20"
+  DEPTH_MAX_AGE_SEC: "0.5"
 
 x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
 

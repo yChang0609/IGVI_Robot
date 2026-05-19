@@ -1,4 +1,4 @@
-import os
+git statusimport os
 import ast
 import json
 import time
@@ -53,6 +53,21 @@ class DetectorNode(Node):
             "detection_log_interval",
             float(os.getenv("DETECTION_LOG_INTERVAL", "5.0")),
         )
+        self.declare_parameter(
+            "enable_depth",
+            os.getenv("ENABLE_DEPTH", "false").lower() == "true",
+        )
+        self.declare_parameter(
+            "depth_topic",
+            os.getenv("DEPTH_TOPIC", "/depth_to_rgb/image_raw"),
+        )
+        self.declare_parameter("depth_unit_scale", float(os.getenv("DEPTH_UNIT_SCALE", "0.001")))
+        self.declare_parameter("depth_roi_scale", float(os.getenv("DEPTH_ROI_SCALE", "0.5")))
+        self.declare_parameter(
+            "depth_min_valid_pixels",
+            int(os.getenv("DEPTH_MIN_VALID_PIXELS", "20")),
+        )
+        self.declare_parameter("depth_max_age_sec", float(os.getenv("DEPTH_MAX_AGE_SEC", "0.5")))
         self.declare_parameter("input_size", 640)
         self.declare_parameter("conf_threshold", 0.25)
         self.declare_parameter("iou_threshold", 0.45)
@@ -83,6 +98,15 @@ class DetectorNode(Node):
         self.detection_log_interval = float(
             self.get_parameter("detection_log_interval").value
         )
+        self.enable_depth = bool(self.get_parameter("enable_depth").value)
+        self.depth_unit_scale = float(self.get_parameter("depth_unit_scale").value)
+        self.depth_roi_scale = float(self.get_parameter("depth_roi_scale").value)
+        self.depth_min_valid_pixels = int(
+            self.get_parameter("depth_min_valid_pixels").value
+        )
+        self.depth_max_age_sec = float(self.get_parameter("depth_max_age_sec").value)
+        if self.depth_roi_scale <= 0.0 or self.depth_roi_scale > 1.0:
+            raise ValueError("depth_roi_scale must be in the range (0.0, 1.0]")
         self._last_annotated_publish = 0.0
         self._last_detection_log = time.monotonic()
         self._log_frames = 0
@@ -110,12 +134,27 @@ class DetectorNode(Node):
             self.get_logger().info(f"Class names: {self.class_names}")
 
         self.bridge = CvBridge()
+        self.latest_depth = None
+        self.latest_depth_stamp_sec = None
+        self.latest_depth_encoding = None
+        self.latest_depth_frame_id = None
 
         image_topic = self.get_parameter("image_topic").value
         detection_topic = self.get_parameter("detection_topic").value
         self.subscription = self.create_subscription(
             Image, image_topic, self.image_callback, 10
         )
+        if self.enable_depth:
+            depth_topic = self.get_parameter("depth_topic").value
+            self.depth_subscription = self.create_subscription(
+                Image, depth_topic, self.depth_callback, 10
+            )
+            self.get_logger().info(
+                f"Subscribed to depth topic {depth_topic} "
+                f"scale={self.depth_unit_scale} roi_scale={self.depth_roi_scale}"
+            )
+        else:
+            self.depth_subscription = None
         if self.output_format == "vision_msgs":
             from vision_msgs.msg import (
                 Detection2DArray,
@@ -181,6 +220,13 @@ class DetectorNode(Node):
             )
         return requested
 
+    def depth_callback(self, msg: Image):
+        depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        self.latest_depth = np.asarray(depth)
+        self.latest_depth_stamp_sec = self._stamp_to_sec(msg.header.stamp)
+        self.latest_depth_encoding = msg.encoding
+        self.latest_depth_frame_id = msg.header.frame_id
+
     def image_callback(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         tensor, scale, pad = self._preprocess(frame)
@@ -188,6 +234,8 @@ class DetectorNode(Node):
         detections = self._postprocess(
             outputs, scale, pad, frame.shape, include_masks=self.enable_annotated_image
         )
+        if self.enable_depth:
+            self._attach_depth(msg, detections, frame.shape)
 
         if self.output_format == "vision_msgs":
             self.publisher.publish(self._to_vision_msg(msg, detections))
@@ -290,6 +338,64 @@ class DetectorNode(Node):
                 )
             detections.append(detection)
         return detections
+
+    def _attach_depth(self, image_msg, detections, frame_shape):
+        image_stamp_sec = self._stamp_to_sec(image_msg.header.stamp)
+        depth = self.latest_depth
+        depth_stamp_sec = self.latest_depth_stamp_sec
+        if depth is None or depth_stamp_sec is None:
+            for detection in detections:
+                detection["depth_valid"] = False
+                detection["depth_reason"] = "no_depth_frame"
+            return
+
+        depth_age_sec = abs(image_stamp_sec - depth_stamp_sec)
+        if self.depth_max_age_sec > 0 and depth_age_sec > self.depth_max_age_sec:
+            for detection in detections:
+                detection["depth_valid"] = False
+                detection["depth_reason"] = "stale_depth_frame"
+                detection["depth_age_sec"] = float(depth_age_sec)
+            return
+
+        frame_h, frame_w = frame_shape[:2]
+        depth_h, depth_w = depth.shape[:2]
+        for detection in detections:
+            distance_m, sample_count = self._median_depth_for_bbox(
+                depth, detection["bbox"], frame_w, frame_h, depth_w, depth_h
+            )
+            detection["depth_valid"] = distance_m is not None
+            detection["depth_sample_count"] = int(sample_count)
+            detection["depth_age_sec"] = float(depth_age_sec)
+            detection["depth_frame_id"] = self.latest_depth_frame_id
+            if distance_m is None:
+                detection["depth_reason"] = "not_enough_valid_depth"
+            else:
+                detection["depth_m"] = float(distance_m)
+
+    def _median_depth_for_bbox(self, depth, bbox, frame_w, frame_h, depth_w, depth_h):
+        cx = bbox["center_x"] * depth_w / frame_w
+        cy = bbox["center_y"] * depth_h / frame_h
+        size_x = max(1.0, bbox["size_x"] * depth_w / frame_w * self.depth_roi_scale)
+        size_y = max(1.0, bbox["size_y"] * depth_h / frame_h * self.depth_roi_scale)
+
+        x1 = int(max(0, round(cx - size_x / 2)))
+        x2 = int(min(depth_w, round(cx + size_x / 2)))
+        y1 = int(max(0, round(cy - size_y / 2)))
+        y2 = int(min(depth_h, round(cy + size_y / 2)))
+        if x2 <= x1 or y2 <= y1:
+            return None, 0
+
+        roi = depth[y1:y2, x1:x2].astype(np.float32)
+        if roi.ndim == 3:
+            roi = roi[:, :, 0]
+        valid = np.isfinite(roi) & (roi > 0)
+        values = roi[valid]
+        if values.size < self.depth_min_valid_pixels:
+            return None, values.size
+        return float(np.median(values) * self.depth_unit_scale), values.size
+
+    def _stamp_to_sec(self, stamp):
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     def _prediction_matrix(self, output):
         pred = np.squeeze(output, axis=0) if output.ndim == 3 and output.shape[0] == 1 else output
@@ -410,6 +516,8 @@ class DetectorNode(Node):
 
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             label = f"{detection.get('class_name', detection['class_id'])} {detection['score']:.2f}"
+            if detection.get("depth_valid"):
+                label += f" {detection['depth_m']:.2f}m"
             cv2.putText(
                 annotated,
                 label,
