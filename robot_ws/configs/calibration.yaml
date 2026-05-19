@@ -9,19 +9,19 @@ ekf:
   frequency: 50
   sensor_timeout: 0.2
 imu:
-  gyro_bias_x: -0.009329
-  gyro_bias_y: -0.003587
-  gyro_bias_z: 0.004543
+  gyro_bias_x: -0.009073
+  gyro_bias_y: -0.003291
+  gyro_bias_z: 0.004512
 kinect:
   backlight_compensation: false
   brightness: 128
   color_resolution: 720P
   contrast: 5
   depth_mode: NFOV_UNBINNED
-  exposure_time_absolute: 33333
+  exposure_time_absolute: -1
   fps: 15
-  gain: 128
+  gain: -1
   powerline_frequency: 60
   saturation: 32
   sharpness: 2
-  white_balance: 4500
+  white_balance: -1
