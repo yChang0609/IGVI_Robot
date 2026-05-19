@@ -14,6 +14,7 @@ include:
   - services/oradarlidar.yaml
   - services/lidar_filter.yaml
   - services/lidar_transform.yaml
+  - services/eto_eye.yaml
   # - services/urdf_viz.yaml
   # - services/rosbridge.yaml
 

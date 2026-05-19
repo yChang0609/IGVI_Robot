@@ -139,3 +139,23 @@ Detailed KROS car notes are in `docs/README_kros_car.md`.
 
   README.md
   .gitignore -->
+
+## ETO Eye Detector
+
+`eto_eye` is integrated as the YOLO detector for the Kinect RGB topic. The CPU and GPU variants are separate profiles so only one detector publishes `/detections_json` at a time.
+
+```bash
+# Kinect + Foxglove
+docker compose -f docker/compose/compose.yaml --profile kinect --profile monitoring up -d
+
+# CPU detector
+docker compose -f docker/compose/compose.yaml --profile eto_eye_cpu up -d eto_eye_cpu
+
+# AMD GPU detector, ROCm/MIGraphX
+docker compose -f docker/compose/compose.yaml --profile eto_eye_gpu up -d eto_eye_gpu
+```
+
+Foxglove can connect to `ws://localhost:8765`. Useful topics are `/eto_eye/annotated_image/compressed` and `/detections_json`.
+
+The GPU path expects the ASUS Vivobook AMD setup that was validated with kernel `6.17.0-29-generic`, Ubuntu inbox `amdgpu`, UMA set to 8GB, ROCm `7.2.1`, and `MIGraphXExecutionProvider`. MIGraphX compiled model cache is stored under `data/migraphx_cache/eto_eye`, which is runtime data and should stay untracked.
+
