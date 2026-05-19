@@ -21,7 +21,9 @@ RUN apt-get update && \
         ros-jazzy-geometry-msgs \
         ros-jazzy-sensor-msgs \
         ros-jazzy-trajectory-msgs \
+        ros-jazzy-tf2-ros \
         python3-colcon-common-extensions \
+        python3-numpy \
         python3-pil \
     && rm -rf /var/lib/apt/lists/*
 

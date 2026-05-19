@@ -94,11 +94,41 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     def target_services(request: ComposeActionRequest) -> list[str] | None:
         reg = registry()
-        services = reg.validate_services(request.services)
-        if services:
-            return services
-        service = reg.validate_service(request.service)
+        try:
+            services = reg.validate_services(request.services)
+            if services:
+                return services
+            service = reg.validate_service(request.service)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [service] if service else None
+
+    def requested_services(request: ComposeActionRequest) -> list[str]:
+        services = request.services or ([request.service] if request.service else [])
+        return [service for service in services if service]
+
+    def action_services(request: ComposeActionRequest) -> tuple[list[str] | None, bool]:
+        services = requested_services(request)
+        if not services:
+            return None, False
+
+        allowed = registry().allowed_services()
+        if all(service in allowed for service in services):
+            return registry().validate_services(services), False
+
+        for service in services:
+            validate_registered_or_live_service(service)
+        return services, True
+
+    def validate_registered_or_live_service(service: str) -> None:
+        if service in registry().allowed_services():
+            return
+        try:
+            exists = docker_engine().has_project_container(service)
+        except DockerUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not exists:
+            raise HTTPException(status_code=404, detail=f"Service not found: {service}")
 
     async def run_ros(action: Callable[[RobotBridgeClient], object]) -> RosActionResponse:
         client = RobotBridgeClient(current_settings())
@@ -246,7 +276,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/compose/services/{service}", response_model=ContainerStatus)
     def service_status(service: str) -> ContainerStatus:
-        registry().validate_service(service)
+        validate_registered_or_live_service(service)
         for item in list_services():
             if item.service == service:
                 return item
@@ -254,7 +284,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.get("/api/compose/services/{service}/logs", response_model=LogsResponse)
     def service_logs(service: str, tail: int = 200) -> LogsResponse:
-        registry().validate_service(service)
+        validate_registered_or_live_service(service)
         tail = min(max(tail, 1), 2000)
         try:
             logs = docker_engine().get_logs(service, tail=tail)
@@ -281,22 +311,28 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.post("/api/compose/actions/start", response_model=ComposeActionResponse)
     def start(request: ComposeActionRequest) -> ComposeActionResponse:
-        services = target_services(request)
+        services, use_container_action = action_services(request)
+        if use_container_action:
+            return compose_or_http(lambda: docker_engine().container_action("start", services or []))
         profile = registry().validate_profile(request.profile)
         return compose_or_http(lambda: compose_project().up(services=services, profile=profile, detach=True))
 
     @app.post("/api/compose/actions/stop", response_model=ComposeActionResponse)
     def stop(request: ComposeActionRequest) -> ComposeActionResponse:
-        services = target_services(request)
+        services, use_container_action = action_services(request)
         if not services:
             raise HTTPException(status_code=400, detail="stop requires at least one service")
+        if use_container_action:
+            return compose_or_http(lambda: docker_engine().container_action("stop", services))
         return compose_or_http(lambda: compose_project().stop(services=services))
 
     @app.post("/api/compose/actions/restart", response_model=ComposeActionResponse)
     def restart(request: ComposeActionRequest) -> ComposeActionResponse:
-        services = target_services(request)
+        services, use_container_action = action_services(request)
         if not services:
             raise HTTPException(status_code=400, detail="restart requires at least one service")
+        if use_container_action:
+            return compose_or_http(lambda: docker_engine().container_action("restart", services))
         return compose_or_http(lambda: compose_project().restart(services=services))
 
     @app.post("/api/compose/actions/down", response_model=ComposeActionResponse)
@@ -345,6 +381,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.get("/api/ros/pose", response_model=RobotPoseResponse)
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())
+
+    @app.get("/api/ros/task/target")
+    async def ros_task_target() -> dict:
+        client = RobotBridgeClient(current_settings())
+        try:
+            return await client.get_target()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:

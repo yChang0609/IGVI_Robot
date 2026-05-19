@@ -101,6 +101,17 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def get_target(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_target)
+
+    def _fetch_target(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/task/target"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def list_image_topics(self) -> ImageTopicsResponse:
         return await asyncio.to_thread(self._fetch_image_topics)
 

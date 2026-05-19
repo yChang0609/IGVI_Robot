@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "bridge_node = igvi_bridge.bridge_node:main",
+            "detection_projector = igvi_bridge.detection_projector:main",
         ],
     },
 )

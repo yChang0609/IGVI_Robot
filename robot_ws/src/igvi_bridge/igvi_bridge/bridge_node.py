@@ -60,6 +60,7 @@ class BridgeNode(Node):
         self._image_sub = None
         self._image_jpeg: bytes | None = None
         self._image_meta: dict[str, Any] = {}
+        self._target: dict[str, Any] | None = None
 
         self._nav_lock = threading.Lock()
         self._nav_state: str = "idle"
@@ -126,6 +127,7 @@ class BridgeNode(Node):
         self._motion_state: str = "unknown"
         self.create_subscription(String, "/motion/state", self._on_motion_state, 10)
         self.create_subscription(String, "/imu/calibration_state", self._on_imu_calibration_state, 10)
+        self.create_subscription(String, "/task/target_candidates", self._on_target_candidates, 10)
         self.get_logger().info("igvi_bridge node started, HTTP on :8771")
 
     # ── ROS callbacks ────────────────────────────────────────────────────────
@@ -189,6 +191,14 @@ class BridgeNode(Node):
         with self._imu_lock:
             self._imu_calibration_status = status
 
+    def _on_target_candidates(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data))
+        except json.JSONDecodeError:
+            return
+        with self._lock:
+            self._target = payload
+
     def _on_image(self, msg: Image) -> None:
         jpeg = _encode_jpeg(msg)
         if jpeg is None:
@@ -210,6 +220,14 @@ class BridgeNode(Node):
     def snapshot_pose(self) -> dict[str, float]:
         with self._lock:
             return dict(self._pose)
+
+    def snapshot_target(self) -> dict[str, Any]:
+        with self._lock:
+            if self._target is None:
+                return {"ok": False, "message": "No /task/target_candidates message received"}
+            out = dict(self._target)
+            out["ok"] = True
+            return out
 
     def snapshot_health(self) -> dict[str, Any]:
         with self._lock:
@@ -728,6 +746,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/task/target":
+                self._json(node.snapshot_target())
             elif path == "/api/waypoints":
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":

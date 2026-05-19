@@ -132,8 +132,18 @@ class DockerEngineClient:
                 )
         return sorted(statuses, key=lambda item: (item.profile or "", item.service))
 
+    def has_project_container(self, service: str) -> bool:
+        labels = [
+            f"com.docker.compose.project={self.settings.project_name}",
+            f"com.docker.compose.service={service}",
+        ]
+        try:
+            containers = self.client.containers.list(all=True, filters={"label": labels})
+        except Exception as exc:
+            raise DockerUnavailableError(str(exc)) from exc
+        return bool(containers)
+
     def _container_for_service(self, service: str):
-        self.registry.validate_service(service)
         labels = [
             f"com.docker.compose.project={self.settings.project_name}",
             f"com.docker.compose.service={service}",
@@ -153,6 +163,35 @@ class DockerEngineClient:
     def get_stats(self, service: str) -> dict[str, Any]:
         container = self._container_for_service(service)
         return container.stats(stream=False)
+
+    def container_action(self, action: str, services: list[str]) -> ComposeActionResponse:
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError(f"Container action is not supported: {action}")
+        if not services:
+            raise ValueError(f"{action} requires at least one service")
+
+        started_at = _utcnow()
+        for service in services:
+            container = self._container_for_service(service)
+            if action == "start":
+                container.start()
+            elif action == "stop":
+                container.stop()
+            else:
+                container.restart()
+
+        past = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}[action]
+        return ComposeActionResponse(
+            ok=True,
+            action=action,
+            service=services[0] if len(services) == 1 else None,
+            services=services,
+            backend="docker-engine",
+            started_at=started_at,
+            finished_at=_utcnow(),
+            message=f"{past} {', '.join(services)}",
+            events_tail=[],
+        )
 
 
 class ComposeProjectClient:
