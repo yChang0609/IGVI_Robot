@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from wildbot_grasp_nodes.tune_open_door import main
+
+
+if __name__ == "__main__":
+    main()

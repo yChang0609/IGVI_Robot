@@ -26,6 +26,7 @@ x-eto-eye-env: &eto_eye_env
   DEPTH_MAX_AGE_SEC: "0.5"
 
 x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 
 services:
   eto_eye_cpu:
@@ -40,6 +41,7 @@ services:
       ORT_EP: cpu
     volumes:
       - *model_volume
+      - *config_volume
     restart: unless-stopped
 
   eto_eye_gpu:
@@ -61,6 +63,7 @@ services:
       - render
     volumes:
       - *model_volume
+      - *config_volume
       - ../../../data/migraphx_cache/eto_eye:/migraphx_cache
     restart: unless-stopped
 
