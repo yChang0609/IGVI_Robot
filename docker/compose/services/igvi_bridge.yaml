@@ -26,6 +26,26 @@ services:
       - "8771:8771"
     restart: unless-stopped
 
+  detection_projector:
+    <<: *base_service
+    profiles: ["bridge", "perception"]
+    build:
+      context: ../../..
+      dockerfile: docker/images/Dockerfile.bridge
+    image: igvi_robot-igvi_bridge:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - ../../../robot_ws/src/igvi_bridge/igvi_bridge:/workspace/src/igvi_bridge/igvi_bridge:ro
+    command:
+      - /bin/bash
+      - -c
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        source /workspace/install/setup.bash &&
+        python3 /workspace/src/igvi_bridge/igvi_bridge/detection_projector.py
+
 networks:
   robot_net:
     driver: bridge
