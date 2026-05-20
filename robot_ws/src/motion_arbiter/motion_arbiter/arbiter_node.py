@@ -3,6 +3,7 @@
 Subscribes:
   /plan        nav_msgs/Path                       — global plan from nav2 planner
   /motion/cmd  geometry_msgs/Twist                 — manual override command
+  /rtabmap/localization_pose geometry_msgs/PoseWithCovarianceStamped — map-frame pose
   /amcl_pose   geometry_msgs/PoseWithCovarianceStamped  — map-frame pose (preferred)
   /odom        nav_msgs/Odometry                   — fallback pose + velocity feedback
 
@@ -79,6 +80,12 @@ class MotionArbiter(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/rtabmap/localization_pose",
+            self._on_rtabmap_loc,
+            10,
+        )
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
 
@@ -118,15 +125,23 @@ class MotionArbiter(Node):
                 self._state = State.OVERRIDE if self._path else State.MANUAL
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        if self._pose_source == "rtabmap_loc":
+            return
         p = msg.pose.pose
         with self._lock:
             self._pose = _yaw_from_pose(p.position.x, p.position.y, p.orientation)
             self._pose_source = "amcl"
 
-    def _on_odom(self, msg: Odometry) -> None:
-        # Only trust /odom if amcl hasn't given us a map-frame pose yet.
+    def _on_rtabmap_loc(self, msg: PoseWithCovarianceStamped) -> None:
+        p = msg.pose.pose
         with self._lock:
-            if self._pose_source == "amcl":
+            self._pose = _yaw_from_pose(p.position.x, p.position.y, p.orientation)
+            self._pose_source = "rtabmap_loc"
+
+    def _on_odom(self, msg: Odometry) -> None:
+        # Only trust odometry if no map-frame localization pose is available.
+        with self._lock:
+            if self._pose_source in ("amcl", "rtabmap_loc"):
                 return
             p = msg.pose.pose
             self._pose = _yaw_from_pose(p.position.x, p.position.y, p.orientation)
