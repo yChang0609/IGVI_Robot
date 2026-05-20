@@ -28,12 +28,14 @@ class SemanticMemoryNode(Node):
         super().__init__('semantic_memory_node')
 
         # === 參數設定 ===
-        self.declare_parameter('target_frame', 'odom')           
+        self.declare_parameter('target_frame', 'map')           
         self.declare_parameter('distance_threshold', 0.1)        
         self.declare_parameter('memory_timeout_sec', 10.0)       
         self.declare_parameter('position_alpha', 0.3)            
         self.declare_parameter('depth_topic', '/depth_to_rgb/image_raw')
         self.declare_parameter('depth_unit_scale', 0.001)
+        self.declare_parameter('detection_topic', '/detections_json')
+        self.declare_parameter('camera_info_topic', '/rgb/camera_info')
 
         self.target_frame = self.get_parameter('target_frame').value
         self.dist_thresh = self.get_parameter('distance_threshold').value
@@ -47,6 +49,7 @@ class SemanticMemoryNode(Node):
         
         self.bridge = CvBridge()
         self.cam_model = PinholeCameraModel()
+        self.camera_info_received = False
         self.latest_depth_img = None
         self.camera_frame_id = None
 
@@ -54,8 +57,18 @@ class SemanticMemoryNode(Node):
         self.memory = {}
 
         # === 訂閱與發布 ===
-        self.create_subscription(CameraInfo, '/camera/color/camera_info', self.camera_info_callback, 10)
-        self.create_subscription(Image, self.get_parameter('depth_topic').value, self.depth_callback, 10)
+        self.create_subscription(
+            CameraInfo, 
+            self.get_parameter('camera_info_topic').value, 
+            self.camera_info_callback, 
+            10
+        )
+        self.create_subscription(
+            String, 
+            self.get_parameter('detection_topic').value, 
+            self.detection_callback, 
+            10
+        )
         self.create_subscription(String, '/detections', self.detection_callback, 10)
         
         self.memory_pub = self.create_publisher(String, '/semantic_memory', 10)
@@ -66,8 +79,9 @@ class SemanticMemoryNode(Node):
         self.get_logger().info(f"Semantic Memory Node started. Target frame: {self.target_frame}")
 
     def camera_info_callback(self, msg: CameraInfo):
-        if not self.cam_model.initialized():
+        if not self.camera_info_received:
             self.cam_model.fromCameraInfo(msg)
+            self.camera_info_received = True
             self.get_logger().info("Camera model initialized.")
 
     def depth_callback(self, msg: Image):
@@ -76,7 +90,7 @@ class SemanticMemoryNode(Node):
         self.camera_frame_id = msg.header.frame_id
 
     def detection_callback(self, msg: String):
-        if not self.cam_model.initialized():
+        if not self.camera_info_received:
             return
 
         try:
@@ -92,36 +106,46 @@ class SemanticMemoryNode(Node):
         msg_time = Time(seconds=data['stamp']['sec'], nanoseconds=data['stamp']['nanosec'])
         now_sec = time.time()
 
+        # === 兇手 1 號檢查點：TF 轉換 ===
         try:
             transform = self.tf_buffer.lookup_transform(
                 self.target_frame, frame_id, msg_time, timeout=rclpy.duration.Duration(seconds=0.1)
             )
         except TransformException as ex:
+            # 加入這行印出警告
+            self.get_logger().warning(f"【TF 轉換失敗】 無法將 {frame_id} 轉換到 {self.target_frame}。詳細原因: {ex}")
             return
 
         for det in detections:
             if not det.get('depth_valid'):
-                continue
+                continue 
 
             class_name = det.get('class_name', str(det.get('class_id')))
             center_x = det['bbox']['center_x']
             center_y = det['bbox']['center_y']
             depth_z = det['depth_m']
 
-            # 1. 將 2D 像素透過相機模型轉為 3D 射線並乘上深度
             ray = self.cam_model.projectPixelTo3dRay((center_x, center_y))
             cam_x = ray[0] * (depth_z / ray[2])
             cam_y = ray[1] * (depth_z / ray[2])
             cam_z = depth_z
 
-            # 2. 轉換至世界座標
             point_cam = PointStamped()
             point_cam.header.frame_id = frame_id
             point_cam.header.stamp = msg_time.to_msg()
             point_cam.point.x, point_cam.point.y, point_cam.point.z = cam_x, cam_y, cam_z
 
+            # 1. 這裡計算出 point_world (注意縮排：前面有 12 個空格)
             point_world = tf2_geometry_msgs.do_transform_point(point_cam, transform)
+            
+            # 2. 存入記憶庫 (注意縮排：必須跟 point_world 對齊！前面有 12 個空格)
             self.associate_and_update(class_name, point_world.point.x, point_world.point.y, point_world.point.z, now_sec)
+            
+            # 3. 印出 Log (注意縮排：必須對齊！前面有 12 個空格)
+            self.get_logger().info(f"【記憶更新】 成功將 {class_name} 寫入 {self.target_frame} 世界坐標系！")
+
+        # 4. 發布狀態 (注意縮排：這裡退回去了！前面只有 8 個空格)
+        self.publish_memory()
 
         self.publish_memory()
 
@@ -149,7 +173,7 @@ class SemanticMemoryNode(Node):
             }
 
     def cleanup_memory(self):
-        if self.latest_depth_img is None or self.camera_frame_id is None or not self.cam_model.initialized():
+        if self.latest_depth_img is None or self.camera_frame_id is None or not self.camera_info_received:
             return
 
         now_sec = time.time()
@@ -159,7 +183,7 @@ class SemanticMemoryNode(Node):
         try:
             # 取得「當下」的座標狀態，用來判定視野
             transform_world_to_cam = self.tf_buffer.lookup_transform(
-                self.camera_frame_id, self.target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+                self.camera_frame_id, self.target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5)
             )
         except TransformException:
             return
@@ -205,46 +229,73 @@ class SemanticMemoryNode(Node):
 
     def publish_memory(self):
         memory_list = []
+        
+        # === Debug 發布檢查 ===
+        self.get_logger().info(f"【Debug 發布檢查】 當前記憶庫共有 {len(self.memory)} 個物件")
+        
         for obj_id, obj_data in self.memory.items():
-            if obj_data['hits'] >= 3:
+            self.get_logger().info(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
+            
+            # 目前設定為 hits >= 1 (看過 1 次就發布，方便 Debug)
+            # 等系統穩定後，建議改回 3 以過濾閃爍雜訊
+            if obj_data['hits'] >= 1:
                 memory_list.append({
-                    "id": obj_id, "class_name": obj_data['class_name'],
+                    "id": obj_id, 
+                    "class_name": obj_data['class_name'],
                     "position": {"x": obj_data['x'], "y": obj_data['y'], "z": obj_data['z']}
                 })
-        
+
+        # === 1. 發布 JSON 訊息 ===
         msg = String()
         msg.data = json.dumps({"target_frame": self.target_frame, "objects": memory_list})
         self.memory_pub.publish(msg)
 
+        # === 2. 發布 RViz Marker ===
         marker_array = MarkerArray()
-        clear_marker = Marker()
-        clear_marker.action = Marker.DELETEALL
-        marker_array.markers.append(clear_marker)
 
-        for i, (obj_id, obj_data) in enumerate(self.memory.items()):
-            if obj_data['hits'] < 3: continue
+        for obj_id, obj_data in self.memory.items():
+            if obj_data['hits'] < 1: 
+                continue
 
+            # 產生穩定的整數 ID，確保 RViz 知道這是同一個物件，直接覆蓋更新而不產生殘影
+            stable_int_id = hash(obj_id) % 2147483647 
+
+            # --- 球體 Marker ---
             m = Marker()
             m.header.frame_id = self.target_frame
             m.header.stamp = self.get_clock().now().to_msg()
             m.ns = "semantic_objects"
-            m.id = i
+            m.id = stable_int_id
             m.type = Marker.SPHERE
-            m.action = Marker.ADD
-            m.pose.position.x, m.pose.position.y, m.pose.position.z = obj_data['x'], obj_data['y'], obj_data['z']
-            m.scale.x = m.scale.y = m.scale.z = 0.15
-            m.color.a = 0.8; m.color.r = 0.0; m.color.g = 1.0; m.color.b = 0.0
+            m.action = Marker.ADD  
+            m.pose.position.x = obj_data['x']
+            m.pose.position.y = obj_data['y']
+            m.pose.position.z = obj_data['z']
+            m.scale.x = m.scale.y = m.scale.z = 0.15 # 15 公分大小
+            m.color.a = 0.8
+            m.color.r = 0.0
+            m.color.g = 1.0
+            m.color.b = 0.0
+            # 加入壽命：10 秒內沒收到新的更新，RViz 就會自動刪除它
+            m.lifetime = rclpy.duration.Duration(seconds=10.0).to_msg()
 
+            # --- 文字標籤 Marker ---
             t = Marker()
             t.header = m.header
             t.ns = "semantic_labels"
-            t.id = i + 1000
+            t.id = stable_int_id + 1000000  # 文字的 ID 加上偏移量避免與球體 ID 衝突
             t.type = Marker.TEXT_VIEW_FACING
             t.action = Marker.ADD
-            t.pose.position.x, t.pose.position.y, t.pose.position.z = obj_data['x'], obj_data['y'], obj_data['z'] + 0.2
+            t.pose.position.x = obj_data['x']
+            t.pose.position.y = obj_data['y']
+            t.pose.position.z = obj_data['z'] + 0.2 # 浮在球體正上方 20 公分處
             t.scale.z = 0.1
-            t.color.a = 1.0; t.color.r = 1.0; t.color.g = 1.0; t.color.b = 1.0
+            t.color.a = 1.0
+            t.color.r = 1.0
+            t.color.g = 1.0
+            t.color.b = 1.0
             t.text = obj_data['class_name']
+            t.lifetime = rclpy.duration.Duration(seconds=10.0).to_msg() # 同樣加上 10 秒壽命
 
             marker_array.markers.append(m)
             marker_array.markers.append(t)

@@ -17,6 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-opencv \
         ros-${ROS_DISTRO}-vision-msgs \
         ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-image-geometry \
+        ros-${ROS_DISTRO}-tf2-ros \
+        ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        ros-${ROS_DISTRO}-message-filters \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --break-system-packages \
