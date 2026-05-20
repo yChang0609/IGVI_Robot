@@ -106,23 +106,9 @@ class DetectionProjector(Node):
             self.get_logger().warn("waiting for depth image and camera_info")
             return
 
-        selected = self._select_detection(detections)
-        if selected is None:
+        candidates = self._candidate_detections(detections)
+        if not candidates:
             return
-
-        bbox = selected.get("bbox") or {}
-        try:
-            u = float(bbox.get("center_x"))
-            v = float(bbox.get("center_y"))
-        except (TypeError, ValueError):
-            self.get_logger().warn(f"detection missing bbox center: {selected}")
-            return
-
-        depth_m = self._sample_depth(u, v)
-        if depth_m is None:
-            return
-
-        camera_point = self._deproject(u, v, depth_m)
         camera_frame = str(raw.get("frame_id") or self._camera_info.header.frame_id)
 
         try:
@@ -132,27 +118,19 @@ class DetectionProjector(Node):
             self.get_logger().warn(f"TF unavailable for {camera_frame}: {exc}")
             return
 
-        base_point = _transform_point(base_tf, camera_point)
-        map_point = _transform_point(map_tf, camera_point)
+        projected = [
+            item
+            for det in candidates
+            if (item := self._project_detection(det, raw, camera_frame, base_tf, map_tf)) is not None
+        ]
+        if not projected:
+            return
 
-        payload = {
-            "stamp": raw.get("stamp"),
-            "source_frame": camera_frame,
-            "class_id": selected.get("class_id"),
-            "class_name": selected.get("class_name"),
-            "confidence": float(selected.get("score", selected.get("confidence", 0.0))),
-            "bbox": bbox,
-            "depth_m": depth_m,
-            "x_camera": camera_point[0],
-            "y_camera": camera_point[1],
-            "z_camera": camera_point[2],
-            "x_base": base_point[0],
-            "y_base": base_point[1],
-            "z_base": base_point[2],
-            "x_map": map_point[0],
-            "y_map": map_point[1],
-            "z_map": map_point[2],
-        }
+        selected = max(projected, key=lambda det: float(det.get("confidence", 0.0)))
+        payload = dict(selected)
+        payload["detections"] = projected
+        payload["selected_index"] = projected.index(selected)
+        payload["candidate_count"] = len(projected)
         self._last_payload = payload
 
         out = String()
@@ -164,7 +142,7 @@ class DetectionProjector(Node):
             f"map=({payload['x_map']:.2f},{payload['y_map']:.2f})"
         )
 
-    def _select_detection(self, detections: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _candidate_detections(self, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
         target_classes = {
             str(x).strip()
             for x in self.get_parameter("target_classes").value
@@ -184,8 +162,50 @@ class DetectionProjector(Node):
                 if float(det.get("score", det.get("confidence", 0.0))) >= min_score
             ]
         if not candidates:
+            return []
+        return candidates
+
+    def _project_detection(
+        self,
+        detection: dict[str, Any],
+        raw: dict[str, Any],
+        camera_frame: str,
+        base_tf: Any,
+        map_tf: Any,
+    ) -> dict[str, Any] | None:
+        bbox = detection.get("bbox") or {}
+        try:
+            u = float(bbox.get("center_x"))
+            v = float(bbox.get("center_y"))
+        except (TypeError, ValueError):
+            self.get_logger().warn(f"detection missing bbox center: {detection}")
             return None
-        return max(candidates, key=lambda det: float(det.get("score", det.get("confidence", 0.0))))
+
+        depth_m = self._sample_depth(u, v)
+        if depth_m is None:
+            return None
+
+        camera_point = self._deproject(u, v, depth_m)
+        base_point = _transform_point(base_tf, camera_point)
+        map_point = _transform_point(map_tf, camera_point)
+        return {
+            "stamp": raw.get("stamp"),
+            "source_frame": camera_frame,
+            "class_id": detection.get("class_id"),
+            "class_name": detection.get("class_name"),
+            "confidence": float(detection.get("score", detection.get("confidence", 0.0))),
+            "bbox": bbox,
+            "depth_m": depth_m,
+            "x_camera": camera_point[0],
+            "y_camera": camera_point[1],
+            "z_camera": camera_point[2],
+            "x_base": base_point[0],
+            "y_base": base_point[1],
+            "z_base": base_point[2],
+            "x_map": map_point[0],
+            "y_map": map_point[1],
+            "z_map": map_point[2],
+        }
 
     def _sample_depth(self, u: float, v: float) -> float | None:
         assert self._depth is not None
