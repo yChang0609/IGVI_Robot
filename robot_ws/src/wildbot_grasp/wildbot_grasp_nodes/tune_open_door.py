@@ -64,9 +64,9 @@ BASE JOG (publishes Twist on /motion/cmd; arbiter handles smoothing):
 
 CAPTURE  (snapshots whatever is true *right now*):
   1  door_home_pose_deg   (rest / retracted pose)
-  2  door_above_pose_deg  (gripper hovering just above the handle)
-  3  door_press_pose_deg  (gripper has pressed the handle down)
-  4  door_push_pose_deg   (arm extended forward to push the door)
+  2  door_pose_1_deg      (sequence pose 1 — ready at the handle)
+  3  door_pose_2_deg      (sequence pose 2 — raise straight up)
+  4  door_pose_3_deg      (sequence pose 3 — push straight down)
   5  ready_distance_m     (current depth to detected knob)
 
 OTHER:
@@ -254,10 +254,10 @@ def _write_yaml(path: str, captures: dict[str, list[float]], ready_distance_m: O
         "open_door_server:\n"
         "  ros__parameters:\n"
         f"{rd_line}"
-        f"    door_home_pose_deg:  {fmt_pose(captures.get('door_home_pose_deg'))}\n"
-        f"    door_above_pose_deg: {fmt_pose(captures.get('door_above_pose_deg'))}\n"
-        f"    door_press_pose_deg: {fmt_pose(captures.get('door_press_pose_deg'))}\n"
-        f"    door_push_pose_deg:  {fmt_pose(captures.get('door_push_pose_deg'))}\n"
+        f"    door_home_pose_deg: {fmt_pose(captures.get('door_home_pose_deg'))}\n"
+        f"    door_pose_1_deg:    {fmt_pose(captures.get('door_pose_1_deg'))}\n"
+        f"    door_pose_2_deg:    {fmt_pose(captures.get('door_pose_2_deg'))}\n"
+        f"    door_pose_3_deg:    {fmt_pose(captures.get('door_pose_3_deg'))}\n"
     )
     with open(path, "w") as fh:
         fh.write(body)
@@ -302,8 +302,8 @@ def main(args=None) -> None:
             if key == "v":
                 rd = f"{ready_distance_m:.3f} m" if ready_distance_m is not None else "(unset)"
                 print("\r---- captured ----", flush=True)
-                for label in ("door_home_pose_deg", "door_above_pose_deg",
-                              "door_press_pose_deg", "door_push_pose_deg"):
+                for label in ("door_home_pose_deg", "door_pose_1_deg",
+                              "door_pose_2_deg", "door_pose_3_deg"):
                     print(f"\r  {label}: {_format_pose(captures.get(label))}", flush=True)
                 print(f"\r  ready_distance_m: {rd}", flush=True)
                 print(
@@ -354,8 +354,8 @@ def main(args=None) -> None:
                 if pose is None:
                     print("\rERR: joint_states not available", flush=True)
                     continue
-                label = {"1": "door_home_pose_deg", "2": "door_above_pose_deg",
-                         "3": "door_press_pose_deg", "4": "door_push_pose_deg"}[key]
+                label = {"1": "door_home_pose_deg", "2": "door_pose_1_deg",
+                         "3": "door_pose_2_deg", "4": "door_pose_3_deg"}[key]
                 captures[label] = pose
                 print(f"\rsaved {label}: {_format_pose(pose)}", flush=True)
                 continue

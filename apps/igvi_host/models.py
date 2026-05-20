@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -103,7 +103,8 @@ class RosActionResponse(BaseModel):
 
 class ParamsSetRequest(BaseModel):
     node: str
-    params: dict[str, bool | int | float | str]
+    # Scalars (HSV ints, debug bool) or arrays (arm poses like [167.0, 80.0, 170.6]).
+    params: dict[str, Any]
 
 
 class OpenDoorGoalRequest(BaseModel):

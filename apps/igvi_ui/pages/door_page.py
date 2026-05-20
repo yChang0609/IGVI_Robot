@@ -13,8 +13,11 @@ the Robot page camera view.
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -35,6 +38,21 @@ from igvi_ui.widgets.image_view import ImageView
 
 DEBUG_TOPIC = "/open_door/debug_image"
 SERVER_NODE = "open_door_server"
+
+# Arm joint limits (degrees), mirrored from widgets/arm_control.py.
+# gripper < 168° overheats the motor, so it is clamped here too.
+ARM1_MIN, ARM1_MAX = 30.0, 210.0
+ARM2_MIN, ARM2_MAX = 0.0, 240.0
+GRIPPER_MIN_SAFE, GRIPPER_MAX = 168.0, 240.0
+ARM_TRAJ_TIME = 0.4          # time_from_start for jog trajectories (s)
+JOG_THROTTLE_MS = 70         # coalesce rapid slider drags into one publish
+
+# (label, min, max, default) for the three jog joints.
+_ARM_JOINTS: list[tuple[str, float, float, float]] = [
+    ("arm_1", ARM1_MIN, ARM1_MAX, 167.0),
+    ("arm_2", ARM2_MIN, ARM2_MAX, 80.0),
+    ("gripper", GRIPPER_MIN_SAFE, GRIPPER_MAX, 170.6),
+]
 
 # (label, param name on open_door_server, min, max, default)
 _TUNE_SLIDERS: list[tuple[str, str, int, int, int]] = [
@@ -62,6 +80,13 @@ edge &plusmn; <i>Aim offset</i>). ALIGN drives it onto the gray centerline.<br>
 class _StatusPoller(QThread):
     status_received = Signal(dict)
 
+    # Network timeout (2s) is kept well under stop_thread's 6s join window so a
+    # stop() request always lets run() return on its own — terminate() (which
+    # crashes with "QThread: Destroyed while thread is still running") is never
+    # reached. The 800ms idle gap is split into short hops so stop is prompt.
+    _POLL_TIMEOUT = 2.0
+    _IDLE_MS = 800
+
     def __init__(self, client: HostClient) -> None:
         super().__init__()
         self.client = client
@@ -73,10 +98,13 @@ class _StatusPoller(QThread):
     def run(self) -> None:
         while self._running:
             try:
-                self.status_received.emit(self.client.open_door_status())
+                self.status_received.emit(self.client.open_door_status(timeout=self._POLL_TIMEOUT))
             except Exception:  # noqa: BLE001
                 pass
-            self.msleep(400)
+            waited = 0
+            while self._running and waited < self._IDLE_MS:
+                self.msleep(100)
+                waited += 100
 
 
 class DoorPage(QWidget):
@@ -130,6 +158,7 @@ class DoorPage(QWidget):
         layout.setSpacing(12)
 
         layout.addWidget(self._build_action_card())
+        layout.addWidget(self._build_arm_card())
         layout.addWidget(self._build_tuning_card())
         layout.addWidget(self._build_legend_card())
         layout.addStretch(1)
@@ -182,6 +211,108 @@ class DoorPage(QWidget):
         layout.addWidget(self.progress)
 
         return card
+
+    def _build_arm_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        heading = QLabel("Arm poses (sequence: 1 → 2 → 3)")
+        heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(heading)
+
+        self.jog_check = QCheckBox("Live jog — slider moves the real arm")
+        self.jog_check.setChecked(False)
+        layout.addWidget(self.jog_check)
+
+        # Coalesce rapid slider motion into one trajectory publish.
+        self._jog_timer = QTimer(self)
+        self._jog_timer.setSingleShot(True)
+        self._jog_timer.setInterval(JOG_THROTTLE_MS)
+        self._jog_timer.timeout.connect(self._publish_jog)
+
+        self._arm_sliders: dict[str, QSlider] = {}
+        for name, lo, hi, default in _ARM_JOINTS:
+            layout.addLayout(self._arm_row(name, lo, hi, default))
+
+        save_row = QHBoxLayout()
+        for n in (1, 2, 3):
+            btn = QPushButton(f"Save → Pose {n}")
+            btn.clicked.connect(lambda _c=False, idx=n: self._save_pose(idx))
+            save_row.addWidget(btn)
+        layout.addLayout(save_row)
+
+        bottom_row = QHBoxLayout()
+        home_btn = QPushButton("Go Home pose")
+        home_btn.clicked.connect(self._go_home)
+        bottom_row.addWidget(home_btn)
+        self.pose_status = QLabel("")
+        self.pose_status.setObjectName("Muted")
+        bottom_row.addWidget(self.pose_status, 1)
+        layout.addLayout(bottom_row)
+
+        return card
+
+    def _arm_row(self, name: str, lo: float, hi: float, default: float) -> QHBoxLayout:
+        row = QHBoxLayout()
+        label = QLabel(name)
+        label.setMinimumWidth(60)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(int(lo), int(hi))
+        slider.setValue(int(default))
+        readout = QLabel(f"{int(default)}°")
+        readout.setMinimumWidth(40)
+        readout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        slider.valueChanged.connect(lambda v, r=readout: r.setText(f"{v}°"))
+        slider.valueChanged.connect(self._on_jog_changed)
+        self._arm_sliders[name] = slider
+        row.addWidget(label)
+        row.addWidget(slider, 1)
+        row.addWidget(readout)
+        return row
+
+    def _current_arm_deg(self) -> list[float]:
+        return [float(self._arm_sliders[name].value()) for name, *_ in _ARM_JOINTS]
+
+    def _on_jog_changed(self) -> None:
+        # Only move the real arm when the user has armed live jog; either way
+        # the slider values are kept so Save→Pose captures the dialed-in angles.
+        if self.jog_check.isChecked():
+            self._jog_timer.start()  # restart throttle window
+
+    def _publish_jog(self) -> None:
+        positions_rad = [math.radians(d) for d in self._current_arm_deg()]
+        try:
+            self.client.arm_trajectory(positions_rad, time_from_start=ARM_TRAJ_TIME)
+        except HostClientError as exc:
+            self.log_message.emit(f"Arm jog failed: {exc}")
+
+    def _save_pose(self, n: int) -> None:
+        pose = self._current_arm_deg()
+        try:
+            result = self.client.set_params(SERVER_NODE, {f"door_pose_{n}_deg": pose})
+        except HostClientError as exc:
+            self.log_message.emit(f"Save Pose {n} failed: {exc}")
+            return
+        if result.get("ok", False):
+            pretty = ", ".join(f"{v:.1f}" for v in pose)
+            self.pose_status.setText(f"Pose {n} = [{pretty}]")
+            self.log_message.emit(f"Saved Pose {n} = [{pretty}]")
+        else:
+            self.log_message.emit(f"Pose {n}: {result.get('message', 'rejected')}")
+
+    def _go_home(self) -> None:
+        if not self.jog_check.isChecked():
+            self.log_message.emit("Enable 'Live jog' first to move the arm home.")
+            return
+        # door_home default; the server clamps/uses its own param on the FSM path.
+        positions_rad = [math.radians(d) for d in (167.0, 75.0, 170.6)]
+        try:
+            self.client.arm_trajectory(positions_rad, time_from_start=1.0)
+        except HostClientError as exc:
+            self.log_message.emit(f"Go home failed: {exc}")
 
     def _build_tuning_card(self) -> QWidget:
         card = QFrame()
@@ -289,7 +420,10 @@ class DoorPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
-        self._stop_poller()
+        # Full shutdown (not just the status poller): nested ImageView is not
+        # guaranteed its own hideEvent inside a QStackedWidget, so stop its
+        # poller explicitly here — same pattern as RobotPage.
+        self.shutdown()
 
     def _stop_poller(self) -> None:
         if self._poller is not None:
@@ -297,6 +431,7 @@ class DoorPage(QWidget):
             self._poller = None
 
     def shutdown(self) -> None:
-        """Forwarded by MainWindow.shutdown so background threads exit cleanly."""
+        """Stop every background thread. Idempotent; called from hideEvent and
+        MainWindow.closeEvent so neither leaves a thread running at teardown."""
         self._stop_poller()
         self.image_view.shutdown()

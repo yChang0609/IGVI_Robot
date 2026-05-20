@@ -14,8 +14,9 @@ Publishes:
 FSM:
   ALIGN     rotate-in-place until |x_norm| < align_pixel_tol for N ticks
   APPROACH  drive forward with mild centering until depth_m <= ready_distance_m
-  PRESS     arm: above-knob → press-down (timed via ArmCommander), then hold
-  PUSH      arm: push-forward (non-blocking) + base drives forward for push_duration_sec
+  PRESS     play door_pose_1 → door_pose_2 → door_pose_3 in order (e.g. ready →
+            raise straight up → push straight down), each held pose_hold_sec
+  PUSH      base drives forward for push_duration_sec to open the door
   COMPLETE  stop base, retract to door_home_pose_deg, succeed
   ABORT     stop base, retract to door_home_pose_deg, abort
 
@@ -113,16 +114,18 @@ class OpenDoorServer(Node):
         self.declare_parameter("approach_center_kp", 0.4)
         self.declare_parameter("approach_max_wz", 0.25)
 
-        # ── PRESS / PUSH ─────────────────────────────────────────────────
-        self.declare_parameter("press_hold_sec", 0.6)
+        # ── PRESS (arm sequence) / PUSH (drive forward) ──────────────────
+        self.declare_parameter("pose_hold_sec", 0.3)   # dwell between sequence poses
         self.declare_parameter("push_duration_sec", 3.0)
         self.declare_parameter("push_speed", 0.08)
 
-        # ── Arm poses (degrees) — tune to the physical handle geometry ───
-        # 3 DOF: [arm_1_joint, arm_2_joint, gripper_joint].
-        self.declare_parameter("door_above_pose_deg", [167.0, 80.0, 170.6])
-        self.declare_parameter("door_press_pose_deg", [167.0, 50.0, 170.6])
-        self.declare_parameter("door_push_pose_deg", [140.0, 80.0, 170.6])
+        # ── Arm poses (degrees) — tune live from the UI Door tab ─────────
+        # 3 DOF: [arm_1_joint, arm_2_joint, gripper_joint]. The three sequence
+        # poses play in order during PRESS, e.g. ready → raise straight up →
+        # push straight down. gripper must stay >= 168° or the motor overheats.
+        self.declare_parameter("door_pose_1_deg", [167.0, 80.0, 170.6])
+        self.declare_parameter("door_pose_2_deg", [167.0, 100.0, 170.6])
+        self.declare_parameter("door_pose_3_deg", [167.0, 50.0, 170.6])
         self.declare_parameter("door_home_pose_deg", [167.0, 75.0, 170.6])
 
         self._cb_group = ReentrantCallbackGroup()
@@ -315,16 +318,20 @@ class OpenDoorServer(Node):
                         wz = max(-max_wz, min(max_wz, -kp * det.x_norm))
                         self._publish_twist(speed, wz)
 
-            # ── PRESS ────────────────────────────────────────────────────
+            # ── PRESS: play the three sequence poses in order ────────────
             elif state == State.PRESS:
                 self._publish_twist(0.0, 0.0)
-                self.arm.send_degrees("door_above", self._pose("door_above_pose_deg"))
-                self.arm.send_degrees("door_press", self._pose("door_press_pose_deg"))
-                time.sleep(float(self.get_parameter("press_hold_sec").value))
+                hold = float(self.get_parameter("pose_hold_sec").value)
+                for i in (1, 2, 3):
+                    self._publish_feedback(
+                        goal_handle, State.PRESS.value, 0.5 + 0.05 * i, f"arm pose {i}/3"
+                    )
+                    self.arm.send_degrees(f"door_pose_{i}", self._pose(f"door_pose_{i}_deg"))
+                    if hold > 0.0:
+                        time.sleep(hold)
                 self._publish_feedback(
-                    goal_handle, State.PUSH.value, 0.7, "knob pressed; pushing door"
+                    goal_handle, State.PUSH.value, 0.7, "poses done; pushing door"
                 )
-                self.arm.publish_degrees("door_push", self._pose("door_push_pose_deg"))
                 push_started = time.monotonic()
                 state, state_entered = State.PUSH, time.monotonic()
                 continue

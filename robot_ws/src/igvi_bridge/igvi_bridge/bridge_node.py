@@ -45,7 +45,12 @@ except ImportError:  # pragma: no cover
 
 
 def _make_parameter(name: str, value: Any) -> Parameter:
-    """Wrap a Python value in an rcl_interfaces/msg/Parameter."""
+    """Wrap a Python value in an rcl_interfaces/msg/Parameter.
+
+    Scalars map to BOOL/INTEGER/DOUBLE/STRING; lists map to the matching array
+    type. Numeric lists (e.g. arm poses like [167.0, 80.0, 170.6]) become
+    DOUBLE_ARRAY so float angles survive intact.
+    """
     p = Parameter()
     p.name = name
     pv = ParameterValue()
@@ -61,6 +66,21 @@ def _make_parameter(name: str, value: Any) -> Parameter:
     elif isinstance(value, str):
         pv.type = ParameterType.PARAMETER_STRING
         pv.string_value = value
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+        if items and all(isinstance(v, bool) for v in items):
+            pv.type = ParameterType.PARAMETER_BOOL_ARRAY
+            pv.bool_array_value = [bool(v) for v in items]
+        elif items and all(isinstance(v, str) for v in items):
+            pv.type = ParameterType.PARAMETER_STRING_ARRAY
+            pv.string_array_value = [str(v) for v in items]
+        elif items and all(isinstance(v, int) and not isinstance(v, bool) for v in items):
+            pv.type = ParameterType.PARAMETER_INTEGER_ARRAY
+            pv.integer_array_value = [int(v) for v in items]
+        else:
+            # Default numeric/empty/mixed-numeric lists to double array.
+            pv.type = ParameterType.PARAMETER_DOUBLE_ARRAY
+            pv.double_array_value = [float(v) for v in items]
     else:
         raise ValueError(f"unsupported parameter value type for {name}: {type(value).__name__}")
     p.value = pv

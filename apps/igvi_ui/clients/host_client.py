@@ -163,8 +163,8 @@ class HostClient:
     def open_door_cancel(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/open_door/cancel", {})
 
-    def open_door_status(self) -> dict[str, Any]:
-        return self.request("GET", "/api/ros/open_door/status", timeout=3.0)
+    def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
 
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
