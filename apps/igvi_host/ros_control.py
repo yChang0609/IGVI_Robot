@@ -15,6 +15,9 @@ from .models import (
     ImuCalibrationStatusResponse,
     NavGoalRequest,
     NavStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -307,4 +310,61 @@ class RobotBridgeClient:
             ok=bool(result.get("ok", False)),
             action=str(result.get("action", "imu_calibration_start")),
             message=str(result.get("message", "")),
+        )
+
+    async def set_ros_parameters(self, request: ParamsSetRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/params/set",
+            {"node": request.node, "params": request.params},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "params_set")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_start(self, request: OpenDoorGoalRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/open_door/start",
+            {"ready_distance_m": request.ready_distance_m},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/cancel", {}, 3.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_status(self) -> OpenDoorStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/open_door/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return OpenDoorStatusResponse(
+                ok=False, available=False, state="unavailable", message=f"bridge unavailable: {exc}"
+            )
+        return OpenDoorStatusResponse(
+            ok=True,
+            available=bool(data.get("available", False)),
+            state=str(data.get("state", "unavailable")),
+            stage=str(data.get("stage", "")),
+            message=str(data.get("message", "")),
+            progress=float(data.get("progress", 0.0)),
         )

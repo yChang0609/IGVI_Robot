@@ -1,9 +1,12 @@
-"""Door-opening FSM as a wildbot_grasp action server.
+"""Door-opening FSM as a wildbot_grasp action server (color-based).
+
+Centers and approaches the door's red push-bar; the physical knob sits at the
+bar's right end, so the detector aims at the rightmost extent of the red mask.
 
 Consumes:
-  /detections_json      std_msgs/String  (JSON from eto_eye; per detection:
-                                          class_name, score, bbox.center_x/y/size_x/y,
-                                          depth_m, depth_valid)
+  /rgb/image_raw                    sensor_msgs/Image  (Kinect color)
+  /depth_to_rgb/image_raw           sensor_msgs/Image  (depth aligned to RGB)
+
 Publishes:
   /motion/cmd                       geometry_msgs/Twist
   /arm_safeguard/target_trajectory  trajectory_msgs/JointTrajectory  (via ArmCommander)
@@ -11,7 +14,7 @@ Publishes:
 FSM:
   ALIGN     rotate-in-place until |x_norm| < align_pixel_tol for N ticks
   APPROACH  drive forward with mild centering until depth_m <= ready_distance_m
-  PRESS     arm: above-handle → press-down (timed via ArmCommander), then hold
+  PRESS     arm: above-knob → press-down (timed via ArmCommander), then hold
   PUSH      arm: push-forward (non-blocking) + base drives forward for push_duration_sec
   COMPLETE  stop base, retract to door_home_pose_deg, succeed
   ABORT     stop base, retract to door_home_pose_deg, abort
@@ -23,25 +26,31 @@ is 0.6 s, so the FSM publishes every tick (10 Hz default).
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 from typing import Optional
 
+import numpy as np
 import rclpy
+from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from std_msgs.msg import String
+from sensor_msgs.msg import Image
 
 from wildbot_grasp.action import OpenDoor
 
 from .motion import ArmCommander
+from .red_bar_detector import (
+    RedBarParams,
+    annotate as annotate_red_bar,
+    detect as detect_red_bar,
+)
 
 
 class State(Enum):
@@ -55,10 +64,9 @@ class State(Enum):
 
 
 @dataclass
-class Detection:
+class Snapshot:
     stamp_monotonic: float
-    x_norm: float            # [-1, 1] horizontal offset of bbox center from image center
-    y_norm: float            # [-1, 1] vertical offset
+    x_norm: float            # [-1, 1] horizontal offset of aim point from image center
     depth_m: float           # 0.0 when depth_valid is False
     depth_valid: bool
 
@@ -67,13 +75,27 @@ class OpenDoorServer(Node):
     def __init__(self):
         super().__init__("open_door_server")
 
-        # ── Detection input ──────────────────────────────────────────────
-        self.declare_parameter("detection_topic", "/detections_json")
-        self.declare_parameter("knob_class", "men_ba")
-        self.declare_parameter("image_width", 1280)
-        self.declare_parameter("image_height", 720)
+        # ── Camera input ─────────────────────────────────────────────────
+        self.declare_parameter("rgb_topic", "/rgb/image_raw")
+        self.declare_parameter("depth_topic", "/depth_to_rgb/image_raw")
         self.declare_parameter("detection_timeout_sec", 0.5)
         self.declare_parameter("lost_grace_sec", 1.5)
+
+        # ── Debug visualization ──────────────────────────────────────────
+        self.declare_parameter("debug_enabled", True)
+        self.declare_parameter("debug_topic", "/open_door/debug_image")
+
+        # ── Red bar detection (HSV) ──────────────────────────────────────
+        self.declare_parameter("red_hue_lo1", 0)
+        self.declare_parameter("red_hue_hi1", 10)
+        self.declare_parameter("red_hue_lo2", 170)
+        self.declare_parameter("red_hue_hi2", 179)
+        self.declare_parameter("red_sat_min", 120)
+        self.declare_parameter("red_val_min", 70)
+        self.declare_parameter("min_red_area_px", 800)
+        self.declare_parameter("aim_offset_px", 0)      # +ve nudges aim right of bar edge
+        self.declare_parameter("depth_inset_px", 8)     # depth sampled inside the bar
+        self.declare_parameter("depth_window_px", 5)
 
         # ── Control loop ─────────────────────────────────────────────────
         self.declare_parameter("control_rate_hz", 10.0)
@@ -105,16 +127,29 @@ class OpenDoorServer(Node):
 
         self._cb_group = ReentrantCallbackGroup()
         self._lock = Lock()
-        self._latest: Optional[Detection] = None
+        self._latest: Optional[Snapshot] = None
+        self._depth_img: Optional[np.ndarray] = None
+        self._bridge = CvBridge()
+        self._fsm_state: str = State.IDLE.value
 
         self.arm = ArmCommander(self)
         self._twist_pub = self.create_publisher(
             Twist, str(self.get_parameter("twist_topic").value), 10
         )
+        self._debug_pub = self.create_publisher(
+            Image, str(self.get_parameter("debug_topic").value), 5
+        )
         self.create_subscription(
-            String,
-            str(self.get_parameter("detection_topic").value),
-            self._on_detections,
+            Image,
+            str(self.get_parameter("depth_topic").value),
+            self._on_depth,
+            10,
+            callback_group=self._cb_group,
+        )
+        self.create_subscription(
+            Image,
+            str(self.get_parameter("rgb_topic").value),
+            self._on_rgb,
             10,
             callback_group=self._cb_group,
         )
@@ -128,43 +163,67 @@ class OpenDoorServer(Node):
             goal_callback=lambda _r: GoalResponse.ACCEPT,
             cancel_callback=lambda _h: CancelResponse.ACCEPT,
         )
-        self.get_logger().info("Ready: /open_door")
+        self.get_logger().info("Ready: /open_door (red-bar detector)")
 
     # ── Detection ingest ──────────────────────────────────────────────────
 
-    def _on_detections(self, msg: String) -> None:
+    def _read_params(self) -> RedBarParams:
+        return RedBarParams(
+            hue_lo1=int(self.get_parameter("red_hue_lo1").value),
+            hue_hi1=int(self.get_parameter("red_hue_hi1").value),
+            hue_lo2=int(self.get_parameter("red_hue_lo2").value),
+            hue_hi2=int(self.get_parameter("red_hue_hi2").value),
+            sat_min=int(self.get_parameter("red_sat_min").value),
+            val_min=int(self.get_parameter("red_val_min").value),
+            min_area_px=int(self.get_parameter("min_red_area_px").value),
+            aim_offset_px=int(self.get_parameter("aim_offset_px").value),
+            depth_inset_px=int(self.get_parameter("depth_inset_px").value),
+            depth_window_px=int(self.get_parameter("depth_window_px").value),
+        )
+
+    def _on_depth(self, msg: Image) -> None:
         try:
-            payload = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        target = str(self.get_parameter("knob_class").value)
-        best = None
-        for det in payload.get("detections", []):
-            if str(det.get("class_name", "")) != target:
-                continue
-            if best is None or float(det.get("score", 0.0)) > float(best.get("score", 0.0)):
-                best = det
-        if best is None:
-            return
-
-        w = float(self.get_parameter("image_width").value)
-        h = float(self.get_parameter("image_height").value)
-        bbox = best.get("bbox", {}) or {}
-        cx = float(bbox.get("center_x", w / 2.0))
-        cy = float(bbox.get("center_y", h / 2.0))
-        depth_valid = bool(best.get("depth_valid", False))
-        depth_m = float(best.get("depth_m", 0.0)) if depth_valid else 0.0
-
-        with self._lock:
-            self._latest = Detection(
-                stamp_monotonic=time.monotonic(),
-                x_norm=(cx - 0.5 * w) / (0.5 * w),
-                y_norm=(cy - 0.5 * h) / (0.5 * h),
-                depth_m=depth_m,
-                depth_valid=depth_valid,
+            img = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"depth cv_bridge failed: {exc}", throttle_duration_sec=2.0
             )
+            return
+        with self._lock:
+            self._depth_img = img
 
-    def _fresh(self) -> Optional[Detection]:
+    def _on_rgb(self, msg: Image) -> None:
+        try:
+            rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"rgb cv_bridge failed: {exc}", throttle_duration_sec=2.0
+            )
+            return
+        with self._lock:
+            depth = self._depth_img
+        det, mask = detect_red_bar(rgb, depth, self._read_params())
+        if det is not None:
+            with self._lock:
+                self._latest = Snapshot(
+                    stamp_monotonic=time.monotonic(),
+                    x_norm=det.x_norm,
+                    depth_m=det.depth_m,
+                    depth_valid=det.depth_valid,
+                )
+
+        if bool(self.get_parameter("debug_enabled").value):
+            annotated = annotate_red_bar(rgb, det, mask, fsm_state=self._fsm_state)
+            try:
+                out_msg = self._bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+                out_msg.header = msg.header
+                self._debug_pub.publish(out_msg)
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warn(
+                    f"debug publish failed: {exc}", throttle_duration_sec=2.0
+                )
+
+    def _fresh(self) -> Optional[Snapshot]:
         timeout = float(self.get_parameter("detection_timeout_sec").value)
         with self._lock:
             d = self._latest
@@ -180,8 +239,6 @@ class OpenDoorServer(Node):
         result = OpenDoor.Result()
         goal = goal_handle.request
 
-        if goal.knob_class:
-            self.set_parameters([Parameter("knob_class", value=str(goal.knob_class))])
         if goal.ready_distance_m and float(goal.ready_distance_m) > 0.0:
             self.set_parameters(
                 [Parameter("ready_distance_m", value=float(goal.ready_distance_m))]
@@ -215,7 +272,7 @@ class OpenDoorServer(Node):
                     self._publish_twist(0.0, 0.0)
                     if lost_too_long():
                         state, state_entered, align_stable = State.ABORT, time.monotonic(), 0
-                        self._publish_feedback(goal_handle, state.value, 0.0, "knob lost in ALIGN")
+                        self._publish_feedback(goal_handle, state.value, 0.0, "red bar lost in ALIGN")
                 else:
                     tol = float(self.get_parameter("align_pixel_tol").value)
                     kp = float(self.get_parameter("align_kp").value)
@@ -239,7 +296,7 @@ class OpenDoorServer(Node):
                     self._publish_twist(0.0, 0.0)
                     if lost_too_long():
                         state, state_entered = State.ABORT, time.monotonic()
-                        self._publish_feedback(goal_handle, state.value, 0.0, "knob/depth lost in APPROACH")
+                        self._publish_feedback(goal_handle, state.value, 0.0, "bar/depth lost in APPROACH")
                 else:
                     ready = float(self.get_parameter("ready_distance_m").value)
                     if det.depth_m > 0.0 and det.depth_m <= ready:
@@ -265,7 +322,7 @@ class OpenDoorServer(Node):
                 self.arm.send_degrees("door_press", self._pose("door_press_pose_deg"))
                 time.sleep(float(self.get_parameter("press_hold_sec").value))
                 self._publish_feedback(
-                    goal_handle, State.PUSH.value, 0.7, "handle pressed; pushing door"
+                    goal_handle, State.PUSH.value, 0.7, "knob pressed; pushing door"
                 )
                 self.arm.publish_degrees("door_push", self._pose("door_push_pose_deg"))
                 push_started = time.monotonic()
@@ -317,6 +374,7 @@ class OpenDoorServer(Node):
         self._twist_pub.publish(msg)
 
     def _publish_feedback(self, goal_handle, stage: str, progress: float, detail: str) -> None:
+        self._fsm_state = stage
         fb = OpenDoor.Feedback()
         fb.stage = stage
         fb.progress = float(progress)

@@ -1,8 +1,7 @@
-# Vision-guided door-opening FSM.
-# The server uses /detections_json from eto_eye (YOLOv8s-seg + depth) to align
-# and approach a door knob, then drives the arm to press the handle and pushes
-# the base forward to open the door.
-string knob_class            # YOLO class_name of the knob (empty → server default)
+# Color-based door-opening FSM.
+# The server finds the red push-bar in /rgb/image_raw, aligns and approaches
+# using depth from /depth_to_rgb/image_raw, then drives the arm to press the
+# knob at the bar's right end and pushes the base forward to open the door.
 float32 ready_distance_m     # depth at which to stop approaching, in meters (<=0 → server default)
 ---
 bool success

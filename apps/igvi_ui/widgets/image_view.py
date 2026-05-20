@@ -86,13 +86,23 @@ class _Canvas(QWidget):
 
 
 class ImageView(QWidget):
-    """Subscribes to a ROS sensor_msgs/Image topic via the host bridge and renders frames."""
+    """Subscribes to a ROS sensor_msgs/Image topic via the host bridge and renders frames.
 
-    def __init__(self, client: HostClient) -> None:
+    ``preferred_topics`` lets a host page pin a default selection (e.g. the door
+    debug image). The first preferred topic present in the live topic list wins;
+    otherwise we fall back to the generic /rgb/* defaults.
+    """
+
+    def __init__(
+        self,
+        client: HostClient,
+        preferred_topics: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.client = client
         self._poller: _ImagePoller | None = None
         self._active_topic: str | None = None
+        self._preferred_topics: tuple[str, ...] = tuple(preferred_topics or ())
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -168,8 +178,10 @@ class ImageView(QWidget):
         if chosen and chosen != self._active_topic:
             self._on_topic_changed(chosen)
 
-    @staticmethod
-    def _pick_default(topics: list[str]) -> str | None:
+    def _pick_default(self, topics: list[str]) -> str | None:
+        for preference in self._preferred_topics:
+            if preference in topics:
+                return preference
         for preference in ("/rgb/image_bgr8", "/rgb/image_raw"):
             if preference in topics:
                 return preference

@@ -21,6 +21,8 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Twi
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -33,6 +35,36 @@ try:
     from PIL import Image as PILImage  # type: ignore
 except ImportError:  # pragma: no cover
     PILImage = None  # type: ignore
+
+try:
+    from wildbot_grasp.action import OpenDoor  # type: ignore
+    _OPEN_DOOR_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    OpenDoor = None  # type: ignore
+    _OPEN_DOOR_AVAILABLE = False
+
+
+def _make_parameter(name: str, value: Any) -> Parameter:
+    """Wrap a Python value in an rcl_interfaces/msg/Parameter."""
+    p = Parameter()
+    p.name = name
+    pv = ParameterValue()
+    if isinstance(value, bool):  # must precede int — bool is an int subclass
+        pv.type = ParameterType.PARAMETER_BOOL
+        pv.bool_value = value
+    elif isinstance(value, int):
+        pv.type = ParameterType.PARAMETER_INTEGER
+        pv.integer_value = int(value)
+    elif isinstance(value, float):
+        pv.type = ParameterType.PARAMETER_DOUBLE
+        pv.double_value = float(value)
+    elif isinstance(value, str):
+        pv.type = ParameterType.PARAMETER_STRING
+        pv.string_value = value
+    else:
+        raise ValueError(f"unsupported parameter value type for {name}: {type(value).__name__}")
+    p.value = pv
+    return p
 
 _MAP_QOS = QoSProfile(
     depth=1,
@@ -68,6 +100,19 @@ class BridgeNode(Node):
         self._nav_goal_handle = None
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
+
+        # Open-door action state — mirrors the nav action machinery.
+        self._open_door_lock = threading.Lock()
+        self._open_door_state: str = "idle" if _OPEN_DOOR_AVAILABLE else "unavailable"
+        self._open_door_stage: str = ""
+        self._open_door_message: str = (
+            "" if _OPEN_DOOR_AVAILABLE else "wildbot_grasp not installed in bridge image"
+        )
+        self._open_door_progress: float = 0.0
+        self._open_door_goal_handle = None
+        self._open_door_client = (
+            ActionClient(self, OpenDoor, "open_door") if _OPEN_DOOR_AVAILABLE else None
+        )
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
@@ -410,6 +455,167 @@ class BridgeNode(Node):
         future.add_done_callback(_finished)
         done.wait(timeout=3.0)
         return bool(result["ok"]), str(result["message"])
+
+    # ── Remote ROS parameter setting (live tuning) ────────────────────────────
+
+    def set_remote_parameters(
+        self, node_name: str, params: dict[str, Any]
+    ) -> tuple[bool, str]:
+        """Set parameters on another node via its /<node>/set_parameters service.
+
+        Used by the UI to live-tune detectors and controllers (e.g. open_door's
+        HSV thresholds) without redeploying. Values may be bool/int/float/str;
+        the type is inferred per call.
+        """
+        if not node_name:
+            return False, "node name required"
+        service_name = f"/{node_name.strip('/')}/set_parameters"
+        client = self.create_client(SetParameters, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=1.0):
+                return False, f"service {service_name} not available"
+
+            request = SetParameters.Request()
+            for name, value in params.items():
+                try:
+                    request.parameters.append(_make_parameter(name, value))
+                except ValueError as exc:
+                    return False, str(exc)
+
+            done = threading.Event()
+            outcome: dict[str, Any] = {"ok": False, "message": "set_parameters timed out"}
+            future = client.call_async(request)
+
+            def _finished(_future: Any) -> None:
+                try:
+                    response = _future.result()
+                    failures = [
+                        f"{p.name}: {r.reason or 'rejected'}"
+                        for p, r in zip(request.parameters, response.results)
+                        if not r.successful
+                    ]
+                    if failures:
+                        outcome["message"] = "; ".join(failures)
+                    else:
+                        outcome["ok"] = True
+                        outcome["message"] = (
+                            f"set {len(request.parameters)} parameter(s) on {node_name}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    outcome["message"] = f"set_parameters failed: {exc}"
+                finally:
+                    done.set()
+
+            future.add_done_callback(_finished)
+            done.wait(timeout=3.0)
+            return bool(outcome["ok"]), str(outcome["message"])
+        finally:
+            # Don't leak service clients across many tuning calls.
+            self.destroy_client(client)
+
+    # ── Open-door action (red-bar FSM trigger) ────────────────────────────────
+
+    def snapshot_open_door(self) -> dict[str, Any]:
+        with self._open_door_lock:
+            return {
+                "available": _OPEN_DOOR_AVAILABLE,
+                "state": self._open_door_state,
+                "stage": self._open_door_stage,
+                "message": self._open_door_message,
+                "progress": self._open_door_progress,
+            }
+
+    def send_open_door_goal(self, ready_distance_m: float = 0.0) -> tuple[bool, str]:
+        if not _OPEN_DOOR_AVAILABLE or self._open_door_client is None:
+            return False, "wildbot_grasp action types not installed in bridge image"
+        client = self._open_door_client
+        if not client.server_is_ready():
+            if not client.wait_for_server(timeout_sec=2.0):
+                self._set_open_door_state(
+                    "unavailable", "", "open_door action server not running — check wildbot_grasp"
+                )
+                return False, "open_door action server not running"
+
+        goal_msg = OpenDoor.Goal()
+        goal_msg.ready_distance_m = float(ready_distance_m)
+
+        self._set_open_door_state("sending", "", "goal dispatched", progress=0.0)
+        future = client.send_goal_async(goal_msg, feedback_callback=self._on_open_door_feedback)
+        future.add_done_callback(self._on_open_door_goal_response)
+        return True, f"open_door dispatched (ready_distance_m={ready_distance_m})"
+
+    def cancel_open_door_goal(self) -> tuple[bool, str]:
+        with self._open_door_lock:
+            handle = self._open_door_goal_handle
+        if handle is None:
+            return False, "no active open_door goal"
+        handle.cancel_goal_async()
+        self._set_open_door_state("cancelling", "", "cancel requested")
+        return True, "cancel requested"
+
+    def _on_open_door_feedback(self, msg: Any) -> None:
+        fb = getattr(msg, "feedback", None)
+        if fb is None:
+            return
+        self._set_open_door_state(
+            "running",
+            stage=str(getattr(fb, "stage", "")),
+            message=str(getattr(fb, "detail", "")),
+            progress=float(getattr(fb, "progress", 0.0)),
+        )
+
+    def _on_open_door_goal_response(self, future: Any) -> None:
+        try:
+            handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._set_open_door_state("error", "", f"send_goal failed: {exc}")
+            return
+        if not handle.accepted:
+            self._set_open_door_state("rejected", "", "goal rejected by server")
+            return
+        with self._open_door_lock:
+            self._open_door_goal_handle = handle
+        self._set_open_door_state("running", "", "goal accepted")
+        handle.get_result_async().add_done_callback(self._on_open_door_result)
+
+    def _on_open_door_result(self, future: Any) -> None:
+        try:
+            wrapped = future.result()
+            result = wrapped.result
+            status = wrapped.status
+        except Exception as exc:  # noqa: BLE001
+            self._set_open_door_state("error", "", f"result fetch failed: {exc}")
+            return
+        with self._open_door_lock:
+            self._open_door_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self._set_open_door_state(
+                "succeeded", "complete",
+                str(getattr(result, "message", "")) or "door opened",
+                progress=1.0,
+            )
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._set_open_door_state("canceled", "", "goal canceled")
+        else:
+            self._set_open_door_state(
+                "aborted", "",
+                str(getattr(result, "message", "")) or f"status={status}",
+            )
+
+    def _set_open_door_state(
+        self,
+        state: str,
+        stage: str = "",
+        message: str = "",
+        progress: float | None = None,
+    ) -> None:
+        with self._open_door_lock:
+            self._open_door_state = state
+            if stage:
+                self._open_door_stage = stage
+            self._open_door_message = message
+            if progress is not None:
+                self._open_door_progress = float(progress)
 
     # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
 
@@ -802,6 +1008,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_arm_temperatures())
             elif path == "/api/imu/calibration":
                 self._json(node.snapshot_imu_calibration())
+            elif path == "/api/open_door/status":
+                self._json(node.snapshot_open_door())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -900,6 +1108,23 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/imu/calibration/start":
                 node.start_imu_calibration()
                 self._json({"ok": True, "action": "imu_calibration_start", "message": "IMU calibration window started"})
+            elif path == "/api/params/set":
+                target_node = str(body.get("node", "")).strip()
+                params = body.get("params") or {}
+                if not target_node or not isinstance(params, dict) or not params:
+                    self.send_response(400)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(b"node and non-empty params dict required")
+                    return
+                ok, msg = node.set_remote_parameters(target_node, params)
+                self._json({"ok": ok, "action": "params_set", "message": msg})
+            elif path == "/api/open_door/start":
+                ok, msg = node.send_open_door_goal(float(body.get("ready_distance_m", 0.0)))
+                self._json({"ok": ok, "action": "open_door_start", "message": msg})
+            elif path == "/api/open_door/cancel":
+                ok, msg = node.cancel_open_door_goal()
+                self._json({"ok": ok, "action": "open_door_cancel", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()

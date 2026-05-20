@@ -101,6 +101,24 @@ class RosActionResponse(BaseModel):
     message: str
 
 
+class ParamsSetRequest(BaseModel):
+    node: str
+    params: dict[str, bool | int | float | str]
+
+
+class OpenDoorGoalRequest(BaseModel):
+    ready_distance_m: float = 0.0
+
+
+class OpenDoorStatusResponse(BaseModel):
+    ok: bool = True
+    available: bool = False
+    state: str = "unavailable"
+    stage: str = ""
+    message: str = ""
+    progress: float = 0.0
+
+
 class ComposeProgressResponse(BaseModel):
     action: str | None = None
     busy: bool = False

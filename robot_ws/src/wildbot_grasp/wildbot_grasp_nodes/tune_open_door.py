@@ -1,7 +1,7 @@
 """Interactive tuner for open_door_server parameters.
 
 Run with the rest of the stack already up: kros_car + arm_safeguard +
-motion_arbiter + Kinect + eto_eye_gpu (publishing /detections_json).
+motion_arbiter + Kinect (publishing /rgb/image_raw and /depth_to_rgb/image_raw).
 
 What it does:
   * Jogs the arm with the keyboard, publishing JointTrajectory on
@@ -10,7 +10,8 @@ What it does:
     (motion_arbiter handles smoothing). Republished at 10 Hz so the
     arbiter's override stays alive.
   * Snapshots actual joint angles from /joint_states.
-  * Reads live knob depth from /detections_json (JSON, eto_eye output).
+  * Reads live knob depth from the red-bar color detector (same as
+    open_door_server), sampling /rgb/image_raw + /depth_to_rgb/image_raw.
   * Writes a YAML snippet with door_*_pose_deg and ready_distance_m, ready
     to merge into your open_door_server params.
 
@@ -23,7 +24,6 @@ tuning, so nothing else is fighting you for /motion/cmd or
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import select
@@ -34,13 +34,16 @@ import time
 import tty
 from typing import Optional
 
+import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
+from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from .red_bar_detector import RedBarParams, detect as detect_red_bar
 
 ARM_JOINTS = ["arm_1_joint", "arm_2_joint", "gripper_joint"]
 
@@ -79,14 +82,27 @@ class Tuner(Node):
         self.declare_parameter("arm_topic", "/arm_safeguard/target_trajectory")
         self.declare_parameter("twist_topic", "/motion/cmd")
         self.declare_parameter("joint_states_topic", "/joint_states")
-        self.declare_parameter("detection_topic", "/detections_json")
-        self.declare_parameter("knob_class", "men_ba")
+        self.declare_parameter("rgb_topic", "/rgb/image_raw")
+        self.declare_parameter("depth_topic", "/depth_to_rgb/image_raw")
         self.declare_parameter("move_duration_sec", 0.8)
+        # Red-bar HSV params (kept in sync with open_door_server defaults).
+        self.declare_parameter("red_hue_lo1", 0)
+        self.declare_parameter("red_hue_hi1", 10)
+        self.declare_parameter("red_hue_lo2", 170)
+        self.declare_parameter("red_hue_hi2", 179)
+        self.declare_parameter("red_sat_min", 120)
+        self.declare_parameter("red_val_min", 70)
+        self.declare_parameter("min_red_area_px", 800)
+        self.declare_parameter("aim_offset_px", 0)
+        self.declare_parameter("depth_inset_px", 8)
+        self.declare_parameter("depth_window_px", 5)
 
         self._lock = threading.Lock()
         self._js: dict[str, float] = {}
         self._depth_m: float = 0.0
         self._depth_stamp_monotonic: float = 0.0
+        self._depth_img: Optional[np.ndarray] = None
+        self._bridge = CvBridge()
 
         self._cmd_arm_rad: dict[str, float] = {j: 0.0 for j in ARM_JOINTS}
         self._cmd_arm_initialized = False
@@ -97,7 +113,10 @@ class Tuner(Node):
             JointState, str(self.get_parameter("joint_states_topic").value), self._on_js, 10
         )
         self.create_subscription(
-            String, str(self.get_parameter("detection_topic").value), self._on_det, 10
+            Image, str(self.get_parameter("depth_topic").value), self._on_depth, 10
+        )
+        self.create_subscription(
+            Image, str(self.get_parameter("rgb_topic").value), self._on_rgb, 10
         )
         self._arm_pub = self.create_publisher(
             JointTrajectory, str(self.get_parameter("arm_topic").value), 10
@@ -117,24 +136,40 @@ class Tuner(Node):
                     self._cmd_arm_rad[j] = self._js[j]
                 self._cmd_arm_initialized = True
 
-    def _on_det(self, msg: String) -> None:
+    def _red_params(self) -> RedBarParams:
+        return RedBarParams(
+            hue_lo1=int(self.get_parameter("red_hue_lo1").value),
+            hue_hi1=int(self.get_parameter("red_hue_hi1").value),
+            hue_lo2=int(self.get_parameter("red_hue_lo2").value),
+            hue_hi2=int(self.get_parameter("red_hue_hi2").value),
+            sat_min=int(self.get_parameter("red_sat_min").value),
+            val_min=int(self.get_parameter("red_val_min").value),
+            min_area_px=int(self.get_parameter("min_red_area_px").value),
+            aim_offset_px=int(self.get_parameter("aim_offset_px").value),
+            depth_inset_px=int(self.get_parameter("depth_inset_px").value),
+            depth_window_px=int(self.get_parameter("depth_window_px").value),
+        )
+
+    def _on_depth(self, msg: Image) -> None:
         try:
-            payload = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        target = str(self.get_parameter("knob_class").value)
-        best = None
-        for det in payload.get("detections", []):
-            if str(det.get("class_name", "")) != target:
-                continue
-            if not bool(det.get("depth_valid", False)):
-                continue
-            if best is None or float(det.get("score", 0.0)) > float(best.get("score", 0.0)):
-                best = det
-        if best is None:
+            img = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        except Exception:  # noqa: BLE001
             return
         with self._lock:
-            self._depth_m = float(best.get("depth_m", 0.0))
+            self._depth_img = img
+
+    def _on_rgb(self, msg: Image) -> None:
+        try:
+            rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            depth = self._depth_img
+        det, _mask = detect_red_bar(rgb, depth, self._red_params())
+        if det is None or not det.depth_valid:
+            return
+        with self._lock:
+            self._depth_m = det.depth_m
             self._depth_stamp_monotonic = time.monotonic()
 
     def _republish_twist(self) -> None:
@@ -328,7 +363,7 @@ def main(args=None) -> None:
                 z = node.depth_snapshot()
                 if z is None:
                     print(
-                        "\rERR: no fresh detection with depth — is eto_eye running and knob in frame?",
+                        "\rERR: no fresh red-bar detection with depth — is the bar in frame and the Kinect publishing?",
                         flush=True,
                     )
                     continue
