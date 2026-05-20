@@ -17,6 +17,7 @@ def generate_launch_description():
         float(imu.get('gyro_bias_z', 0.0)),
     ]
 
+    kinect = calib.get('kinect', {})
     kinect_node = Node(
         package='azure_kinect_ros_driver',
         executable='node',
@@ -25,12 +26,21 @@ def generate_launch_description():
         parameters=[{
             'depth_enabled': True,
             'color_enabled': True,
-            'color_resolution': '720P',
-            'depth_mode': 'NFOV_UNBINNED',
-            'fps': 15,
-            'imu_rate_target': 0,
+            'color_resolution': kinect.get('color_resolution', '720P'),
+            'depth_mode': kinect.get('depth_mode', 'NFOV_UNBINNED'),
+            'fps': int(kinect.get('fps', 15)),
+            'imu_rate_target': int(kinect.get('imu_rate_target', 200)),
             'point_cloud': True,
             'rgb_point_cloud': True,
+            'exposure_time_absolute': int(kinect.get('exposure_time_absolute', -1)),
+            'gain': int(kinect.get('gain', -1)),
+            'white_balance': int(kinect.get('white_balance', -1)),
+            'brightness': int(kinect.get('brightness', 128)),
+            'contrast': int(kinect.get('contrast', 5)),
+            'saturation': int(kinect.get('saturation', 32)),
+            'sharpness': int(kinect.get('sharpness', 2)),
+            'backlight_compensation': bool(kinect.get('backlight_compensation', False)),
+            'powerline_frequency': int(kinect.get('powerline_frequency', 60)),
         }],
     )
 

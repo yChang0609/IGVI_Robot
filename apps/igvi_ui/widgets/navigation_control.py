@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
+from igvi_ui.widgets.map_views import Map2DView
 
 _STATE_TONE = {
     "idle":       ("Idle", "#94a3b8"),
@@ -53,11 +54,14 @@ class NavigationControl(QWidget):
     log_message = Signal(str)
     map_unlock_requested = Signal(bool)  # True → lock map for selection mode
 
-    def __init__(self, client: HostClient) -> None:
+    def __init__(self, client: HostClient, map_2d: Map2DView) -> None:
         super().__init__()
         self.client = client
+        self.map_2d = map_2d
         self._poller: _StatusPoller | None = None
         self._last_state: str = "idle"
+        self._initial_pose_pick_armed = False
+        self.map_2d.initial_pose_picked.connect(self._on_initial_pose_picked)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -86,6 +90,14 @@ class NavigationControl(QWidget):
         self.feedback_label.setWordWrap(True)
         layout.addWidget(self.feedback_label)
 
+        self.fusion_label = QLabel("EKF: —")
+        self.fusion_label.setObjectName("Muted")
+        self.fusion_label.setToolTip(
+            "Which sensor sources the EKF is currently fusing into the robot's "
+            "pose estimate. ● = fresh (last msg <2 s ago), ○ = stale/missing."
+        )
+        layout.addWidget(self.fusion_label)
+
         buttons = QGridLayout()
         buttons.setSpacing(8)
         self.cancel_btn = QPushButton("Cancel Goal")
@@ -94,19 +106,31 @@ class NavigationControl(QWidget):
         self.cancel_btn.setEnabled(False)
         self.clear_btn = QPushButton("Clear Costmap")
         self.clear_btn.clicked.connect(self._clear_costmap)
-        self.initial_btn = QPushButton("Reset Initial Pose")
+        self.set_initial_btn = QPushButton("Set Initial Pose (click map)")
+        self.set_initial_btn.setCheckable(True)
+        self.set_initial_btn.setToolTip(
+            "Toggle on, then click+drag on the 2D map to tell SLAM where the "
+            "robot really is. Drag direction sets heading."
+        )
+        self.set_initial_btn.clicked.connect(self._toggle_initial_pose_pick)
+        self.initial_btn = QPushButton("Reset to Origin")
+        self.initial_btn.setToolTip("Send initial pose (0, 0, 0) — only useful at the map origin.")
         self.initial_btn.clicked.connect(self._reset_initial)
         self.probe_btn = QPushButton("Probe Actions")
         self.probe_btn.setToolTip("List action servers visible to the bridge")
         self.probe_btn.clicked.connect(self._probe_actions)
-        self.save_map_btn = QPushButton("Save Map")
-        self.save_map_btn.setToolTip("Save current occupancy grid as PGM + YAML")
+        self.save_map_btn = QPushButton("Save Arena Map")
+        self.save_map_btn.setToolTip(
+            "Snapshot the live RTAB-Map DB into data/slam/arena_map.db "
+            "(used by slam_localization on next boot)"
+        )
         self.save_map_btn.clicked.connect(self._save_map)
         buttons.addWidget(self.cancel_btn, 0, 0)
         buttons.addWidget(self.clear_btn, 0, 1)
-        buttons.addWidget(self.initial_btn, 1, 0)
-        buttons.addWidget(self.probe_btn, 1, 1)
-        buttons.addWidget(self.save_map_btn, 2, 0, 1, 2)
+        buttons.addWidget(self.set_initial_btn, 1, 0)
+        buttons.addWidget(self.initial_btn, 1, 1)
+        buttons.addWidget(self.probe_btn, 2, 0, 1, 2)
+        buttons.addWidget(self.save_map_btn, 3, 0, 1, 2)
         layout.addLayout(buttons)
         layout.addStretch(1)
 
@@ -122,6 +146,7 @@ class NavigationControl(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
+        self._disarm_initial_pose_pick()
         self.shutdown()
 
     def shutdown(self) -> None:
@@ -157,6 +182,7 @@ class NavigationControl(QWidget):
             )
         else:
             self.feedback_label.setText("")
+        self._update_fusion_label(status.get("fusion_sources") or {})
         self.cancel_btn.setEnabled(state in ("sending", "accepted", "navigating"))
         if state != self._last_state:
             self._last_state = state
@@ -166,6 +192,26 @@ class NavigationControl(QWidget):
         self.state_label.setText("Bridge unavailable")
         self.state_label.setStyleSheet("font-weight: 700; color: #ef4444;")
         self.detail_label.setText(message)
+
+    def _update_fusion_label(self, sources: dict) -> None:
+        # Empty dict = older bridge that didn't include fusion_sources, or
+        # not enough data yet. Show a neutral state instead of "all stale".
+        if not sources:
+            self.fusion_label.setText("EKF: — (no data)")
+            self.fusion_label.setStyleSheet("color: #94a3b8;")
+            return
+        parts = []
+        all_ok = True
+        any_ok = False
+        for name in ("wheel", "imu", "lidar"):
+            ok = bool(sources.get(name, False))
+            any_ok = any_ok or ok
+            all_ok = all_ok and ok
+            glyph = "●" if ok else "○"
+            parts.append(f"{glyph} {name}")
+        color = "#22c55e" if all_ok else ("#fbbf24" if any_ok else "#ef4444")
+        self.fusion_label.setText("EKF:  " + "   ".join(parts))
+        self.fusion_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def _cancel(self) -> None:
         try:
@@ -184,6 +230,38 @@ class NavigationControl(QWidget):
             self.client.initial_pose(0.0, 0.0, 0.0)
         except HostClientError as exc:
             QMessageBox.warning(self, "Initial pose failed", str(exc))
+
+    def _toggle_initial_pose_pick(self) -> None:
+        if self.set_initial_btn.isChecked():
+            self._initial_pose_pick_armed = True
+            self.map_2d.set_initial_pose_mode(True)
+            self.set_initial_btn.setText("Click map to place pose…")
+            self.detail_label.setText(
+                "Click the saved map where the robot actually is; drag in its heading direction."
+            )
+        else:
+            self._disarm_initial_pose_pick()
+
+    def _disarm_initial_pose_pick(self) -> None:
+        if self._initial_pose_pick_armed:
+            self._initial_pose_pick_armed = False
+            self.map_2d.set_initial_pose_mode(False)
+        self.set_initial_btn.setChecked(False)
+        self.set_initial_btn.setText("Set Initial Pose (click map)")
+
+    def _on_initial_pose_picked(self, x: float, y: float, yaw: float) -> None:
+        if not self._initial_pose_pick_armed:
+            return
+        self._disarm_initial_pose_pick()
+        try:
+            self.client.initial_pose(x, y, yaw)
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Initial pose failed", str(exc))
+            return
+        self.detail_label.setText(
+            f"Initial pose published: x {x:.2f}  y {y:.2f}  yaw {yaw:.2f}"
+        )
+        self.log_message.emit(f"Initial pose set to ({x:.2f}, {y:.2f}, {yaw:.2f})")
 
     def _probe_actions(self) -> None:
         try:
@@ -207,7 +285,7 @@ class NavigationControl(QWidget):
             QMessageBox.warning(self, "Save map failed", str(exc))
             return
         if result.get("ok"):
-            QMessageBox.information(self, "Map saved", f"Map saved to:\n{result.get('message', '')}")
-            self.log_message.emit("Map saved successfully")
+            QMessageBox.information(self, "Arena map saved", f"Saved to:\n{result.get('message', '')}")
+            self.log_message.emit("Arena map saved successfully")
         else:
-            QMessageBox.warning(self, "Save map failed", result.get("message", "unknown error"))
+            QMessageBox.warning(self, "Save arena map failed", result.get("message", "unknown error"))

@@ -165,6 +165,22 @@ class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 
 
+class WaypointSaveRequest(BaseModel):
+    name: str
+    # x/y omitted → bridge snapshots the robot's current map-frame pose.
+    x: float | None = None
+    y: float | None = None
+    yaw: float = 0.0
+
+
+class WaypointNameRequest(BaseModel):
+    name: str
+
+
+class WaypointListResponse(BaseModel):
+    waypoints: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
 class CalibrationModel(BaseModel):
     camera_x: float = 0.17
     camera_y: float = 0.0
@@ -180,6 +196,18 @@ class CalibrationModel(BaseModel):
     wheel_radius: float = 0.05035
     ekf_frequency: int = 50
     ekf_sensor_timeout: float = 0.2
+    kinect_color_resolution: str = "720P"
+    kinect_depth_mode: str = "NFOV_UNBINNED"
+    kinect_fps: int = 15
+    kinect_exposure_time_absolute: int = -1
+    kinect_gain: int = -1
+    kinect_white_balance: int = -1
+    kinect_brightness: int = 128
+    kinect_contrast: int = 5
+    kinect_saturation: int = 32
+    kinect_sharpness: int = 2
+    kinect_backlight_compensation: bool = False
+    kinect_powerline_frequency: int = 60
 
 
 class SaveMapResponse(BaseModel):
@@ -195,6 +223,9 @@ class NavStatusResponse(BaseModel):
     goal: dict | None = None
     feedback: dict = Field(default_factory=dict)
     visible_actions: list[str] = Field(default_factory=list)
+    # Per-source freshness flags for the EKF inputs (wheel, imu, lidar).
+    # Empty when bridge hasn't reported them yet (older bridge build).
+    fusion_sources: dict = Field(default_factory=dict)
 
 
 class ImuCalibrationStatusResponse(BaseModel):

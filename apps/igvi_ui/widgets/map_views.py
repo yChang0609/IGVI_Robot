@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QWidget
 
 class Map2DView(QWidget):
     goal_requested = Signal(float, float, float)  # world x, y, yaw
+    waypoint_point_picked = Signal(float, float, float)  # world x, y, yaw
+    initial_pose_picked = Signal(float, float, float)  # world x, y, yaw
 
     def __init__(self) -> None:
         super().__init__()
@@ -19,6 +21,12 @@ class Map2DView(QWidget):
         self._map_pixmap: QPixmap | None = None
         self._pose: dict[str, float] | None = None
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
+        self._waypoints: dict[str, dict[str, float]] = {}
+        # Pick target controls what mouseRelease emits:
+        #   ""             → nav goal (default)
+        #   "waypoint"     → waypoint_point_picked
+        #   "initial_pose" → initial_pose_picked
+        self._pick_mode: str = ""
         self._locked = False
         self._drag_origin: tuple[float, float] | None = None  # widget px while dragging
         self._drag_current: tuple[float, float] | None = None
@@ -40,6 +48,25 @@ class Map2DView(QWidget):
 
     def update_pose(self, pose: dict[str, float]) -> None:
         self._pose = pose
+        self.update()
+
+    def update_waypoints(self, waypoints: dict[str, dict[str, float]]) -> None:
+        self._waypoints = dict(waypoints or {})
+        self.update()
+
+    def set_pick_mode(self, enabled: bool) -> None:
+        """Back-compat: when on, the next map click emits waypoint_point_picked."""
+        self._set_pick_target("waypoint" if enabled else "")
+
+    def set_initial_pose_mode(self, enabled: bool) -> None:
+        """When on, the next map click emits initial_pose_picked (for SLAM relocalize)."""
+        self._set_pick_target("initial_pose" if enabled else "")
+
+    def _set_pick_target(self, target: str) -> None:
+        self._pick_mode = target
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor if target else Qt.CursorShape.CrossCursor
+        )
         self.update()
 
     # ── Qt events ────────────────────────────────────────────────────────────
@@ -76,6 +103,22 @@ class Map2DView(QWidget):
                 dy = -math.sin(gyaw) * 22
                 painter.setPen(QPen(QColor("#f59e0b"), 2))
                 painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
+
+        for name, wp in self._waypoints.items():
+            pt = self._world_to_widget(wp.get("x", 0.0), wp.get("y", 0.0), map_rect)
+            if pt is None:
+                continue
+            painter.setPen(QPen(QColor("#22c55e"), 2))
+            painter.setBrush(QColor(34, 197, 94, 90))
+            painter.drawEllipse(pt, 6, 6)
+            wyaw = wp.get("yaw", 0.0)
+            painter.setPen(QPen(QColor("#22c55e"), 2))
+            painter.drawLine(
+                pt,
+                QPointF(pt.x() + math.cos(wyaw) * 16, pt.y() - math.sin(wyaw) * 16),
+            )
+            painter.setPen(QColor("#bbf7d0"))
+            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), str(name))
 
         if self._drag_origin and self._drag_current:
             ox, oy = self._drag_origin
@@ -148,11 +191,16 @@ class Map2DView(QWidget):
         else:
             yaw = math.atan2(-dy, dx)
         gx, gy = self._drag_world
-        self._goal = (gx, gy, yaw)
         self._drag_origin = None
         self._drag_current = None
         self._drag_world = None
-        self.goal_requested.emit(gx, gy, yaw)
+        if self._pick_mode == "waypoint":
+            self.waypoint_point_picked.emit(gx, gy, yaw)
+        elif self._pick_mode == "initial_pose":
+            self.initial_pose_picked.emit(gx, gy, yaw)
+        else:
+            self._goal = (gx, gy, yaw)
+            self.goal_requested.emit(gx, gy, yaw)
         self.update()
 
     # ── Coordinate helpers ────────────────────────────────────────────────────

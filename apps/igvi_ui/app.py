@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 import sys
 
+# Ensure Qt can find its platform plugins (needed on macOS with uv/venv)
+if sys.platform == "darwin" and "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:
+    import PySide6 as _p6
+    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(os.path.dirname(_p6.__file__), "Qt", "plugins", "platforms")
+    del _p6
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,

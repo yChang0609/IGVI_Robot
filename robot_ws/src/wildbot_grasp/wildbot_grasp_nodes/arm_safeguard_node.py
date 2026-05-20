@@ -22,7 +22,6 @@ class ArmSafeguardNode(Node):
         
         # 3. 狀態紀錄與防護鎖
         self.action_lock = threading.Lock()
-        self.has_received_command = False
         self.last_cmd_time = self.get_clock().now()
         self.current_duration = 0.0
         self.position_history = deque(maxlen=100)
@@ -39,18 +38,17 @@ class ArmSafeguardNode(Node):
         self.get_logger().info("Arm Safeguard 啟動：負責防過熱與穩態放鬆")
 
     def state_callback(self, msg):
-        with self.action_lock:
-            if not self.has_received_command:
-                return
-            dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e9
-            if dt > self.current_duration:
-                if len(msg.feedback.positions) >= 3:
-                    self.position_history.append(msg.feedback.positions)
+        # 計算距離上次下指令經過了多久
+        dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e9
+        
+        # 🌟 關鍵新增：只有當時間大於 current_duration (也就是預期已經走到定點後)，才開始記錄
+        if dt > self.current_duration:
+            if len(msg.feedback.positions) >= 3:
+                self.position_history.append(msg.feedback.positions)
 
     def target_callback(self, msg: JointTrajectory):
         """收到任何節點的指令，更新時間戳並直接轉發給硬體"""
         with self.action_lock:
-            self.has_received_command = True
             self.last_cmd_time = self.get_clock().now()
             # 取出預期動作時間 (不需要在這裡 +2 了，我們把預期時間還原)
             if msg.points:

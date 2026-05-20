@@ -5,12 +5,16 @@ import json
 import math
 import os
 import struct
+import tempfile
 import threading
+import time
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+import yaml
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
@@ -20,8 +24,9 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
+from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -38,6 +43,9 @@ _MAP_QOS = QoSProfile(
 ARM_JOINT_NAMES = ["arm_1_joint", "arm_2_joint", "gripper_joint"]
 JPEG_MAX_WIDTH = 800
 JPEG_QUALITY = 70
+# Persisted next to saved maps (/maps is the bridge's only writable volume;
+# /configs is mounted read-only). Survives container restarts.
+WAYPOINTS_PATH = "/maps/waypoints.yaml"
 
 
 class BridgeNode(Node):
@@ -61,6 +69,9 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
 
+        self._waypoints_lock = threading.Lock()
+        self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
+
         self._arm_temp_lock = threading.Lock()
         self._arm_temperatures: list[float] = []
         self._arm_temperature_stamp_sec: float | None = None
@@ -83,10 +94,32 @@ class BridgeNode(Node):
             "raw": "",
         }
 
+        # Freshness tracking for EKF input sources — drives the UI badge that
+        # tells the operator at a glance whether the EKF is fusing all three
+        # (wheel + IMU + lidar) or has lost one of them.
+        self._fusion_lock = threading.Lock()
+        self._fusion_last_seen: dict[str, float] = {}
+        self.create_subscription(
+            Odometry, "/base_controller/odom", self._on_wheel_freshness, 10,
+        )
+        self.create_subscription(
+            Imu, "/imu/calibrated", self._on_imu_freshness, 10,
+        )
+        self.create_subscription(
+            Odometry, "/odom_lidar", self._on_lidar_freshness, 10,
+        )
+
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
         self.create_subscription(Float64MultiArray, "/arm_joint_temperatures", self._on_arm_temperatures, 10)
+        # RTAB-Map publishes this only after visual loop closure confirms the
+        # robot's location on the saved map. Highest priority because it's the
+        # only map-frame pose when no AMCL/lidar is in the loop.
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/rtabmap/localization_pose",
+            self._on_rtabmap_loc, 10,
+        )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
@@ -103,6 +136,9 @@ class BridgeNode(Node):
         self._global_costmap_clear_client = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
         )
+        # RTAB-Map's backup service snapshots the active DB to <db_path>.back.
+        # Used by save_map() to freeze the live mapping into arena_map.db.
+        self._rtabmap_backup_client = self.create_client(EmptySrv, "/rtabmap/backup")
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
@@ -126,7 +162,7 @@ class BridgeNode(Node):
             }
 
     def _on_odom(self, msg: Odometry) -> None:
-        if self._pose_source == "amcl":
+        if self._pose_source in ("amcl", "rtabmap_loc"):
             return
         with self._lock:
             self._pose = _pose_from_q(
@@ -137,6 +173,8 @@ class BridgeNode(Node):
             self._pose_source = "odom"
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        if self._pose_source == "rtabmap_loc":
+            return
         with self._lock:
             self._pose = _pose_from_q(
                 msg.pose.pose.position.x,
@@ -144,6 +182,15 @@ class BridgeNode(Node):
                 msg.pose.pose.orientation,
             )
             self._pose_source = "amcl"
+
+    def _on_rtabmap_loc(self, msg: PoseWithCovarianceStamped) -> None:
+        with self._lock:
+            self._pose = _pose_from_q(
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+                msg.pose.pose.orientation,
+            )
+            self._pose_source = "rtabmap_loc"
 
     def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
         # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout
@@ -294,44 +341,45 @@ class BridgeNode(Node):
 
     # ── Map saving ────────────────────────────────────────────────────────────
 
-    def save_map(self, filename: str = "arena_map", out_dir: str = "/maps") -> tuple[bool, str]:
-        with self._lock:
-            snap = dict(self._map) if self._map else None
-        if snap is None:
-            return False, "no map data available"
-        w, h = int(snap["width"]), int(snap["height"])
-        res = float(snap["resolution"])
-        ox, oy = float(snap["origin_x"]), float(snap["origin_y"])
-        data = snap["data"]
+    def save_map(self, filename: str = "arena_map", out_dir: str = "/slam") -> tuple[bool, str]:
+        # Snapshot the active RTAB-Map DB into <db>.back, then copy it to
+        # <out_dir>/<filename>.db so localization can load it next boot.
+        # Requires slam_fusion's database_path to live on a host volume that's
+        # also mounted into this container at out_dir.
+        if not self._rtabmap_backup_client.wait_for_service(timeout_sec=2.0):
+            return False, "/rtabmap/backup service not available — is slam_fusion running?"
 
-        os.makedirs(out_dir, exist_ok=True)
-        pgm_path = os.path.join(out_dir, f"{filename}.pgm")
-        yaml_path = os.path.join(out_dir, f"{filename}.yaml")
+        done = threading.Event()
+        result: dict[str, Any] = {"ok": False, "message": "/rtabmap/backup timed out"}
+        future = self._rtabmap_backup_client.call_async(EmptySrv.Request())
 
-        with open(pgm_path, "wb") as f:
-            f.write(f"P5\n{w} {h}\n255\n".encode())
-            for row in range(h - 1, -1, -1):
-                for col in range(w):
-                    cell = data[row * w + col]
-                    if cell < 0:
-                        px = 205
-                    else:
-                        px = max(0, min(255, 255 - int(cell * 255 / 100)))
-                    f.write(struct.pack("B", px))
+        def _finished(_future: Any) -> None:
+            try:
+                _future.result()
+                result["ok"] = True
+            except Exception as exc:  # noqa: BLE001
+                result["message"] = f"/rtabmap/backup failed: {exc}"
+            finally:
+                done.set()
 
-        yaml_content = (
-            f"image: {pgm_path}\n"
-            f"resolution: {res}\n"
-            f"origin: [{ox}, {oy}, 0.0]\n"
-            "negate: 0\n"
-            "occupied_thresh: 0.65\n"
-            "free_thresh: 0.196\n"
-        )
-        with open(yaml_path, "w") as f:
-            f.write(yaml_content)
+        future.add_done_callback(_finished)
+        if not done.wait(timeout=15.0) or not result["ok"]:
+            return False, str(result["message"])
 
-        self.get_logger().info(f"Map saved to {yaml_path}")
-        return True, yaml_path
+        backup_src = os.path.join(out_dir, "rtabmap.db.back")
+        dest = os.path.join(out_dir, f"{filename}.db")
+        if not os.path.exists(backup_src):
+            return False, f"backup ran but {backup_src} not found — check slam_fusion's database_path bind mount"
+
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            import shutil
+            shutil.copyfile(backup_src, dest)
+        except OSError as exc:
+            return False, f"copy to {dest} failed: {exc}"
+
+        self.get_logger().info(f"Arena map saved to {dest}")
+        return True, dest
 
     def clear_costmap(self, target: str = "local") -> tuple[bool, str]:
         if target == "global":
@@ -362,6 +410,100 @@ class BridgeNode(Node):
         future.add_done_callback(_finished)
         done.wait(timeout=3.0)
         return bool(result["ok"]), str(result["message"])
+
+    # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
+
+    def _load_waypoints(self) -> dict[str, dict[str, float]]:
+        try:
+            with open(WAYPOINTS_PATH) as f:
+                data = yaml.safe_load(f) or {}
+        except (FileNotFoundError, OSError, yaml.YAMLError):
+            return {}
+        raw = data.get("waypoints") if isinstance(data, dict) else None
+        out: dict[str, dict[str, float]] = {}
+        if isinstance(raw, dict):
+            for name, pose in raw.items():
+                if not isinstance(pose, dict):
+                    continue
+                out[str(name)] = {
+                    "x": float(pose.get("x", 0.0)),
+                    "y": float(pose.get("y", 0.0)),
+                    "yaw": float(pose.get("yaw", 0.0)),
+                }
+        return out
+
+    def _write_waypoints(self) -> None:
+        """Atomic write; caller must hold _waypoints_lock."""
+        os.makedirs(os.path.dirname(WAYPOINTS_PATH), exist_ok=True)
+        payload = yaml.dump({"waypoints": self._waypoints}, default_flow_style=False)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(WAYPOINTS_PATH), suffix=".yaml"
+        )
+        try:
+            os.write(tmp_fd, payload.encode())
+            os.close(tmp_fd)
+            os.replace(tmp_path, WAYPOINTS_PATH)
+        except Exception:
+            with suppress(OSError):
+                os.close(tmp_fd)
+            with suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    def list_waypoints(self) -> dict[str, dict[str, float]]:
+        with self._waypoints_lock:
+            return {k: dict(v) for k, v in self._waypoints.items()}
+
+    def save_waypoint(
+        self,
+        name: str,
+        x: float | None = None,
+        y: float | None = None,
+        yaw: float | None = None,
+    ) -> tuple[bool, str]:
+        name = str(name).strip()
+        if not name:
+            return False, "waypoint name is required"
+        if x is None or y is None:
+            # "Mark where I am": snapshot the current map-frame pose.
+            pose = self.snapshot_pose()
+            wp = {
+                "x": float(pose["x"]),
+                "y": float(pose["y"]),
+                "yaw": float(pose["yaw"]),
+            }
+        else:
+            wp = {"x": float(x), "y": float(y), "yaw": float(yaw or 0.0)}
+        with self._waypoints_lock:
+            self._waypoints[name] = wp
+            try:
+                self._write_waypoints()
+            except OSError as exc:
+                del self._waypoints[name]
+                return False, f"failed to persist waypoint: {exc}"
+        return True, f"saved waypoint '{name}'"
+
+    def delete_waypoint(self, name: str) -> tuple[bool, str]:
+        name = str(name).strip()
+        with self._waypoints_lock:
+            if name not in self._waypoints:
+                return False, f"no waypoint named '{name}'"
+            removed = self._waypoints.pop(name)
+            try:
+                self._write_waypoints()
+            except OSError as exc:
+                self._waypoints[name] = removed
+                return False, f"failed to persist deletion: {exc}"
+        return True, f"deleted waypoint '{name}'"
+
+    def goto_waypoint(self, name: str) -> tuple[bool, str]:
+        name = str(name).strip()
+        with self._waypoints_lock:
+            wp = self._waypoints.get(name)
+            wp = dict(wp) if wp else None
+        if wp is None:
+            return False, f"no waypoint named '{name}'"
+        return self.send_nav_goal(wp["x"], wp["y"], wp["yaw"])
 
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
@@ -399,13 +541,41 @@ class BridgeNode(Node):
 
     def snapshot_nav(self) -> dict[str, Any]:
         with self._nav_lock:
-            return {
+            payload = {
                 "state": self._nav_state,
                 "message": self._nav_message,
                 "goal": dict(self._nav_goal) if self._nav_goal else None,
                 "feedback": dict(self._nav_feedback),
                 "server_ready": self._nav_client.server_is_ready(),
                 "visible_actions": self._visible_action_names(),
+            }
+        payload["fusion_sources"] = self.snapshot_fusion_sources()
+        return payload
+
+    # ── EKF fusion source freshness ──────────────────────────────────────────
+
+    def _on_wheel_freshness(self, _msg: Odometry) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["wheel"] = time.monotonic()
+
+    def _on_imu_freshness(self, _msg: Imu) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["imu"] = time.monotonic()
+
+    def _on_lidar_freshness(self, _msg: Odometry) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["lidar"] = time.monotonic()
+
+    def snapshot_fusion_sources(self) -> dict[str, bool]:
+        """Returns {source: True/False} for each EKF input, fresh = last
+        message within 2 s. Drives the UI badge."""
+        now = time.monotonic()
+        fresh = 2.0
+        with self._fusion_lock:
+            return {
+                "wheel": (now - self._fusion_last_seen.get("wheel", 0.0)) < fresh,
+                "imu":   (now - self._fusion_last_seen.get("imu",   0.0)) < fresh,
+                "lidar": (now - self._fusion_last_seen.get("lidar", 0.0)) < fresh,
             }
 
     def _visible_action_names(self) -> list[str]:
@@ -624,6 +794,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/waypoints":
+                self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
                 self._json({"state": node.snapshot_motion_state()})
             elif path == "/api/arm/temperatures":
@@ -701,6 +873,22 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/nav/cancel":
                 ok, msg = node.cancel_nav_goal()
                 self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/waypoints/save":
+                x = body.get("x")
+                y = body.get("y")
+                ok, msg = node.save_waypoint(
+                    str(body.get("name", "")),
+                    None if x is None else float(x),
+                    None if y is None else float(y),
+                    float(body.get("yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "waypoint_save", "message": msg})
+            elif path == "/api/waypoints/delete":
+                ok, msg = node.delete_waypoint(str(body.get("name", "")))
+                self._json({"ok": ok, "action": "waypoint_delete", "message": msg})
+            elif path == "/api/waypoints/goto":
+                ok, msg = node.goto_waypoint(str(body.get("name", "")))
+                self._json({"ok": ok, "action": "waypoint_goto", "message": msg})
             elif path == "/api/map/save":
                 filename = str(body.get("filename", "arena_map"))
                 ok, msg = node.save_map(filename=filename)
