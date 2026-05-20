@@ -383,6 +383,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())
 
+    @app.get("/api/ros/task/target")
+    async def ros_task_target() -> dict:
+        client = RobotBridgeClient(current_settings())
+        try:
+            return await client.get_target()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:
         client = RobotBridgeClient(current_settings())
