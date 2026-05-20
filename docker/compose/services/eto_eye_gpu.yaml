@@ -23,7 +23,7 @@ x-eto-eye-env: &eto_eye_env
   DEPTH_UNIT_SCALE: "0.001"
   DEPTH_ROI_SCALE: "0.5"
   DEPTH_MIN_VALID_PIXELS: "20"
-  DEPTH_MAX_AGE_SEC: "0.5"
+  DEPTH_MAX_AGE_SEC: "0.05"
 
 x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
 
