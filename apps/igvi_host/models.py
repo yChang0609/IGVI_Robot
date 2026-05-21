@@ -162,7 +162,7 @@ class BatteryStatusResponse(BaseModel):
     charging: bool = False
     present: bool = False
     stamp_sec: float | None = None
-    topic: str = "/battery_state"
+    source: str = "host"
     message: str = ""
 
 
