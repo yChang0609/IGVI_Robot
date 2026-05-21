@@ -22,6 +22,7 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    BatteryStatusResponse,
     BridgeRetrieveRequest,
     BridgeRetrieveStatusResponse,
     ClearCostmapRequest,
@@ -425,6 +426,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.get("/api/ros/arm/temperatures", response_model=ArmTemperaturesResponse)
     async def ros_arm_temperatures() -> ArmTemperaturesResponse:
         return await run_ros(lambda client: client.get_arm_temperatures())
+
+    @app.get("/api/ros/battery", response_model=BatteryStatusResponse)
+    async def ros_battery() -> BatteryStatusResponse:
+        return await run_ros(lambda client: client.get_battery_status())
 
     @app.post("/api/ros/arm/trajectory", response_model=RosActionResponse)
     async def ros_arm_trajectory(request: ArmTrajectoryRequest) -> RosActionResponse:

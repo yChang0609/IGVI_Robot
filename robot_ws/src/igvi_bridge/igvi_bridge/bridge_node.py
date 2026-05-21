@@ -27,7 +27,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
+from sensor_msgs.msg import BatteryState, CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -94,6 +94,23 @@ class BridgeNode(Node):
         self._arm_temperature_stamp_sec: float | None = None
         self._arm_state_lock = threading.Lock()
         self._arm_positions: list[float] | None = None
+        self._battery_topic = os.environ.get("IGVI_BATTERY_TOPIC", "/battery_state")
+        self._battery_lock = threading.Lock()
+        self._battery_status: dict[str, Any] = {
+            "ok": False,
+            "percentage": None,
+            "voltage": None,
+            "current": None,
+            "charge": None,
+            "capacity": None,
+            "power_supply_status": None,
+            "status": "unknown",
+            "charging": False,
+            "present": False,
+            "stamp_sec": None,
+            "topic": self._battery_topic,
+            "message": f"No {self._battery_topic} message received",
+        }
         self._imu_lock = threading.Lock()
         self._imu_calibration_status: dict[str, Any] = {
             "ok": False,
@@ -140,6 +157,12 @@ class BridgeNode(Node):
             "/joint_states",
             self._on_joint_states,
             10,
+        )
+        self.create_subscription(
+            BatteryState,
+            self._battery_topic,
+            self._on_battery_state,
+            qos_profile_sensor_data,
         )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
@@ -242,6 +265,32 @@ class BridgeNode(Node):
             return
         with self._arm_state_lock:
             self._arm_positions = [float(by_name[name]) for name in ARM_JOINT_NAMES]
+
+    def _on_battery_state(self, msg: BatteryState) -> None:
+        status = int(msg.power_supply_status)
+        percentage = _battery_percentage(msg.percentage)
+        stamp_sec = (
+            float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) / 1_000_000_000.0
+            if msg.header.stamp.sec or msg.header.stamp.nanosec
+            else self.get_clock().now().nanoseconds / 1_000_000_000.0
+        )
+        with self._battery_lock:
+            self._battery_status = {
+                "ok": True,
+                "percentage": percentage,
+                "voltage": _finite_float_or_none(msg.voltage),
+                "current": _finite_float_or_none(msg.current),
+                "charge": _finite_float_or_none(msg.charge),
+                "capacity": _finite_float_or_none(msg.capacity),
+                "power_supply_status": status,
+                "status": _battery_status_name(status),
+                "charging": status == BatteryState.POWER_SUPPLY_STATUS_CHARGING,
+                "present": bool(msg.present),
+                "stamp_sec": stamp_sec,
+                "topic": self._battery_topic,
+                "message": "",
+            }
+
     def _on_imu_calibration_state(self, msg: String) -> None:
         status = _parse_imu_calibration_status(str(msg.data))
         with self._imu_lock:
@@ -352,6 +401,11 @@ class BridgeNode(Node):
             "gripper_temperature": gripper_temperature,
             "stamp_sec": stamp_sec,
         }
+
+    def snapshot_battery_status(self) -> dict[str, Any]:
+        with self._battery_lock:
+            return dict(self._battery_status)
+
     def snapshot_imu_calibration(self) -> dict[str, Any]:
         with self._imu_lock:
             return dict(self._imu_calibration_status)
@@ -1087,6 +1141,33 @@ def _as_float(value: str | None) -> float:
         return 0.0
 
 
+def _finite_float_or_none(value: float) -> float | None:
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _battery_percentage(value: float) -> float | None:
+    if not math.isfinite(float(value)):
+        return None
+    percentage = float(value)
+    if percentage < 0.0:
+        return None
+    if percentage <= 1.0:
+        return percentage * 100.0
+    return min(percentage, 100.0)
+
+
+def _battery_status_name(status: int) -> str:
+    names = {
+        BatteryState.POWER_SUPPLY_STATUS_UNKNOWN: "unknown",
+        BatteryState.POWER_SUPPLY_STATUS_CHARGING: "charging",
+        BatteryState.POWER_SUPPLY_STATUS_DISCHARGING: "discharging",
+        BatteryState.POWER_SUPPLY_STATUS_NOT_CHARGING: "not_charging",
+        BatteryState.POWER_SUPPLY_STATUS_FULL: "full",
+    }
+    return names.get(status, "unknown")
+
+
 # ── HTTP server ──────────────────────────────────────────────────────────────
 
 def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
@@ -1126,6 +1207,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json({"state": node.snapshot_motion_state()})
             elif path == "/api/arm/temperatures":
                 self._json(node.snapshot_arm_temperatures())
+            elif path == "/api/battery":
+                self._json(node.snapshot_battery_status())
             elif path == "/api/imu/calibration":
                 self._json(node.snapshot_imu_calibration())
             elif path == "/api/image/topics":

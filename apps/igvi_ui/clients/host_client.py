@@ -153,6 +153,9 @@ class HostClient:
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
 
+    def battery_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/battery")
+
     def arm_trajectory(self, positions: list[float], time_from_start: float = 0.3) -> dict[str, Any]:
         return self.request(
             "POST",

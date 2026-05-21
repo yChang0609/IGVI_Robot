@@ -11,6 +11,7 @@ from .config import HostSettings
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    BatteryStatusResponse,
     CmdVelRequest,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
@@ -231,6 +232,32 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def get_battery_status(self) -> BatteryStatusResponse:
+        return await asyncio.to_thread(self._fetch_battery_status)
+
+    def _fetch_battery_status(self) -> BatteryStatusResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/battery"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                data = json.loads(r.read())
+            return BatteryStatusResponse(
+                ok=bool(data.get("ok", False)),
+                percentage=_coerce_float_or_none(data.get("percentage")),
+                voltage=_coerce_float_or_none(data.get("voltage")),
+                current=_coerce_float_or_none(data.get("current")),
+                charge=_coerce_float_or_none(data.get("charge")),
+                capacity=_coerce_float_or_none(data.get("capacity")),
+                power_supply_status=_coerce_int_or_none(data.get("power_supply_status")),
+                status=str(data.get("status", "unknown")),
+                charging=bool(data.get("charging", False)),
+                present=bool(data.get("present", False)),
+                stamp_sec=_coerce_float_or_none(data.get("stamp_sec")),
+                topic=str(data.get("topic", "/battery_state")),
+                message=str(data.get("message", "")),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def publish_arm_trajectory(self, request: ArmTrajectoryRequest) -> RosActionResponse:
         await asyncio.to_thread(
             self._bridge_post, "/api/arm/trajectory",
@@ -390,3 +417,18 @@ class RobotBridgeClient:
             action=str(result.get("action", "imu_calibration_start")),
             message=str(result.get("message", "")),
         )
+
+
+def _coerce_float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(number) else number
+
+
+def _coerce_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

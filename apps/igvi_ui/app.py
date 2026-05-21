@@ -104,10 +104,12 @@ class MainWindow(QMainWindow):
         self.docker_badge = StatusBadge("Docker", "muted")
         self.compose_badge = StatusBadge("Compose", "muted")
         self.bridge_badge = StatusBadge("UI Bridge", "muted")
+        self.battery_badge = StatusBadge("Battery: unknown", "muted")
         topbar_layout.addWidget(self.host_badge)
         topbar_layout.addWidget(self.docker_badge)
         topbar_layout.addWidget(self.compose_badge)
         topbar_layout.addWidget(self.bridge_badge)
+        topbar_layout.addWidget(self.battery_badge)
 
         self.status_line = QLabel("Ready")
         self.status_line.setObjectName("Muted")
@@ -139,6 +141,7 @@ class MainWindow(QMainWindow):
             self.docker_badge.set_state("Docker: unknown", "muted")
             self.compose_badge.set_state("Compose: unknown", "muted")
             self.bridge_badge.set_state("UI Bridge: unknown", "muted")
+            self.battery_badge.set_state("Battery: unknown", "muted")
             self.status_line.setText(f"Host Agent unavailable: {exc}")
             return
 
@@ -155,6 +158,38 @@ class MainWindow(QMainWindow):
             "UI Bridge: ok" if bridge.get("ok") else "UI Bridge: stale",
             "ok" if bridge.get("ok") else "warn",
         )
+        self._refresh_battery_badge()
+
+    def _refresh_battery_badge(self) -> None:
+        try:
+            battery = self.client.battery_status()
+        except HostClientError:
+            self.battery_badge.set_state("Battery: unknown", "muted")
+            return
+
+        if not battery.get("ok"):
+            self.battery_badge.set_state("Battery: unknown", "muted")
+            return
+
+        percentage = battery.get("percentage")
+        try:
+            percent_text = f"{float(percentage):.0f}%"
+            percent_value = float(percentage)
+        except (TypeError, ValueError):
+            percent_text = "--%"
+            percent_value = 100.0
+
+        charging = bool(battery.get("charging"))
+        charge_text = "charging" if charging else "not charging"
+        if charging:
+            state = "accent"
+        elif percent_value <= 20.0:
+            state = "danger"
+        elif percent_value <= 35.0:
+            state = "warn"
+        else:
+            state = "ok"
+        self.battery_badge.set_state(f"Battery: {percent_text} · {charge_text}", state)
 
     def shutdown(self) -> None:
         """Stop every background thread before the QApplication tears down.

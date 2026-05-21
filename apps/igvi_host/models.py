@@ -150,6 +150,22 @@ class ArmTemperaturesResponse(BaseModel):
     stamp_sec: float | None = None
 
 
+class BatteryStatusResponse(BaseModel):
+    ok: bool = False
+    percentage: float | None = None
+    voltage: float | None = None
+    current: float | None = None
+    charge: float | None = None
+    capacity: float | None = None
+    power_supply_status: int | None = None
+    status: str = "unknown"
+    charging: bool = False
+    present: bool = False
+    stamp_sec: float | None = None
+    topic: str = "/battery_state"
+    message: str = ""
+
+
 class ArmTrajectoryRequest(BaseModel):
     positions: list[float]
     time_from_start: float = 0.3
