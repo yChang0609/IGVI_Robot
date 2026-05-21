@@ -11,6 +11,7 @@ x-eto-eye-env: &eto_eye_env
   IMAGE_TOPIC: /rgb/image_raw
   DETECTION_FORMAT: json
   DETECTION_TOPIC: /detections_json
+  CLASS_FILTER: "4,6"
   ENABLE_ANNOTATED_IMAGE: "true"
   ANNOTATED_TOPIC: /eto_eye/annotated_image/compressed
   ANNOTATED_MAX_FPS: "5"
@@ -25,7 +26,7 @@ x-eto-eye-env: &eto_eye_env
   DEPTH_MIN_VALID_PIXELS: "20"
   DEPTH_MAX_AGE_SEC: "0.05"
 
-x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
+x-model-volume: &model_volume ${IGVI_DATA_ROOT}/models/eto_eye:/models:ro
 
 services:
   eto_eye_cpu:
