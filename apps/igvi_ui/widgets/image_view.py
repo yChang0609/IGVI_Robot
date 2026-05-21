@@ -170,7 +170,11 @@ class ImageView(QWidget):
 
     @staticmethod
     def _pick_default(topics: list[str]) -> str | None:
-        for preference in ("/rgb/image_bgr8", "/rgb/image_raw"):
+        for preference in (
+            "/eto_eye/annotated_image/compressed",
+            "/rgb/image_bgr8",
+            "/rgb/image_raw",
+        ):
             if preference in topics:
                 return preference
         return topics[0] if topics else None

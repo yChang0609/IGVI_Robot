@@ -22,6 +22,8 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    BridgeRetrieveRequest,
+    BridgeRetrieveStatusResponse,
     ClearCostmapRequest,
     CalibrationModel,
     CmdVelRequest,
@@ -43,6 +45,8 @@ from .models import (
     RosConnectionResponse,
     SaveMapRequest,
     SaveMapResponse,
+    SearchRetrieveRequest,
+    SearchRetrieveStatusResponse,
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
@@ -324,6 +328,20 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         if not services:
             raise HTTPException(status_code=400, detail="stop requires at least one service")
         return compose_or_http(lambda: compose_project().stop(services=services))
+    
+    @app.post("/api/compose/actions/remove", response_model=ComposeActionResponse)
+    def remove(request: ComposeActionRequest) -> ComposeActionResponse:
+        services = target_services(request)
+        if not services:
+            raise HTTPException(status_code=400, detail="remove requires at least one service")
+        return compose_or_http(lambda: compose_project().remove(services=services))
+
+    @app.post("/api/compose/actions/build_start", response_model=ComposeActionResponse)
+    def build_start(request: ComposeActionRequest) -> ComposeActionResponse:
+        services = target_services(request)
+        return compose_or_http(
+            lambda: compose_project().build_start(services=services, profile=request.profile)
+        )
 
     @app.post("/api/compose/actions/restart", response_model=ComposeActionResponse)
     def restart(request: ComposeActionRequest) -> ComposeActionResponse:
@@ -419,6 +437,54 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/nav/cancel", response_model=RosActionResponse)
     async def ros_nav_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.cancel_nav_goal())
+
+    @app.post("/api/ros/search_retrieve/start", response_model=RosActionResponse)
+    async def ros_search_retrieve_start(request: SearchRetrieveRequest) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_search_retrieve(
+            request.target_id, request.home_pose_x, request.home_pose_y, request.home_pose_yaw
+        ))
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="search_retrieve_start",
+            message=str(result.get("message", "search and retrieve task started"))
+        )
+
+    @app.post("/api/ros/search_retrieve/cancel", response_model=RosActionResponse)
+    async def ros_search_retrieve_cancel() -> RosActionResponse:
+        await run_ros(lambda client: client.cancel_search_retrieve())
+        return RosActionResponse(ok=True, action="search_retrieve_cancel", message="search and retrieve task canceled")
+
+    @app.get("/api/ros/search_retrieve/status", response_model=SearchRetrieveStatusResponse)
+    async def ros_search_retrieve_status() -> SearchRetrieveStatusResponse:
+        result = await run_ros(lambda client: client.get_search_retrieve_status())
+        return SearchRetrieveStatusResponse(**result)
+
+    @app.post("/api/ros/bridge_retrieve/start", response_model=RosActionResponse)
+    async def ros_bridge_retrieve_start(request: BridgeRetrieveRequest) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_bridge_retrieve(request))
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_retrieve_start",
+            message=str(result.get("message", "bridge retrieve task started")),
+        )
+
+    @app.post("/api/ros/bridge_retrieve/cancel", response_model=RosActionResponse)
+    async def ros_bridge_retrieve_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_bridge_retrieve())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_retrieve_cancel",
+            message=str(result.get("message", "bridge retrieve task canceled")),
+        )
+
+    @app.get("/api/ros/bridge_retrieve/status", response_model=BridgeRetrieveStatusResponse)
+    async def ros_bridge_retrieve_status() -> BridgeRetrieveStatusResponse:
+        result = await run_ros(lambda client: client.get_bridge_retrieve_status())
+        return BridgeRetrieveStatusResponse(**result)
+
+    @app.get("/api/ros/semantic_memory")
+    async def ros_semantic_memory() -> dict:
+        return await run_ros(lambda client: client.get_semantic_memory())
 
     @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
     async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:

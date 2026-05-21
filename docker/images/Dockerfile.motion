@@ -19,6 +19,7 @@ RUN apt-get update && \
         ros-jazzy-nav-msgs \
         ros-jazzy-geometry-msgs \
         ros-jazzy-std-msgs \
+        ros-jazzy-tf2-ros \
         python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 

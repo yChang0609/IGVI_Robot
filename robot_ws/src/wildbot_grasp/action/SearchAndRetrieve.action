@@ -1,0 +1,16 @@
+# Goal: Search for a specific target ID from semantic memory, approach it safely, simulate a grasp, and return to home pose.
+
+# Goal definition
+string target_id
+float64 home_pose_x
+float64 home_pose_y
+float64 home_pose_yaw
+---
+# Result definition
+bool success
+string message
+---
+# Feedback definition
+string stage
+float32 progress
+string detail

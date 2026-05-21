@@ -354,6 +354,36 @@ class ComposeProjectClient:
         started_at = _utcnow()
         self._run_compose("stop", lambda: self.client.compose.stop(services=target_services))
         return self._result("stop", target_services, started_at, f"Stopped {', '.join(target_services)}")
+    
+    def remove(self, service: str | None = None, services: list[str] | None = None) -> ComposeActionResponse:
+        target_services = self._normalize_services(service, services)
+        if not target_services:
+            raise ValueError("remove requires at least one service")
+        started_at = _utcnow()
+        cmd = self._compose_base_cmd()
+        # 等同於 docker compose rm --stop --force
+        cmd.extend(["rm", "--stop", "--force"])
+        cmd.extend(target_services)
+        self._stream_subprocess("remove", cmd)
+        return self._result("remove", target_services, started_at, f"Stopped and removed {', '.join(target_services)}")
+
+    def build_start(
+        self,
+        service: str | None = None,
+        services: list[str] | None = None,
+        profile: str | None = None,
+    ) -> ComposeActionResponse:
+        target_services = self._normalize_services(service, services)
+        profile_validated = self.registry.validate_profile(profile)
+        started_at = _utcnow()
+        cmd = self._compose_base_cmd(profile=profile_validated)
+        # 等同於 docker compose up --build -d --force-recreate
+        cmd.extend(["up", "--build", "--detach", "--force-recreate"])
+        if target_services:
+            cmd.extend(target_services)
+        self._stream_subprocess("build_start", cmd)
+        target = ", ".join(target_services) if target_services else profile_validated or "project"
+        return self._result("build_start", target_services, started_at, f"Built and started {target}")
 
     def restart(self, service: str | None = None, services: list[str] | None = None) -> ComposeActionResponse:
         target_services = self._normalize_services(service, services)

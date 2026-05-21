@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -22,6 +23,7 @@ from .models import (
     RosConnectionResponse,
     SaveMapResponse,
     WaypointListResponse,
+    BridgeRetrieveRequest,
 )
 
 
@@ -59,8 +61,12 @@ class RobotBridgeClient:
         return RosActionResponse(ok=True, action="cmd_vel", message="velocity command published")
 
     async def stop(self) -> RosActionResponse:
-        await asyncio.to_thread(self._bridge_post, "/api/stop", {})
-        return RosActionResponse(ok=True, action="stop", message="robot stopped")
+        result = await asyncio.to_thread(self._bridge_post, "/api/stop", {})
+        return RosActionResponse(
+            ok=bool(result.get("ok", True)),
+            action="stop",
+            message=str(result.get("message", "robot stopped")),
+        )
 
     async def publish_goal_pose(self, request: Pose2DRequest) -> RosActionResponse:
         await asyncio.to_thread(
@@ -75,6 +81,67 @@ class RobotBridgeClient:
             {"x": request.x, "y": request.y, "yaw": request.yaw, "frame_id": request.frame_id},
         )
         return RosActionResponse(ok=True, action="initial_pose", message="initial pose published")
+
+    async def start_search_retrieve(self, target_id: str, home_pose_x: float, home_pose_y: float, home_pose_yaw: float) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._bridge_post, "/api/search_retrieve/start",
+            {"target_id": target_id, "home_pose_x": home_pose_x, "home_pose_y": home_pose_y, "home_pose_yaw": home_pose_yaw},
+        )
+
+    async def cancel_search_retrieve(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/search_retrieve/cancel", {})
+
+    async def get_search_retrieve_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_search_retrieve_status)
+
+    def _fetch_search_retrieve_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/search_retrieve/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def start_bridge_retrieve(self, request: BridgeRetrieveRequest) -> dict[str, Any]:
+        payload: dict[str, Any] = {"target_class": request.target_class}
+        if request.bridge_waypoint_name:
+            payload["bridge_waypoint_name"] = request.bridge_waypoint_name
+        else:
+            payload.update(
+                bridge_pose_x=request.bridge_pose_x or 0.0,
+                bridge_pose_y=request.bridge_pose_y or 0.0,
+                bridge_pose_yaw=request.bridge_pose_yaw,
+            )
+        return await asyncio.to_thread(
+            self._bridge_post,
+            "/api/bridge_retrieve/start",
+            payload,
+        )
+
+    async def cancel_bridge_retrieve(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/bridge_retrieve/cancel", {})
+
+    async def get_bridge_retrieve_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_bridge_retrieve_status)
+
+    def _fetch_bridge_retrieve_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/bridge_retrieve/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_semantic_memory(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_semantic_memory)
+
+    def _fetch_semantic_memory(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/semantic_memory"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
@@ -139,11 +206,26 @@ class RobotBridgeClient:
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 data = json.loads(r.read())
+
+            def coerce_temperature(value: Any) -> float | None:
+                try:
+                    temperature = float(value)
+                except (TypeError, ValueError):
+                    return None
+                return None if math.isnan(temperature) else temperature
+
+            temperatures: list[float | None] = []
+            for value in data.get("temperatures", []):
+                temperatures.append(coerce_temperature(value))
+            try:
+                gripper_index = int(data.get("gripper_index", 2))
+            except (TypeError, ValueError):
+                gripper_index = 2
             return ArmTemperaturesResponse(
                 ok=bool(data.get("ok", False)),
-                temperatures=[float(value) for value in data.get("temperatures", [])],
-                gripper_index=int(data.get("gripper_index", 2)),
-                gripper_temperature=data.get("gripper_temperature"),
+                temperatures=temperatures,
+                gripper_index=gripper_index,
+                gripper_temperature=coerce_temperature(data.get("gripper_temperature")),
                 stamp_sec=data.get("stamp_sec"),
             )
         except Exception as exc:

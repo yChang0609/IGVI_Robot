@@ -32,8 +32,10 @@ import threading
 from enum import Enum
 
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, Twist, TwistStamped
-from nav_msgs.msg import Odometry, Path
+import tf2_ros
+from tf2_ros import TransformException
+from geometry_msgs.msg import Twist, TwistStamped
+from nav_msgs.msg import Path
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -41,6 +43,7 @@ from std_msgs.msg import String
 class State(Enum):
     IDLE = "idle"
     PATH_TRACKING = "path_tracking"
+    ALIGNING = "aligning"
     OVERRIDE = "override"
     MANUAL = "manual"
 
@@ -53,6 +56,8 @@ class MotionArbiter(Node):
         self.declare_parameter("override_timeout", 0.6)
         self.declare_parameter("lookahead_distance", 0.35)
         self.declare_parameter("goal_tolerance", 0.18)
+        self.declare_parameter("yaw_tolerance", 0.1)
+        self.declare_parameter("kp_linear_align", 0.8)
         self.declare_parameter("max_linear_velocity", 0.3)
         self.declare_parameter("max_angular_velocity", 1.2)
         self.declare_parameter("accel_linear", 0.6)
@@ -68,19 +73,19 @@ class MotionArbiter(Node):
         # ── State ─────────────────────────────────────────────────────────
         self._lock = threading.Lock()
         self._state: State = State.IDLE
-        self._path: list[tuple[float, float]] = []
+        self._path: list[tuple[float, float, float]] = []
         self._path_index: int = 0
         self._motion_target: tuple[float, float] = (0.0, 0.0)
         self._last_motion_time = None
-        self._pose: tuple[float, float, float] = (0.0, 0.0, 0.0)
-        self._pose_source: str = "none"
+        self._path_frame_id: str = "map"
         self._current_vel: tuple[float, float] = (0.0, 0.0)
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
-        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
-        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
+
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         output_topic = str(self.get_parameter("output_topic").value)
         self._cmd_pub = self.create_publisher(TwistStamped, output_topic, 10)
@@ -97,7 +102,11 @@ class MotionArbiter(Node):
         if not msg.poses:
             return
         with self._lock:
-            self._path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+            self._path_frame_id = msg.header.frame_id
+            self._path = [
+                _yaw_from_pose(p.pose.position.x, p.pose.position.y, p.pose.orientation)
+                for p in msg.poses
+            ]
             self._path_index = 0
             if self._state == State.OVERRIDE:
                 self.get_logger().info(
@@ -117,21 +126,6 @@ class MotionArbiter(Node):
             else:
                 self._state = State.OVERRIDE if self._path else State.MANUAL
 
-    def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
-        p = msg.pose.pose
-        with self._lock:
-            self._pose = _yaw_from_pose(p.position.x, p.position.y, p.orientation)
-            self._pose_source = "amcl"
-
-    def _on_odom(self, msg: Odometry) -> None:
-        # Only trust /odom if amcl hasn't given us a map-frame pose yet.
-        with self._lock:
-            if self._pose_source == "amcl":
-                return
-            p = msg.pose.pose
-            self._pose = _yaw_from_pose(p.position.x, p.position.y, p.orientation)
-            self._pose_source = "odom"
-
     # ── Control loop ──────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -140,9 +134,9 @@ class MotionArbiter(Node):
             state = self._state
             path = list(self._path)
             path_index = self._path_index
+            path_frame_id = self._path_frame_id
             motion_target = self._motion_target
             last_motion = self._last_motion_time
-            pose = self._pose
 
         # Override timeout: clear stale manual cmd
         if state in (State.OVERRIDE, State.MANUAL) and last_motion is not None:
@@ -154,20 +148,38 @@ class MotionArbiter(Node):
                     state = self._state
 
         # Compute desired velocity for this tick
-        if state == State.PATH_TRACKING and path:
-            result = self._pure_pursuit(path, path_index, pose)
-            if result is None:
-                with self._lock:
-                    self._path = []
-                    self._path_index = 0
-                    self._state = State.IDLE
-                state = State.IDLE
+        if state in (State.PATH_TRACKING, State.ALIGNING) and path:
+            pose = None
+            try:
+                t = self._tf_buffer.lookup_transform(
+                    path_frame_id, "base_link", rclpy.time.Time()
+                )
+                pose = _yaw_from_pose(
+                    t.transform.translation.x,
+                    t.transform.translation.y,
+                    t.transform.rotation,
+                )
+            except TransformException as ex:
+                self.get_logger().warn(f"Could not get transform to base_link: {ex}")
+            
+            if pose is None:
                 desired_vx, desired_wz = 0.0, 0.0
-                self.get_logger().info("Path tracking complete")
             else:
-                desired_vx, desired_wz, new_idx = result
-                with self._lock:
-                    self._path_index = new_idx
+                result = self._pure_pursuit(path, path_index, pose, state)
+                if result is None:
+                    with self._lock:
+                        self._path = []
+                        self._path_index = 0
+                        self._state = State.IDLE
+                    state = State.IDLE
+                    desired_vx, desired_wz = 0.0, 0.0
+                    self.get_logger().info("Path tracking complete")
+                else:
+                    desired_vx, desired_wz, new_idx, new_state = result
+                    with self._lock:
+                        self._path_index = new_idx
+                        self._state = new_state
+                    state = new_state
         elif state in (State.OVERRIDE, State.MANUAL):
             desired_vx, desired_wz = motion_target
         else:
@@ -204,19 +216,39 @@ class MotionArbiter(Node):
 
     def _pure_pursuit(
         self,
-        path: list[tuple[float, float]],
+        path: list[tuple[float, float, float]],
         path_index: int,
         pose: tuple[float, float, float],
-    ) -> tuple[float, float, int] | None:
-        """Returns (vx, wz, new_path_index) or None when path is complete."""
+        current_state: State,
+    ) -> tuple[float, float, int, State] | None:
+        """Returns (vx, wz, new_path_index, new_state) or None when path is complete."""
         if not path:
             return None
         x, y, yaw = pose
 
-        gx, gy = path[-1]
+        gx, gy, gyaw = path[-1]
         goal_tol = float(self.get_parameter("goal_tolerance").value)
-        if math.hypot(gx - x, gy - y) < goal_tol:
-            return None
+        dist_to_goal = math.hypot(gx - x, gy - y)
+        
+        is_at_goal = dist_to_goal < goal_tol
+        if current_state == State.ALIGNING and dist_to_goal < goal_tol * 2.0:
+            is_at_goal = True
+            
+        if is_at_goal:
+            yaw_tol = float(self.get_parameter("yaw_tolerance").value)
+            heading_error = _wrap_angle(gyaw - yaw)
+            if abs(heading_error) < yaw_tol and dist_to_goal < goal_tol:
+                return None
+            else:
+                wz = float(self.get_parameter("kp_angular").value) * heading_error
+                # Correct longitudinal drift during alignment
+                dx, dy = gx - x, gy - y
+                forward_err = dx * math.cos(yaw) + dy * math.sin(yaw)
+                kp_lin = float(self.get_parameter("kp_linear_align").value)
+                vx = kp_lin * forward_err
+                max_v = float(self.get_parameter("slow_linear_velocity").value)
+                vx = max(-max_v, min(max_v, vx))
+                return vx, wz, path_index, State.ALIGNING
 
         # Advance closest-point index (no rewinding)
         closest_idx = path_index
@@ -235,7 +267,7 @@ class MotionArbiter(Node):
                 target_idx = i
                 break
 
-        tx, ty = path[target_idx]
+        tx, ty, _ = path[target_idx]
         target_heading = math.atan2(ty - y, tx - x)
         heading_error = _wrap_angle(target_heading - yaw)
 
@@ -245,7 +277,7 @@ class MotionArbiter(Node):
         else:
             vx = float(self.get_parameter("max_linear_velocity").value)
         wz = float(self.get_parameter("kp_angular").value) * heading_error
-        return vx, wz, closest_idx
+        return vx, wz, closest_idx, State.PATH_TRACKING
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

@@ -18,10 +18,12 @@ from PySide6.QtWidgets import (
 from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.widgets.arm_control import ArmControl
+from igvi_ui.widgets.bridge_retrieve_control import BridgeRetrieveControl
 from igvi_ui.widgets.image_view import ImageView
 from igvi_ui.widgets.map_views import Map2DView
 from igvi_ui.widgets.navigation_control import NavigationControl
 from igvi_ui.widgets.waypoint_control import WaypointControl
+from igvi_ui.widgets.search_retrieve_control import SearchRetrieveControl
 
 _WASD: dict[Qt.Key, tuple[float, float]] = {
     Qt.Key.Key_W: (1.0, 0.0),
@@ -36,6 +38,7 @@ class _RosPoller(QThread):
 
     map_received = Signal(dict)
     pose_received = Signal(dict)
+    semantic_memory_received = Signal(dict)
 
     def __init__(self, client: HostClient) -> None:
         super().__init__()
@@ -57,6 +60,13 @@ class _RosPoller(QThread):
                     data = self.client.ros_map()
                     if data.get("ok"):
                         self.map_received.emit(data)
+                except Exception:
+                    pass
+
+            if tick % 5 == 0:
+                try:
+                    data = self.client.semantic_memory()
+                    self.semantic_memory_received.emit(data)
                 except Exception:
                     pass
 
@@ -285,10 +295,15 @@ class RobotPage(QWidget):
         self.nav_control = NavigationControl(self.client, self.map_2d)
         self.waypoint_control = WaypointControl(self.client, self.map_2d)
         self.arm_control = ArmControl(self.client)
+        self.search_retrieve_control = SearchRetrieveControl(self.client, self.map_2d)
+        self.bridge_retrieve_control = BridgeRetrieveControl(self.client, self.map_2d)
+        
         self.control_tabs.addTab(self.drive_control, "Drive")
         self.control_tabs.addTab(self.nav_control, "Navigation")
         self.control_tabs.addTab(self.waypoint_control, "Waypoints")
         self.control_tabs.addTab(self.arm_control, "Arm")
+        self.control_tabs.addTab(self.search_retrieve_control, "Search & Retrieve")
+        self.control_tabs.addTab(self.bridge_retrieve_control, "Bridge Mission")
         control_layout.addWidget(self.control_tabs, 1)
         layout.addWidget(control_panel, 1, 2)
 
@@ -304,6 +319,7 @@ class RobotPage(QWidget):
             self._poller = _RosPoller(self.client)
             self._poller.map_received.connect(self.map_2d.update_map)
             self._poller.pose_received.connect(self._on_pose)
+            self._poller.semantic_memory_received.connect(self.search_retrieve_control.update_semantic_memory)
             self._poller.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802
@@ -322,6 +338,8 @@ class RobotPage(QWidget):
         self.image_view.shutdown()
         self.nav_control.shutdown()
         self.arm_control.shutdown()
+        self.search_retrieve_control.shutdown()
+        self.bridge_retrieve_control.shutdown()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

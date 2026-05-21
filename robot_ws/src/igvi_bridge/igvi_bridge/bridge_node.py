@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+import tf2_ros
+from tf2_ros import TransformException
 import yaml
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
@@ -23,8 +25,9 @@ from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import Image, Imu
+from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -46,6 +49,7 @@ JPEG_QUALITY = 70
 # Persisted next to saved maps (/maps is the bridge's only writable volume;
 # /configs is mounted read-only). Survives container restarts.
 WAYPOINTS_PATH = "/maps/waypoints.yaml"
+ANNOTATED_IMAGE_TOPIC = "/eto_eye/annotated_image/compressed"
 
 
 class BridgeNode(Node):
@@ -69,12 +73,27 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
 
+        self._search_lock = threading.Lock()
+        self._search_state: str = "idle"
+        self._search_message: str = ""
+        self._search_goal_handle = None
+        self._search_goal: dict[str, Any] | None = None
+        self._search_feedback: dict[str, Any] = {}
+        self._bridge_mission_lock = threading.Lock()
+        self._bridge_mission_state: str = "idle"
+        self._bridge_mission_message: str = ""
+        self._bridge_mission_goal_handle = None
+        self._bridge_mission_goal: dict[str, Any] | None = None
+        self._bridge_mission_feedback: dict[str, Any] = {}
+
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
 
         self._arm_temp_lock = threading.Lock()
         self._arm_temperatures: list[float] = []
         self._arm_temperature_stamp_sec: float | None = None
+        self._arm_state_lock = threading.Lock()
+        self._arm_positions: list[float] | None = None
         self._imu_lock = threading.Lock()
         self._imu_calibration_status: dict[str, Any] = {
             "ok": False,
@@ -110,15 +129,17 @@ class BridgeNode(Node):
         )
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
-        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
-        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self.create_timer(0.05, self._update_pose_from_tf)
+        
         self.create_subscription(Float64MultiArray, "/arm_joint_temperatures", self._on_arm_temperatures, 10)
-        # RTAB-Map publishes this only after visual loop closure confirms the
-        # robot's location on the saved map. Highest priority because it's the
-        # only map-frame pose when no AMCL/lidar is in the loop.
         self.create_subscription(
-            PoseWithCovarianceStamped, "/rtabmap/localization_pose",
-            self._on_rtabmap_loc, 10,
+            JointState,
+            "/joint_states",
+            self._on_joint_states,
+            10,
         )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
@@ -140,6 +161,10 @@ class BridgeNode(Node):
         # Used by save_map() to freeze the live mapping into arena_map.db.
         self._rtabmap_backup_client = self.create_client(EmptySrv, "/rtabmap/backup")
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self._search_client = ActionClient(self, SearchAndRetrieve, "search_retrieve")
+        self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
+        self._semantic_memory: dict = {}
+        self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
@@ -161,36 +186,28 @@ class BridgeNode(Node):
                 "data": list(msg.data),
             }
 
-    def _on_odom(self, msg: Odometry) -> None:
-        if self._pose_source in ("amcl", "rtabmap_loc"):
-            return
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "odom"
-
-    def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
-        if self._pose_source == "rtabmap_loc":
-            return
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "amcl"
-
-    def _on_rtabmap_loc(self, msg: PoseWithCovarianceStamped) -> None:
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "rtabmap_loc"
+    def _update_pose_from_tf(self) -> None:
+        try:
+            t = self._tf_buffer.lookup_transform("map", "base_link", rclpy.time.Time())
+            with self._lock:
+                self._pose = _pose_from_q(
+                    t.transform.translation.x,
+                    t.transform.translation.y,
+                    t.transform.rotation,
+                )
+                self._pose_source = "tf_map"
+        except TransformException:
+            try:
+                t = self._tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time())
+                with self._lock:
+                    self._pose = _pose_from_q(
+                        t.transform.translation.x,
+                        t.transform.translation.y,
+                        t.transform.rotation,
+                    )
+                    self._pose_source = "tf_odom"
+            except TransformException:
+                pass
 
     def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
         # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout
@@ -201,6 +218,11 @@ class BridgeNode(Node):
         out.twist = msg.twist
         self._wheel_cmd_pub.publish(out)
 
+    def _publish_wheel_stop(self) -> None:
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self._wheel_cmd_pub.publish(msg)
+
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
         self._motion_state = str(getattr(msg, "data", ""))
 
@@ -209,6 +231,17 @@ class BridgeNode(Node):
         with self._arm_temp_lock:
             self._arm_temperatures = [float(value) for value in msg.data]
             self._arm_temperature_stamp_sec = now
+
+    def _on_joint_states(self, msg: JointState) -> None:
+        names = list(msg.name)
+        positions = list(msg.position)
+        if not names or len(positions) < len(names):
+            return
+        by_name = dict(zip(names, positions))
+        if not all(name in by_name for name in ARM_JOINT_NAMES):
+            return
+        with self._arm_state_lock:
+            self._arm_positions = [float(by_name[name]) for name in ARM_JOINT_NAMES]
     def _on_imu_calibration_state(self, msg: String) -> None:
         status = _parse_imu_calibration_status(str(msg.data))
         with self._imu_lock:
@@ -224,6 +257,15 @@ class BridgeNode(Node):
                 "width": int(msg.width),
                 "height": int(msg.height),
                 "encoding": str(msg.encoding),
+            }
+
+    def _on_compressed_image(self, msg: CompressedImage) -> None:
+        with self._image_lock:
+            self._image_jpeg = bytes(msg.data)
+            self._image_meta = {
+                "width": 0,
+                "height": 0,
+                "encoding": str(msg.format or "compressed"),
             }
 
     # ── Thread-safe snapshots ────────────────────────────────────────────────
@@ -252,6 +294,47 @@ class BridgeNode(Node):
         msg.linear.x = float(linear_x)
         msg.angular.z = float(angular_z)
         self._motion_cmd_pub.publish(msg)
+
+    def emergency_stop(self) -> tuple[bool, str]:
+        canceled: list[str] = []
+
+        with self._bridge_mission_lock:
+            bridge_handle = self._bridge_mission_goal_handle
+        if bridge_handle is not None:
+            self._update_bridge_mission_state("canceling", "emergency stop requested")
+            bridge_future = bridge_handle.cancel_goal_async()
+            bridge_future.add_done_callback(self._on_bridge_mission_cancel_response)
+            canceled.append("bridge mission")
+
+        with self._search_lock:
+            search_handle = self._search_goal_handle
+        if search_handle is not None:
+            self._update_search_state("canceling", "emergency stop requested")
+            search_future = search_handle.cancel_goal_async()
+            search_future.add_done_callback(self._on_search_cancel_response)
+            canceled.append("search mission")
+
+        with self._nav_lock:
+            nav_handle = self._nav_goal_handle
+        if nav_handle is not None:
+            self._update_nav_state("canceling", "emergency stop requested")
+            nav_future = nav_handle.cancel_goal_async()
+            nav_future.add_done_callback(self._on_nav_cancel_response)
+            canceled.append("navigation")
+
+        for _ in range(3):
+            self.publish_cmd_vel(0.0, 0.0)
+            self._publish_wheel_stop()
+
+        with self._arm_state_lock:
+            arm_positions = list(self._arm_positions) if self._arm_positions else None
+        if arm_positions:
+            self.publish_arm_trajectory(arm_positions, 0.1)
+            canceled.append("arm hold")
+
+        if canceled:
+            return True, "emergency stop sent; cancel requested for " + ", ".join(canceled)
+        return True, "emergency stop sent"
 
     def snapshot_motion_state(self) -> str:
         return self._motion_state
@@ -318,6 +401,11 @@ class BridgeNode(Node):
         for name, types in topics:
             if "sensor_msgs/msg/Image" in types:
                 out.append(name)
+            elif (
+                name == ANNOTATED_IMAGE_TOPIC
+                and "sensor_msgs/msg/CompressedImage" in types
+            ):
+                out.append(name)
         return sorted(out)
 
     def set_image_topic(self, topic: str | None) -> None:
@@ -331,9 +419,15 @@ class BridgeNode(Node):
             self._image_jpeg = None
             self._image_meta = {}
             if topic:
-                self._image_sub = self.create_subscription(
-                    Image, topic, self._on_image, qos_profile_sensor_data
-                )
+                topic_types = dict(self.get_topic_names_and_types()).get(topic, [])
+                if "sensor_msgs/msg/CompressedImage" in topic_types:
+                    self._image_sub = self.create_subscription(
+                        CompressedImage, topic, self._on_compressed_image, qos_profile_sensor_data
+                    )
+                else:
+                    self._image_sub = self.create_subscription(
+                        Image, topic, self._on_image, qos_profile_sensor_data
+                    )
 
     def snapshot_image(self) -> tuple[bytes | None, str | None, dict[str, Any]]:
         with self._image_lock:
@@ -551,6 +645,232 @@ class BridgeNode(Node):
             }
         payload["fusion_sources"] = self.snapshot_fusion_sources()
         return payload
+
+    # ── Search and Retrieve ──────────────────────────────────────────────────
+
+    def _update_search_state(self, state: str, message: str) -> None:
+        with self._search_lock:
+            self._search_state = state
+            self._search_message = message
+        self.get_logger().info(f"Search state: {state} — {message}")
+
+    def send_search_goal(self, target_id: str, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        if not self._search_client.server_is_ready():
+            if not self._search_client.wait_for_server(timeout_sec=2.0):
+                self._update_search_state("unavailable", "Search server offline")
+                return False, "Search server offline"
+        goal_msg = SearchAndRetrieve.Goal()
+        goal_msg.target_id = str(target_id)
+        goal_msg.home_pose_x = float(x)
+        goal_msg.home_pose_y = float(y)
+        goal_msg.home_pose_yaw = float(yaw)
+        with self._search_lock:
+            self._search_goal = {"target_id": target_id, "home_pose_x": x, "home_pose_y": y, "home_pose_yaw": yaw}
+            self._search_feedback = {}
+        self._update_search_state("sending", "goal dispatched")
+        future = self._search_client.send_goal_async(goal_msg, feedback_callback=self._on_search_feedback)
+        future.add_done_callback(self._on_search_response)
+        return True, "goal dispatched"
+
+    def cancel_search_goal(self) -> tuple[bool, str]:
+        with self._search_lock:
+            handle = self._search_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_search_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_search_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_search(self) -> dict[str, Any]:
+        with self._search_lock:
+            return {
+                "state": self._search_state,
+                "message": self._search_message,
+                "goal": dict(self._search_goal) if self._search_goal else None,
+                "feedback": dict(self._search_feedback),
+                "server_ready": self._search_client.server_is_ready(),
+            }
+
+    def _on_search_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._search_lock:
+            self._search_feedback = {
+                "stage": fb.stage,
+                "progress": float(fb.progress),
+                "detail": fb.detail,
+            }
+
+    def _on_search_response(self, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._update_search_state("idle", f"Failed to send goal: {exc}")
+            return
+        if not goal_handle.accepted:
+            self._update_search_state("idle", "goal rejected")
+            return
+        with self._search_lock:
+            self._search_goal_handle = goal_handle
+        self._update_search_state("active", "goal accepted")
+        res_future = goal_handle.get_result_async()
+        res_future.add_done_callback(self._on_search_result)
+
+    def _on_search_result(self, future) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._update_search_state("idle", f"Action server crashed or failed: {exc}")
+            with self._search_lock:
+                self._search_goal_handle = None
+            return
+            
+        status = result.status
+        with self._search_lock:
+            self._search_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            msg = result.result.message if hasattr(result.result, "message") else "succeeded"
+            self._update_search_state("idle", f"success: {msg}")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._update_search_state("idle", "canceled")
+        elif status == GoalStatus.STATUS_ABORTED:
+            msg = result.result.message if hasattr(result.result, "message") else "aborted"
+            self._update_search_state("idle", f"aborted: {msg}")
+        else:
+            self._update_search_state("idle", f"completed with status {status}")
+
+    def _on_search_cancel_response(self, future) -> None:
+        response = future.result()
+        if len(response.goals_canceling) > 0:
+            self._update_search_state("idle", "cancel accepted")
+        else:
+            self._update_search_state("active", "cancel rejected")
+    # ── Bridge Retrieve Mission ──────────────────────────────────────────────
+
+    def _update_bridge_mission_state(self, state: str, message: str) -> None:
+        with self._bridge_mission_lock:
+            self._bridge_mission_state = state
+            self._bridge_mission_message = message
+        self.get_logger().info(f"Bridge mission state: {state} — {message}")
+
+    def send_bridge_mission_goal(
+        self,
+        target_class: str,
+        bridge_x: float,
+        bridge_y: float,
+        bridge_yaw: float,
+    ) -> tuple[bool, str]:
+        if not self._bridge_mission_client.server_is_ready():
+            if not self._bridge_mission_client.wait_for_server(timeout_sec=2.0):
+                self._update_bridge_mission_state("unavailable", "Bridge retrieve server offline")
+                return False, "Bridge retrieve server offline"
+        goal_msg = BridgeRetrieve.Goal()
+        goal_msg.target_class = str(target_class)
+        goal_msg.bridge_pose_x = float(bridge_x)
+        goal_msg.bridge_pose_y = float(bridge_y)
+        goal_msg.bridge_pose_yaw = float(bridge_yaw)
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal = {
+                "target_class": target_class,
+                "bridge_pose_x": bridge_x,
+                "bridge_pose_y": bridge_y,
+                "bridge_pose_yaw": bridge_yaw,
+            }
+            self._bridge_mission_feedback = {}
+        self._update_bridge_mission_state("sending", "goal dispatched")
+        future = self._bridge_mission_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._on_bridge_mission_feedback,
+        )
+        future.add_done_callback(self._on_bridge_mission_response)
+        return True, "goal dispatched"
+
+    def send_bridge_mission_waypoint_goal(
+        self,
+        target_class: str,
+        waypoint_name: str,
+    ) -> tuple[bool, str]:
+        name = str(waypoint_name).strip()
+        with self._waypoints_lock:
+            wp = self._waypoints.get(name)
+            wp = dict(wp) if wp else None
+        if wp is None:
+            return False, f"no waypoint named '{name}'"
+        return self.send_bridge_mission_goal(target_class, wp["x"], wp["y"], wp["yaw"])
+
+    def cancel_bridge_mission_goal(self) -> tuple[bool, str]:
+        with self._bridge_mission_lock:
+            handle = self._bridge_mission_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_bridge_mission_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_bridge_mission_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_bridge_mission(self) -> dict[str, Any]:
+        with self._bridge_mission_lock:
+            return {
+                "state": self._bridge_mission_state,
+                "message": self._bridge_mission_message,
+                "goal": dict(self._bridge_mission_goal) if self._bridge_mission_goal else None,
+                "feedback": dict(self._bridge_mission_feedback),
+                "server_ready": self._bridge_mission_client.server_is_ready(),
+            }
+
+    def _on_bridge_mission_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._bridge_mission_lock:
+            self._bridge_mission_feedback = {
+                "stage": fb.stage,
+                "progress": float(fb.progress),
+                "detail": fb.detail,
+            }
+
+    def _on_bridge_mission_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._update_bridge_mission_state("idle", "goal rejected")
+            return
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal_handle = goal_handle
+        self._update_bridge_mission_state("active", "goal accepted")
+        res_future = goal_handle.get_result_async()
+        res_future.add_done_callback(self._on_bridge_mission_result)
+
+    def _on_bridge_mission_result(self, future) -> None:
+        result = future.result()
+        status = result.status
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            msg = result.result.message if hasattr(result.result, "message") else "succeeded"
+            self._update_bridge_mission_state("idle", f"success: {msg}")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._update_bridge_mission_state("idle", "canceled")
+        elif status == GoalStatus.STATUS_ABORTED:
+            msg = result.result.message if hasattr(result.result, "message") else "aborted"
+            self._update_bridge_mission_state("idle", f"aborted: {msg}")
+        else:
+            self._update_bridge_mission_state("idle", f"completed with status {status}")
+
+    def _on_bridge_mission_cancel_response(self, future) -> None:
+        response = future.result()
+        if len(response.goals_canceling) > 0:
+            self._update_bridge_mission_state("idle", "cancel accepted")
+        else:
+            self._update_bridge_mission_state("active", "cancel rejected")
+
+    # ── Semantic Memory ──────────────────────────────────────────────────────
+
+    def _on_semantic_memory(self, msg: String) -> None:
+        try:
+            self._semantic_memory = json.loads(msg.data)
+        except Exception:
+            pass
+
+    def snapshot_semantic_memory(self) -> dict[str, Any]:
+        return self._semantic_memory
 
     # ── EKF fusion source freshness ──────────────────────────────────────────
 
@@ -794,6 +1114,12 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/semantic_memory":
+                self._json(node.snapshot_semantic_memory())
+            elif path == "/api/search_retrieve/status":
+                self._json(node.snapshot_search())
+            elif path == "/api/bridge_retrieve/status":
+                self._json(node.snapshot_bridge_mission())
             elif path == "/api/waypoints":
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
@@ -837,8 +1163,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 node.publish_cmd_vel(float(body.get("linear_x", 0.0)), float(body.get("angular_z", 0.0)))
                 self._json({"ok": True, "action": "cmd_vel"})
             elif path == "/api/stop":
-                node.publish_cmd_vel(0.0, 0.0)
-                self._json({"ok": True, "action": "stop"})
+                ok, msg = node.emergency_stop()
+                self._json({"ok": ok, "action": "stop", "message": msg})
             elif path == "/api/goal_pose":
                 node.publish_goal_pose(
                     float(body.get("x", 0.0)), float(body.get("y", 0.0)),
@@ -873,6 +1199,35 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/nav/cancel":
                 ok, msg = node.cancel_nav_goal()
                 self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/search_retrieve/start":
+                ok, msg = node.send_search_goal(
+                    str(body.get("target_id", "")),
+                    float(body.get("home_pose_x", 0.0)),
+                    float(body.get("home_pose_y", 0.0)),
+                    float(body.get("home_pose_yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "search_start", "message": msg})
+            elif path == "/api/search_retrieve/cancel":
+                ok, msg = node.cancel_search_goal()
+                self._json({"ok": ok, "action": "search_cancel", "message": msg})
+            elif path == "/api/bridge_retrieve/start":
+                waypoint_name = str(body.get("bridge_waypoint_name", ""))
+                if waypoint_name:
+                    ok, msg = node.send_bridge_mission_waypoint_goal(
+                        str(body.get("target_class", "xiong_qiao")),
+                        waypoint_name,
+                    )
+                else:
+                    ok, msg = node.send_bridge_mission_goal(
+                        str(body.get("target_class", "xiong_qiao")),
+                        float(body.get("bridge_pose_x", 0.0)),
+                        float(body.get("bridge_pose_y", 0.0)),
+                        float(body.get("bridge_pose_yaw", 0.0)),
+                    )
+                self._json({"ok": ok, "action": "bridge_retrieve_start", "message": msg})
+            elif path == "/api/bridge_retrieve/cancel":
+                ok, msg = node.cancel_bridge_mission_goal()
+                self._json({"ok": ok, "action": "bridge_retrieve_cancel", "message": msg})
             elif path == "/api/waypoints/save":
                 x = body.get("x")
                 y = body.get("y")

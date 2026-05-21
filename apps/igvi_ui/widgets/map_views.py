@@ -12,6 +12,7 @@ class Map2DView(QWidget):
     goal_requested = Signal(float, float, float)  # world x, y, yaw
     waypoint_point_picked = Signal(float, float, float)  # world x, y, yaw
     initial_pose_picked = Signal(float, float, float)  # world x, y, yaw
+    home_pose_picked = Signal(float, float, float)  # world x, y, yaw
 
     def __init__(self) -> None:
         super().__init__()
@@ -21,6 +22,7 @@ class Map2DView(QWidget):
         self._map_pixmap: QPixmap | None = None
         self._pose: dict[str, float] | None = None
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
+        self._home_pose: tuple[float, float, float] | None = None
         self._waypoints: dict[str, dict[str, float]] = {}
         # Pick target controls what mouseRelease emits:
         #   ""             → nav goal (default)
@@ -54,6 +56,10 @@ class Map2DView(QWidget):
         self._waypoints = dict(waypoints or {})
         self.update()
 
+    def set_home_pose(self, home_pose: tuple[float, float, float] | None) -> None:
+        self._home_pose = home_pose
+        self.update()
+
     def set_pick_mode(self, enabled: bool) -> None:
         """Back-compat: when on, the next map click emits waypoint_point_picked."""
         self._set_pick_target("waypoint" if enabled else "")
@@ -61,6 +67,9 @@ class Map2DView(QWidget):
     def set_initial_pose_mode(self, enabled: bool) -> None:
         """When on, the next map click emits initial_pose_picked (for SLAM relocalize)."""
         self._set_pick_target("initial_pose" if enabled else "")
+
+    def set_home_pose_mode(self, enabled: bool) -> None:
+        self._set_pick_target("home_pose" if enabled else "")
 
     def _set_pick_target(self, target: str) -> None:
         self._pick_mode = target
@@ -104,21 +113,45 @@ class Map2DView(QWidget):
                 painter.setPen(QPen(QColor("#f59e0b"), 2))
                 painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
 
+        if self._home_pose:
+            hx, hy, hyaw = self._home_pose
+            pt = self._world_to_widget(hx, hy, map_rect)
+            if pt:
+                painter.setPen(QPen(QColor("#9333ea"), 2)) # Purple for home pose
+                painter.setBrush(QColor("#c084fc"))
+                painter.drawEllipse(pt, 8, 8)
+                dx = math.cos(hyaw) * 22
+                dy = -math.sin(hyaw) * 22
+                painter.setPen(QPen(QColor("#9333ea"), 2))
+                painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
+                painter.setPen(QColor("#d8b4fe"))
+                painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Home")
+
         for name, wp in self._waypoints.items():
             pt = self._world_to_widget(wp.get("x", 0.0), wp.get("y", 0.0), map_rect)
             if pt is None:
                 continue
-            painter.setPen(QPen(QColor("#22c55e"), 2))
-            painter.setBrush(QColor(34, 197, 94, 90))
-            painter.drawEllipse(pt, 6, 6)
+            is_bridge = str(name) == "bridge_center"
+            pen_color = QColor("#38bdf8") if is_bridge else QColor("#22c55e")
+            fill_color = QColor(56, 189, 248, 120) if is_bridge else QColor(34, 197, 94, 90)
+            label_color = QColor("#bae6fd") if is_bridge else QColor("#bbf7d0")
+            radius = 8 if is_bridge else 6
+            painter.setPen(QPen(pen_color, 2))
+            painter.setBrush(fill_color)
+            painter.drawEllipse(pt, radius, radius)
+            if is_bridge:
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                cross = 12.0
+                painter.drawLine(QPointF(pt.x() - cross, pt.y()), QPointF(pt.x() + cross, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - cross), QPointF(pt.x(), pt.y() + cross))
             wyaw = wp.get("yaw", 0.0)
-            painter.setPen(QPen(QColor("#22c55e"), 2))
+            painter.setPen(QPen(pen_color, 2))
             painter.drawLine(
                 pt,
                 QPointF(pt.x() + math.cos(wyaw) * 16, pt.y() - math.sin(wyaw) * 16),
             )
-            painter.setPen(QColor("#bbf7d0"))
-            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), str(name))
+            painter.setPen(label_color)
+            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Bridge" if is_bridge else str(name))
 
         if self._drag_origin and self._drag_current:
             ox, oy = self._drag_origin
@@ -198,6 +231,9 @@ class Map2DView(QWidget):
             self.waypoint_point_picked.emit(gx, gy, yaw)
         elif self._pick_mode == "initial_pose":
             self.initial_pose_picked.emit(gx, gy, yaw)
+        elif self._pick_mode == "home_pose":
+            self.home_pose_picked.emit(gx, gy, yaw)
+            self._home_pose = (gx, gy, yaw)
         else:
             self._goal = (gx, gy, yaw)
             self.goal_requested.emit(gx, gy, yaw)

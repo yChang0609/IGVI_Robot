@@ -172,6 +172,37 @@ class HostClient:
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
 
+    def search_retrieve_start(self, target_id: str, home_pose_x: float, home_pose_y: float, home_pose_yaw: float = 0.0) -> dict[str, Any]:
+        return self.request(
+            "POST", 
+            "/api/ros/search_retrieve/start", 
+            {"target_id": target_id, "home_pose_x": home_pose_x, "home_pose_y": home_pose_y, "home_pose_yaw": home_pose_yaw}, 
+            timeout=8.0
+        )
+
+    def search_retrieve_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/search_retrieve/cancel", {}, timeout=5.0)
+
+    def search_retrieve_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/search_retrieve/status")
+
+    def bridge_retrieve_start(self, bridge_waypoint_name: str, target_class: str = "xiong_qiao") -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/api/ros/bridge_retrieve/start",
+            {"bridge_waypoint_name": bridge_waypoint_name, "target_class": target_class},
+            timeout=8.0,
+        )
+
+    def bridge_retrieve_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/bridge_retrieve/cancel", {}, timeout=5.0)
+
+    def bridge_retrieve_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/bridge_retrieve/status")
+
+    def semantic_memory(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
+
     def imu_calibration_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)
 

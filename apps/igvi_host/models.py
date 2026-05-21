@@ -144,7 +144,7 @@ class ImageTopicsResponse(BaseModel):
 
 class ArmTemperaturesResponse(BaseModel):
     ok: bool = False
-    temperatures: list[float] = Field(default_factory=list)
+    temperatures: list[float | None] = Field(default_factory=list)
     gripper_index: int = 2
     gripper_temperature: float | None = None
     stamp_sec: float | None = None
@@ -159,6 +159,37 @@ class NavGoalRequest(BaseModel):
     x: float
     y: float
     yaw: float = 0.0
+
+
+class SearchRetrieveRequest(BaseModel):
+    target_id: str
+    home_pose_x: float
+    home_pose_y: float
+    home_pose_yaw: float = 0.0
+
+
+class SearchRetrieveStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
+class BridgeRetrieveRequest(BaseModel):
+    target_class: str = "xiong_qiao"
+    bridge_waypoint_name: str = "bridge_center"
+    bridge_pose_x: float | None = None
+    bridge_pose_y: float | None = None
+    bridge_pose_yaw: float = 0.0
+
+
+class BridgeRetrieveStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
 
 
 class SaveMapRequest(BaseModel):
