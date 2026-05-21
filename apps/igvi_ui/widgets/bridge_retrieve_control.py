@@ -13,16 +13,28 @@ from PySide6.QtWidgets import (
 )
 
 from igvi_ui.clients.host_client import HostClient, HostClientError
+from igvi_ui.widgets.map_views import Map2DView
+
+
+HOME_WAYPOINT_NAME = "home"
+BRIDGE_WAYPOINT_NAME = "bridge_center"
 
 
 class BridgeRetrieveControl(QWidget):
-    def __init__(self, client: HostClient) -> None:
+    def __init__(self, client: HostClient, map_2d: Map2DView) -> None:
         super().__init__()
         self.client = client
+        self.map_2d = map_2d
+        self._bridge_pick_armed = False
+        self.map_2d.waypoint_point_picked.connect(self._on_bridge_point_picked)
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._poll_status)
         self._build_ui()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._disarm_bridge_pick()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -40,11 +52,19 @@ class BridgeRetrieveControl(QWidget):
         self.target_label = QLabel("xiong_qiao")
         self.target_label.setObjectName("Muted")
         target_grid.addWidget(self.target_label, 0, 1)
+        target_grid.addWidget(QLabel("Bridge point:"), 1, 0)
+        self.bridge_point_label = QLabel("not set")
+        self.bridge_point_label.setObjectName("Muted")
+        target_grid.addWidget(self.bridge_point_label, 1, 1)
         layout.addLayout(target_grid)
 
-        buttons = QHBoxLayout()
-        self.refresh_btn = QPushButton("Refresh Waypoints")
-        self.refresh_btn.clicked.connect(self.refresh_waypoints)
+        buttons = QGridLayout()
+        buttons.setSpacing(8)
+        self.home_btn = QPushButton("Home")
+        self.home_btn.clicked.connect(self._save_home)
+        self.bridge_pick_btn = QPushButton("Set Bridge Waypoint")
+        self.bridge_pick_btn.setCheckable(True)
+        self.bridge_pick_btn.clicked.connect(self._toggle_bridge_pick)
         self.start_btn = QPushButton("Start Bridge Mission")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self._start_task)
@@ -52,9 +72,14 @@ class BridgeRetrieveControl(QWidget):
         self.cancel_btn.setObjectName("Danger")
         self.cancel_btn.clicked.connect(self._cancel_task)
         self.cancel_btn.setEnabled(False)
-        buttons.addWidget(self.refresh_btn)
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.cancel_btn)
+        self.stop_btn = QPushButton("STOP")
+        self.stop_btn.setObjectName("Danger")
+        self.stop_btn.clicked.connect(self._emergency_stop)
+        buttons.addWidget(self.home_btn, 0, 0, 1, 2)
+        buttons.addWidget(self.bridge_pick_btn, 1, 0, 1, 2)
+        buttons.addWidget(self.start_btn, 2, 0)
+        buttons.addWidget(self.cancel_btn, 2, 1)
+        buttons.addWidget(self.stop_btn, 3, 0, 1, 2)
         layout.addLayout(buttons)
 
         self.status_label = QLabel("Ready")
@@ -69,6 +94,15 @@ class BridgeRetrieveControl(QWidget):
         except HostClientError as exc:
             self.status_label.setText(f"Bridge unavailable: {exc}")
             return
+
+        self.map_2d.update_waypoints(waypoints)
+        bridge_wp = waypoints.get(BRIDGE_WAYPOINT_NAME)
+        if bridge_wp:
+            self.bridge_point_label.setText(
+                f"x {bridge_wp.get('x', 0.0):.2f}  y {bridge_wp.get('y', 0.0):.2f}  yaw {bridge_wp.get('yaw', 0.0):.2f}"
+            )
+        else:
+            self.bridge_point_label.setText("not set")
 
         current = self.waypoint_combo.currentData()
         self.waypoint_combo.blockSignals(True)
@@ -94,6 +128,60 @@ class BridgeRetrieveControl(QWidget):
     def _selected_waypoint(self) -> str:
         value = self.waypoint_combo.currentData()
         return str(value or "")
+
+    def _save_home(self) -> None:
+        try:
+            result = self.client.save_waypoint(HOME_WAYPOINT_NAME)
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Home failed", str(exc))
+            return
+
+        msg = str(result.get("message", ""))
+        if result.get("ok"):
+            self.status_label.setText(f"Home saved: {msg}")
+            self.refresh_waypoints()
+        else:
+            QMessageBox.warning(self, "Home rejected", msg or "unknown error")
+
+    def _toggle_bridge_pick(self) -> None:
+        if self.bridge_pick_btn.isChecked():
+            self._bridge_pick_armed = True
+            self.map_2d.set_pick_mode(True)
+            self.bridge_pick_btn.setText("Click Map for Bridge...")
+            self.status_label.setText("Click the map to save bridge_center.")
+        else:
+            self._disarm_bridge_pick()
+
+    def _disarm_bridge_pick(self) -> None:
+        if self._bridge_pick_armed:
+            self._bridge_pick_armed = False
+            self.map_2d.set_pick_mode(False)
+        self.bridge_pick_btn.setChecked(False)
+        self.bridge_pick_btn.setText("Set Bridge Waypoint")
+
+    def _on_bridge_point_picked(self, x: float, y: float, yaw: float) -> None:
+        if not self._bridge_pick_armed:
+            return
+        self._disarm_bridge_pick()
+        try:
+            result = self.client.save_waypoint(BRIDGE_WAYPOINT_NAME, x, y, yaw)
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Bridge waypoint failed", str(exc))
+            return
+
+        msg = str(result.get("message", ""))
+        if result.get("ok"):
+            self.status_label.setText(f"Bridge waypoint saved: {msg}")
+            self.refresh_waypoints()
+            self._select_waypoint(BRIDGE_WAYPOINT_NAME)
+        else:
+            QMessageBox.warning(self, "Bridge waypoint rejected", msg or "unknown error")
+
+    def _select_waypoint(self, name: str) -> None:
+        for index in range(self.waypoint_combo.count()):
+            if self.waypoint_combo.itemData(index) == name:
+                self.waypoint_combo.setCurrentIndex(index)
+                return
 
     def _start_task(self) -> None:
         waypoint = self._selected_waypoint()
@@ -124,6 +212,26 @@ class BridgeRetrieveControl(QWidget):
         except HostClientError as exc:
             QMessageBox.warning(self, "Cancel failed", str(exc))
 
+    def _emergency_stop(self) -> None:
+        errors: list[str] = []
+        for label, action in (
+            ("bridge mission", self.client.bridge_retrieve_cancel),
+            ("navigation", self.client.nav_cancel),
+            ("robot stop", self.client.ros_stop),
+        ):
+            try:
+                action()
+            except HostClientError as exc:
+                errors.append(f"{label}: {exc}")
+
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self._status_timer.stop()
+        if errors:
+            QMessageBox.warning(self, "STOP partially failed", "\n".join(errors))
+        else:
+            self.status_label.setText("Emergency stop sent.")
+
     def _poll_status(self) -> None:
         try:
             status = self.client.bridge_retrieve_status()
@@ -147,4 +255,5 @@ class BridgeRetrieveControl(QWidget):
             self._status_timer.stop()
 
     def shutdown(self) -> None:
+        self._disarm_bridge_pick()
         self._status_timer.stop()

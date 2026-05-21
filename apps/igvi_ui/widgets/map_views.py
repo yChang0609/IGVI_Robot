@@ -131,17 +131,27 @@ class Map2DView(QWidget):
             pt = self._world_to_widget(wp.get("x", 0.0), wp.get("y", 0.0), map_rect)
             if pt is None:
                 continue
-            painter.setPen(QPen(QColor("#22c55e"), 2))
-            painter.setBrush(QColor(34, 197, 94, 90))
-            painter.drawEllipse(pt, 6, 6)
+            is_bridge = str(name) == "bridge_center"
+            pen_color = QColor("#38bdf8") if is_bridge else QColor("#22c55e")
+            fill_color = QColor(56, 189, 248, 120) if is_bridge else QColor(34, 197, 94, 90)
+            label_color = QColor("#bae6fd") if is_bridge else QColor("#bbf7d0")
+            radius = 8 if is_bridge else 6
+            painter.setPen(QPen(pen_color, 2))
+            painter.setBrush(fill_color)
+            painter.drawEllipse(pt, radius, radius)
+            if is_bridge:
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                cross = 12.0
+                painter.drawLine(QPointF(pt.x() - cross, pt.y()), QPointF(pt.x() + cross, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - cross), QPointF(pt.x(), pt.y() + cross))
             wyaw = wp.get("yaw", 0.0)
-            painter.setPen(QPen(QColor("#22c55e"), 2))
+            painter.setPen(QPen(pen_color, 2))
             painter.drawLine(
                 pt,
                 QPointF(pt.x() + math.cos(wyaw) * 16, pt.y() - math.sin(wyaw) * 16),
             )
-            painter.setPen(QColor("#bbf7d0"))
-            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), str(name))
+            painter.setPen(label_color)
+            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Bridge" if is_bridge else str(name))
 
         if self._drag_origin and self._drag_current:
             ox, oy = self._drag_origin

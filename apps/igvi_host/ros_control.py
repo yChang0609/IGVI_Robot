@@ -60,8 +60,12 @@ class RobotBridgeClient:
         return RosActionResponse(ok=True, action="cmd_vel", message="velocity command published")
 
     async def stop(self) -> RosActionResponse:
-        await asyncio.to_thread(self._bridge_post, "/api/stop", {})
-        return RosActionResponse(ok=True, action="stop", message="robot stopped")
+        result = await asyncio.to_thread(self._bridge_post, "/api/stop", {})
+        return RosActionResponse(
+            ok=bool(result.get("ok", True)),
+            action="stop",
+            message=str(result.get("message", "robot stopped")),
+        )
 
     async def publish_goal_pose(self, request: Pose2DRequest) -> RosActionResponse:
         await asyncio.to_thread(

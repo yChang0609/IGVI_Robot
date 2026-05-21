@@ -27,7 +27,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import Image, Imu
+from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -49,6 +49,7 @@ JPEG_QUALITY = 70
 # Persisted next to saved maps (/maps is the bridge's only writable volume;
 # /configs is mounted read-only). Survives container restarts.
 WAYPOINTS_PATH = "/maps/waypoints.yaml"
+ANNOTATED_IMAGE_TOPIC = "/eto_eye/annotated_image/compressed"
 
 
 class BridgeNode(Node):
@@ -91,6 +92,8 @@ class BridgeNode(Node):
         self._arm_temp_lock = threading.Lock()
         self._arm_temperatures: list[float] = []
         self._arm_temperature_stamp_sec: float | None = None
+        self._arm_state_lock = threading.Lock()
+        self._arm_positions: list[float] | None = None
         self._imu_lock = threading.Lock()
         self._imu_calibration_status: dict[str, Any] = {
             "ok": False,
@@ -132,6 +135,12 @@ class BridgeNode(Node):
         self.create_timer(0.05, self._update_pose_from_tf)
         
         self.create_subscription(Float64MultiArray, "/arm_joint_temperatures", self._on_arm_temperatures, 10)
+        self.create_subscription(
+            JointState,
+            "/joint_states",
+            self._on_joint_states,
+            10,
+        )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
@@ -209,6 +218,11 @@ class BridgeNode(Node):
         out.twist = msg.twist
         self._wheel_cmd_pub.publish(out)
 
+    def _publish_wheel_stop(self) -> None:
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self._wheel_cmd_pub.publish(msg)
+
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
         self._motion_state = str(getattr(msg, "data", ""))
 
@@ -217,6 +231,17 @@ class BridgeNode(Node):
         with self._arm_temp_lock:
             self._arm_temperatures = [float(value) for value in msg.data]
             self._arm_temperature_stamp_sec = now
+
+    def _on_joint_states(self, msg: JointState) -> None:
+        names = list(msg.name)
+        positions = list(msg.position)
+        if not names or len(positions) < len(names):
+            return
+        by_name = dict(zip(names, positions))
+        if not all(name in by_name for name in ARM_JOINT_NAMES):
+            return
+        with self._arm_state_lock:
+            self._arm_positions = [float(by_name[name]) for name in ARM_JOINT_NAMES]
     def _on_imu_calibration_state(self, msg: String) -> None:
         status = _parse_imu_calibration_status(str(msg.data))
         with self._imu_lock:
@@ -232,6 +257,15 @@ class BridgeNode(Node):
                 "width": int(msg.width),
                 "height": int(msg.height),
                 "encoding": str(msg.encoding),
+            }
+
+    def _on_compressed_image(self, msg: CompressedImage) -> None:
+        with self._image_lock:
+            self._image_jpeg = bytes(msg.data)
+            self._image_meta = {
+                "width": 0,
+                "height": 0,
+                "encoding": str(msg.format or "compressed"),
             }
 
     # ── Thread-safe snapshots ────────────────────────────────────────────────
@@ -260,6 +294,47 @@ class BridgeNode(Node):
         msg.linear.x = float(linear_x)
         msg.angular.z = float(angular_z)
         self._motion_cmd_pub.publish(msg)
+
+    def emergency_stop(self) -> tuple[bool, str]:
+        canceled: list[str] = []
+
+        with self._bridge_mission_lock:
+            bridge_handle = self._bridge_mission_goal_handle
+        if bridge_handle is not None:
+            self._update_bridge_mission_state("canceling", "emergency stop requested")
+            bridge_future = bridge_handle.cancel_goal_async()
+            bridge_future.add_done_callback(self._on_bridge_mission_cancel_response)
+            canceled.append("bridge mission")
+
+        with self._search_lock:
+            search_handle = self._search_goal_handle
+        if search_handle is not None:
+            self._update_search_state("canceling", "emergency stop requested")
+            search_future = search_handle.cancel_goal_async()
+            search_future.add_done_callback(self._on_search_cancel_response)
+            canceled.append("search mission")
+
+        with self._nav_lock:
+            nav_handle = self._nav_goal_handle
+        if nav_handle is not None:
+            self._update_nav_state("canceling", "emergency stop requested")
+            nav_future = nav_handle.cancel_goal_async()
+            nav_future.add_done_callback(self._on_nav_cancel_response)
+            canceled.append("navigation")
+
+        for _ in range(3):
+            self.publish_cmd_vel(0.0, 0.0)
+            self._publish_wheel_stop()
+
+        with self._arm_state_lock:
+            arm_positions = list(self._arm_positions) if self._arm_positions else None
+        if arm_positions:
+            self.publish_arm_trajectory(arm_positions, 0.1)
+            canceled.append("arm hold")
+
+        if canceled:
+            return True, "emergency stop sent; cancel requested for " + ", ".join(canceled)
+        return True, "emergency stop sent"
 
     def snapshot_motion_state(self) -> str:
         return self._motion_state
@@ -326,6 +401,11 @@ class BridgeNode(Node):
         for name, types in topics:
             if "sensor_msgs/msg/Image" in types:
                 out.append(name)
+            elif (
+                name == ANNOTATED_IMAGE_TOPIC
+                and "sensor_msgs/msg/CompressedImage" in types
+            ):
+                out.append(name)
         return sorted(out)
 
     def set_image_topic(self, topic: str | None) -> None:
@@ -339,9 +419,15 @@ class BridgeNode(Node):
             self._image_jpeg = None
             self._image_meta = {}
             if topic:
-                self._image_sub = self.create_subscription(
-                    Image, topic, self._on_image, qos_profile_sensor_data
-                )
+                topic_types = dict(self.get_topic_names_and_types()).get(topic, [])
+                if "sensor_msgs/msg/CompressedImage" in topic_types:
+                    self._image_sub = self.create_subscription(
+                        CompressedImage, topic, self._on_compressed_image, qos_profile_sensor_data
+                    )
+                else:
+                    self._image_sub = self.create_subscription(
+                        Image, topic, self._on_image, qos_profile_sensor_data
+                    )
 
     def snapshot_image(self) -> tuple[bytes | None, str | None, dict[str, Any]]:
         with self._image_lock:
@@ -1077,8 +1163,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 node.publish_cmd_vel(float(body.get("linear_x", 0.0)), float(body.get("angular_z", 0.0)))
                 self._json({"ok": True, "action": "cmd_vel"})
             elif path == "/api/stop":
-                node.publish_cmd_vel(0.0, 0.0)
-                self._json({"ok": True, "action": "stop"})
+                ok, msg = node.emergency_stop()
+                self._json({"ok": ok, "action": "stop", "message": msg})
             elif path == "/api/goal_pose":
                 node.publish_goal_pose(
                     float(body.get("x", 0.0)), float(body.get("y", 0.0)),
