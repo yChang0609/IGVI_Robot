@@ -37,7 +37,7 @@ class RetrieveBase(Node):
         self.declare_parameter("visual_servo_kp", visual_servo_kp)
         self.declare_parameter("visual_servo_timeout", visual_servo_timeout)
         self.declare_parameter("visual_servo_tolerance_px", 15.0)
-        self.declare_parameter("image_center_x", 320.0)
+        self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
         self.declare_parameter("arrival_tolerance", 0.10)
         self.declare_parameter("arrival_timeout", 45.0)

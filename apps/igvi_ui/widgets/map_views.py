@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
@@ -355,22 +357,15 @@ class Map3DView(QWidget):
 def _build_image(data: dict[str, Any]) -> QImage:
     width: int = data["width"]
     height: int = data["height"]
-    raw: list[int] = data["data"]
+    raw = np.asarray(data["data"], dtype=np.int8)
 
-    buf = bytearray(width * height * 3)
-    for i, val in enumerate(raw):
-        if val < 0:
-            r = g = b = 128
-        elif val < 50:
-            r = g = b = 210
-        else:
-            r = g = b = 30
-        off = i * 3
-        buf[off] = r
-        buf[off + 1] = g
-        buf[off + 2] = b
+    # unknown (-1) → gray 128, free (0-49) → light 210, occupied (50+) → dark 30
+    grey = np.full(len(raw), 128, dtype=np.uint8)
+    grey[raw >= 0] = 210
+    grey[raw >= 50] = 30
 
-    img = QImage(bytes(buf), width, height, width * 3, QImage.Format.Format_RGB888)
+    buf = np.stack([grey, grey, grey], axis=1).flatten().tobytes()
+    img = QImage(buf, width, height, width * 3, QImage.Format.Format_RGB888)
     return img.mirrored(False, True)
 
 
