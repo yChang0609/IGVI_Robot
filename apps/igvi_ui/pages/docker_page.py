@@ -181,6 +181,11 @@ class DockerPage(QWidget):
         self.start_button.clicked.connect(lambda: self._run_action("start"))
         row.addWidget(self.start_button)
 
+        self.build_start_button = QPushButton("Start+Build")
+        self.build_start_button.setObjectName("Primary")
+        self.build_start_button.clicked.connect(lambda: self._run_action("build_start"))
+        row.addWidget(self.build_start_button)
+
         self.restart_button = QPushButton("Restart")
         self.restart_button.clicked.connect(lambda: self._run_action("restart"))
         row.addWidget(self.restart_button)
@@ -189,6 +194,11 @@ class DockerPage(QWidget):
         self.stop_button.setObjectName("Danger")
         self.stop_button.clicked.connect(lambda: self._run_action("stop"))
         row.addWidget(self.stop_button)
+
+        self.stop_rm_button = QPushButton("Stop+Rm")
+        self.stop_rm_button.setObjectName("Danger")
+        self.stop_rm_button.clicked.connect(lambda: self._run_action("remove"))
+        row.addWidget(self.stop_rm_button)
 
         row.addSpacing(12)
 
@@ -358,6 +368,8 @@ class DockerPage(QWidget):
         "rebuild": "rebuilding…",
         "stop_all": "stopping…",
         "remove_all": "removing…",
+        "remove": "removing…",
+        "build_start": "building & starting…", 
     }
 
     def _make_pending_item(self, action: str) -> QTableWidgetItem:
@@ -413,6 +425,8 @@ class DockerPage(QWidget):
         menu.addSeparator()
         menu.addAction(f"Build ({len(services)})", lambda: self._run_action("build"))
         menu.addAction(f"Rebuild ({len(services)})", lambda: self._run_action("rebuild"))
+        menu.addAction(f"Start + Build ({len(services)})", lambda: self._run_action("build_start"))
+        menu.addAction(f"Stop + Rm ({len(services)})", lambda: self._run_action("remove"))
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     # ----------------------------------------------------------------- logs
@@ -458,10 +472,10 @@ class DockerPage(QWidget):
     # --------------------------------------------------------------- actions
     def _run_action(self, action: str) -> None:
         services = self._selected_services()
-        if action in {"stop", "restart", "start"} and not services:
+        if action in {"stop", "restart", "start", "remove"} and not services:
             QMessageBox.warning(self, "No service", "Select one or more services first.")
             return
-        if action in {"build", "rebuild"} and not services:
+        if action in {"build", "rebuild", "build_start"} and not services:
             confirm = QMessageBox.question(
                 self,
                 f"{action.title()} all?",
@@ -514,7 +528,7 @@ class DockerPage(QWidget):
         self.action_workers.append(worker)
         self.busy_actions.add(action)
         self._progress_target = target
-        if action in {"start", "build", "rebuild", "stop_all", "remove_all"}:
+        if action in {"start", "build", "rebuild", "build_start", "stop_all", "remove_all", "remove"}:
             self._progress_busy = True
             self.progress_timer.start(800)
         self._set_busy(True)
@@ -563,8 +577,10 @@ class DockerPage(QWidget):
             self.dev_button,
             self.up_profile_button,
             self.start_button,
+            self.build_start_button, 
             self.restart_button,
             self.stop_button,
+            self.stop_rm_button,    
             self.build_button,
             self.rebuild_button,
             self.stop_all_button,

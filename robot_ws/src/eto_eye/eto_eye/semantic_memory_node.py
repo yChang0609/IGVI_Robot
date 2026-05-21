@@ -30,7 +30,7 @@ class SemanticMemoryNode(Node):
         # === 參數設定 ===
         self.declare_parameter('target_frame', 'map')           
         self.declare_parameter('distance_threshold', 0.1)        
-        self.declare_parameter('memory_timeout_sec', 10.0)       
+        self.declare_parameter('memory_timeout_sec', 600.0)       
         self.declare_parameter('position_alpha', 0.3)            
         self.declare_parameter('depth_topic', '/depth_to_rgb/image_raw')
         self.declare_parameter('depth_unit_scale', 0.001)
@@ -69,6 +69,12 @@ class SemanticMemoryNode(Node):
             self.detection_callback, 
             10
         )
+        self.create_subscription(
+            Image, 
+            self.get_parameter('depth_topic').value, 
+            self.depth_callback, 
+            10
+        )
         self.create_subscription(String, '/detections', self.detection_callback, 10)
         
         self.memory_pub = self.create_publisher(String, '/semantic_memory', 10)
@@ -76,13 +82,17 @@ class SemanticMemoryNode(Node):
 
         # 定期清理過期或消失的記憶
         self.create_timer(1.0, self.cleanup_memory)
-        self.get_logger().info(f"Semantic Memory Node started. Target frame: {self.target_frame}")
+        
+        # [新增] 定期發布記憶狀態 (0.1 秒一次，等於 10 Hz)
+        self.create_timer(0.1, self.publish_memory)
+        
+        self.get_logger().debug(f"Semantic Memory Node started. Target frame: {self.target_frame}")
 
     def camera_info_callback(self, msg: CameraInfo):
         if not self.camera_info_received:
             self.cam_model.fromCameraInfo(msg)
             self.camera_info_received = True
-            self.get_logger().info("Camera model initialized.")
+            self.get_logger().debug("Camera model initialized.")
 
     def depth_callback(self, msg: Image):
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -106,13 +116,11 @@ class SemanticMemoryNode(Node):
         msg_time = Time(seconds=data['stamp']['sec'], nanoseconds=data['stamp']['nanosec'])
         now_sec = time.time()
 
-        # === 兇手 1 號檢查點：TF 轉換 ===
         try:
             transform = self.tf_buffer.lookup_transform(
-                self.target_frame, frame_id, msg_time, timeout=rclpy.duration.Duration(seconds=0.1)
+                self.target_frame, frame_id, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.05)
             )
         except TransformException as ex:
-            # 加入這行印出警告
             self.get_logger().warning(f"【TF 轉換失敗】 無法將 {frame_id} 轉換到 {self.target_frame}。詳細原因: {ex}")
             return
 
@@ -124,6 +132,7 @@ class SemanticMemoryNode(Node):
             center_x = det['bbox']['center_x']
             center_y = det['bbox']['center_y']
             depth_z = det['depth_m']
+            score = det.get('score', 0.0)
 
             ray = self.cam_model.projectPixelTo3dRay((center_x, center_y))
             cam_x = ray[0] * (depth_z / ray[2])
@@ -139,17 +148,15 @@ class SemanticMemoryNode(Node):
             point_world = tf2_geometry_msgs.do_transform_point(point_cam, transform)
             
             # 2. 存入記憶庫 (注意縮排：必須跟 point_world 對齊！前面有 12 個空格)
-            self.associate_and_update(class_name, point_world.point.x, point_world.point.y, point_world.point.z, now_sec)
+            self.associate_and_update(class_name, point_world.point.x, point_world.point.y, point_world.point.z, now_sec, score)
             
             # 3. 印出 Log (注意縮排：必須對齊！前面有 12 個空格)
-            self.get_logger().info(f"【記憶更新】 成功將 {class_name} 寫入 {self.target_frame} 世界坐標系！")
+            self.get_logger().debug(f"【記憶更新】 成功將 {class_name} 寫入 {self.target_frame} 世界坐標系！")
 
         # 4. 發布狀態 (注意縮排：這裡退回去了！前面只有 8 個空格)
-        self.publish_memory()
+        # self.publish_memory()  <--- 【刪除或註解這一行！】
 
-        self.publish_memory()
-
-    def associate_and_update(self, class_name, x, y, z, now_sec):
+    def associate_and_update(self, class_name, x, y, z, now_sec, score):
         closest_id = None
         min_dist = float('inf')
 
@@ -166,10 +173,12 @@ class SemanticMemoryNode(Node):
             self.memory[closest_id]['z'] = self.alpha * z + (1 - self.alpha) * self.memory[closest_id]['z']
             self.memory[closest_id]['last_seen'] = now_sec
             self.memory[closest_id]['hits'] += 1
+            old_score = self.memory[closest_id].get('score', score)
+            self.memory[closest_id]['score'] = 0.5 * score + 0.5 * old_score
         else:
             new_id = str(uuid.uuid4())[:8]
             self.memory[new_id] = {
-                'class_name': class_name, 'x': x, 'y': y, 'z': z, 'last_seen': now_sec, 'hits': 1
+                'class_name': class_name, 'x': x, 'y': y, 'z': z, 'last_seen': now_sec, 'hits': 1, 'score': score
             }
 
     def cleanup_memory(self):
@@ -185,7 +194,9 @@ class SemanticMemoryNode(Node):
             transform_world_to_cam = self.tf_buffer.lookup_transform(
                 self.camera_frame_id, self.target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5)
             )
-        except TransformException:
+        except TransformException as e:
+            # === 抓出兇手 3：如果 TF 失敗，印出警告 ===
+            self.get_logger().warning(f"【清理異常】 TF 轉換失敗，暫停清理記憶: {e}")
             return
 
         for obj_id, obj_data in self.memory.items():
@@ -193,8 +204,10 @@ class SemanticMemoryNode(Node):
             if time_since_last_seen < 2.0:
                 continue # 容錯期
                 
-            if time_since_last_seen > self.timeout_sec * 5:
-                expired_ids.append(obj_id) # 絕對超時
+            # === 修復兇手 1：拿掉 * 5，只要超過 600 秒沒更新就強制刪除 ===
+            if time_since_last_seen > self.timeout_sec:
+                self.get_logger().debug(f"【超時遺忘】 {obj_data['class_name']} [{obj_id}] 超過 600 秒未見，強制刪除！")
+                expired_ids.append(obj_id) 
                 continue
 
             point_world = PointStamped()
@@ -210,19 +223,34 @@ class SemanticMemoryNode(Node):
             u, v = self.cam_model.project3dToPixel((cam_x, cam_y, cam_z))
             u, v = int(round(u)), int(round(v))
 
-            margin = 30
+            margin = 30 
             if margin <= u < img_width - margin and margin <= v < img_height - margin:
-                roi = self.latest_depth_img[v-2:v+3, u-2:u+3].astype(np.float32)
+                v_start = max(0, v - 2)
+                v_end = min(img_height, v + 3)
+                u_start = max(0, u - 2)
+                u_end = min(img_width, u + 3)
+                roi = self.latest_depth_img[v_start:v_end, u_start:u_end].astype(np.float32)
                 valid_depths = roi[(roi > 0) & np.isfinite(roi)] * self.depth_scale
                 
+                # ==== 修正的邏輯區塊 ====
                 if valid_depths.size > 0:
                     actual_depth = np.median(valid_depths)
-                    if actual_depth < cam_z - 0.25:
+                    if actual_depth < cam_z - 0.1:
+                        self.get_logger().debug(f"【保留記憶】 {obj_data['class_name']} [{obj_id}] 疑似被前方物體遮擋。")
                         continue # 被前方物體遮擋，保留記憶
 
-                self.get_logger().info(f"Object missing confirmed: {obj_data['class_name']} [{obj_id}]")
-                expired_ids.append(obj_id)
-
+                    # 只有在「確定測到有效深度，且沒有被遮擋」的情況下，才確認消失
+                    self.get_logger().debug(f"【確認消失】 視野內該位置已淨空，立刻刪除 {obj_data['class_name']} [{obj_id}]！")
+                    expired_ids.append(obj_id)
+                else:
+                    # 深度圖在該位置剛好破洞、反光或超出感測範圍
+                    # 為了安全起見，我們假裝沒看見，讓它繼續保留在記憶裡，等待 10 秒超時
+                    # self.get_logger().debug(f"【深度無效】 {obj_data['class_name']} [{obj_id}] 無法判斷是否消失。")
+                    pass
+            else:
+                # 不在視野內，保留等待 timeout_sec (10秒)
+                pass
+        
         for obj_id in expired_ids:
             if obj_id in self.memory:
                 del self.memory[obj_id]
@@ -231,10 +259,10 @@ class SemanticMemoryNode(Node):
         memory_list = []
         
         # === Debug 發布檢查 ===
-        self.get_logger().info(f"【Debug 發布檢查】 當前記憶庫共有 {len(self.memory)} 個物件")
+        self.get_logger().debug(f"【Debug 發布檢查】 當前記憶庫共有 {len(self.memory)} 個物件")
         
         for obj_id, obj_data in self.memory.items():
-            self.get_logger().info(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
+            self.get_logger().debug(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
             
             # 目前設定為 hits >= 1 (看過 1 次就發布，方便 Debug)
             # 等系統穩定後，建議改回 3 以過濾閃爍雜訊
@@ -242,6 +270,7 @@ class SemanticMemoryNode(Node):
                 memory_list.append({
                     "id": obj_id, 
                     "class_name": obj_data['class_name'],
+                    "score": obj_data.get('score', 0.0),
                     "position": {"x": obj_data['x'], "y": obj_data['y'], "z": obj_data['z']}
                 })
 
@@ -277,7 +306,7 @@ class SemanticMemoryNode(Node):
             m.color.g = 1.0
             m.color.b = 0.0
             # 加入壽命：10 秒內沒收到新的更新，RViz 就會自動刪除它
-            m.lifetime = rclpy.duration.Duration(seconds=10.0).to_msg()
+            m.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg()
 
             # --- 文字標籤 Marker ---
             t = Marker()
@@ -294,8 +323,8 @@ class SemanticMemoryNode(Node):
             t.color.r = 1.0
             t.color.g = 1.0
             t.color.b = 1.0
-            t.text = obj_data['class_name']
-            t.lifetime = rclpy.duration.Duration(seconds=10.0).to_msg() # 同樣加上 10 秒壽命
+            t.text = f"{obj_data['class_name']} ({obj_data.get('score', 0.0):.2f})"
+            t.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg() # 同樣加上 10 秒壽命
 
             marker_array.markers.append(m)
             marker_array.markers.append(t)

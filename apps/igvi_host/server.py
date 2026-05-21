@@ -324,6 +324,20 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         if not services:
             raise HTTPException(status_code=400, detail="stop requires at least one service")
         return compose_or_http(lambda: compose_project().stop(services=services))
+    
+    @app.post("/api/compose/actions/remove", response_model=ComposeActionResponse)
+    def remove(request: ComposeActionRequest) -> ComposeActionResponse:
+        services = target_services(request)
+        if not services:
+            raise HTTPException(status_code=400, detail="remove requires at least one service")
+        return compose_or_http(lambda: compose_project().remove(services=services))
+
+    @app.post("/api/compose/actions/build_start", response_model=ComposeActionResponse)
+    def build_start(request: ComposeActionRequest) -> ComposeActionResponse:
+        services = target_services(request)
+        return compose_or_http(
+            lambda: compose_project().build_start(services=services, profile=request.profile)
+        )
 
     @app.post("/api/compose/actions/restart", response_model=ComposeActionResponse)
     def restart(request: ComposeActionRequest) -> ComposeActionResponse:
