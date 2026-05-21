@@ -609,7 +609,11 @@ class BridgeNode(Node):
             }
 
     def _on_search_response(self, future) -> None:
-        goal_handle = future.result()
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._update_search_state("idle", f"Failed to send goal: {exc}")
+            return
         if not goal_handle.accepted:
             self._update_search_state("idle", "goal rejected")
             return
@@ -620,7 +624,14 @@ class BridgeNode(Node):
         res_future.add_done_callback(self._on_search_result)
 
     def _on_search_result(self, future) -> None:
-        result = future.result()
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._update_search_state("idle", f"Action server crashed or failed: {exc}")
+            with self._search_lock:
+                self._search_goal_handle = None
+            return
+            
         status = result.status
         with self._search_lock:
             self._search_goal_handle = None

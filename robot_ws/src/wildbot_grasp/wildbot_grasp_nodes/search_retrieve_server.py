@@ -7,8 +7,7 @@ from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
-from nav2_msgs.action import NavigateToPose
-from nav2_msgs.srv import ComputePathToPose
+from nav2_msgs.action import NavigateToPose, ComputePathToPose
 from wildbot_grasp.action import SearchAndRetrieve, GrabObject
 
 import json
@@ -22,7 +21,7 @@ class SearchRetrieveServer(Node):
         super().__init__('search_retrieve_server')
         
         self.declare_parameter('standoff_distance', 0.25)
-        self.declare_parameter('visual_servo_kp', 0.002)
+        self.declare_parameter('visual_servo_kp', 0.005)
         self.declare_parameter('visual_servo_timeout', 15.0)
         self.declare_parameter('visual_servo_tolerance_px', 15.0)
         self.declare_parameter('image_center_x', 320.0)
@@ -41,7 +40,7 @@ class SearchRetrieveServer(Node):
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose', callback_group=self.callback_group)
         self.grab_client = ActionClient(self, GrabObject, 'grab_object', callback_group=self.callback_group)
-        self.path_client = self.create_client(ComputePathToPose, 'compute_path_to_pose', callback_group=self.callback_group)
+        self.path_client = ActionClient(self, ComputePathToPose, 'compute_path_to_pose', callback_group=self.callback_group)
         
         self.action_server = ActionServer(
             self,
@@ -105,6 +104,12 @@ class SearchRetrieveServer(Node):
             self.get_logger().warning(f"Could not get robot pose: {e}")
             return None
 
+    async def _async_sleep(self, duration: float):
+        future = rclpy.task.Future()
+        timer = self.create_timer(duration, lambda: future.set_result(None))
+        await future
+        self.destroy_timer(timer)
+
     def quaternion_from_euler(self, roll, pitch, yaw):
         qx = math.sin(roll/2) * math.cos(pitch/2) * math.cos(yaw/2) - math.cos(roll/2) * math.sin(pitch/2) * math.sin(yaw/2)
         qy = math.cos(roll/2) * math.sin(pitch/2) * math.cos(yaw/2) + math.sin(roll/2) * math.cos(pitch/2) * math.sin(yaw/2)
@@ -135,7 +140,7 @@ class SearchRetrieveServer(Node):
                     target_pos = obj['position']
                     target_name = obj['class_name']
                     break
-            time.sleep(0.1)
+            await self._async_sleep(0.1)
             
         if target_pos is None:
             result.success = False
@@ -152,9 +157,9 @@ class SearchRetrieveServer(Node):
         
         angles = [0, 45, 90, 135, 180, -135, -90, -45]
         
-        if not self.path_client.wait_for_service(timeout_sec=5.0):
+        if not self.path_client.wait_for_server(timeout_sec=5.0):
             result.success = False
-            result.message = "compute_path_to_pose service not available"
+            result.message = "compute_path_to_pose action server not available"
             goal_handle.abort()
             return result
 
@@ -184,7 +189,8 @@ class SearchRetrieveServer(Node):
             # The robot needs to face the target (which is opposite to the angle from target)
             yaw = angle_rad + math.pi
             
-            req = ComputePathToPose.Request()
+            req = ComputePathToPose.Goal()
+            req.use_start = True
             req.start = start_pose
             
             goal_pose = PoseStamped()
@@ -199,11 +205,19 @@ class SearchRetrieveServer(Node):
             
             req.goal = goal_pose
             
-            future = self.path_client.call_async(req)
+            future = self.path_client.send_goal_async(req)
             while rclpy.ok() and not future.done():
-                time.sleep(0.01)
+                await self._async_sleep(0.01)
                 
-            path_resp = future.result()
+            path_goal_handle = future.result()
+            if not path_goal_handle.accepted:
+                continue
+                
+            res_future = path_goal_handle.get_result_async()
+            while rclpy.ok() and not res_future.done():
+                await self._async_sleep(0.01)
+                
+            path_resp = res_future.result().result
             if path_resp is not None and len(path_resp.path.poses) > 0:
                 # Calculate path length
                 path_len = 0.0
@@ -237,7 +251,7 @@ class SearchRetrieveServer(Node):
         
         send_goal_future = self.nav_client.send_goal_async(nav_goal)
         while rclpy.ok() and not send_goal_future.done():
-            time.sleep(0.1)
+            await self._async_sleep(0.1)
             
         nav_goal_handle = send_goal_future.result()
         if not nav_goal_handle.accepted:
@@ -254,52 +268,12 @@ class SearchRetrieveServer(Node):
                 goal_handle.canceled()
                 result.success = False
                 return result
-            time.sleep(0.1)
+            await self._async_sleep(0.1)
             
-        # 4. Visual Servoing Alignment
-        self.publish_feedback(goal_handle, "aligning", 0.6, "Visual servoing to center target")
-        
-        center_x_target = float(self.get_parameter('image_center_x').value)
-        tolerance_px = float(self.get_parameter('visual_servo_tolerance_px').value)
-        kp = float(self.get_parameter('visual_servo_kp').value)
-        timeout = float(self.get_parameter('visual_servo_timeout').value)
-        
-        start_time = time.time()
-        aligned = False
-        
-        while rclpy.ok() and (time.time() - start_time) < timeout:
-            if goal_handle.is_cancel_requested:
-                self.cmd_vel_pub.publish(Twist()) # Stop
-                goal_handle.canceled()
-                result.success = False
-                return result
-                
-            det_center = None
-            with self.detections_lock:
-                for det in self.latest_detections:
-                    # Match by class_name for now, since detections don't carry stable memory IDs yet
-                    if det.get('class_name') == target_name:
-                        det_center = det.get('bbox', {}).get('center_x')
-                        break
-                        
-            if det_center is not None:
-                error = center_x_target - det_center
-                if abs(error) <= tolerance_px:
-                    aligned = True
-                    break
-                    
-                twist = Twist()
-                twist.angular.z = max(-0.3, min(0.3, error * kp))
-                self.cmd_vel_pub.publish(twist)
-            else:
-                self.cmd_vel_pub.publish(Twist()) # Stop if target lost
-                
-            time.sleep(0.1)
-            
-        self.cmd_vel_pub.publish(Twist()) # Ensure stopped
-        
-        if not aligned:
-            self.get_logger().warning("Visual servoing timed out or target not seen. Continuing anyway.")
+        # 4. Visual Servoing Alignment (Skipped)
+        self.publish_feedback(goal_handle, "aligning", 0.6, "Skipping visual servoing alignment (delegated to gripper team)")
+        aligned = True
+        await self._async_sleep(0.5)
 
         # 5. Grab Object (Simulated)
         self.publish_feedback(goal_handle, "grabbing", 0.8, "Simulating grab for 5 seconds")
@@ -311,7 +285,7 @@ class SearchRetrieveServer(Node):
         #     grab_goal.distance_m = 0.2
         #     grab_future = self.grab_client.send_goal_async(grab_goal)
         #     while rclpy.ok() and not grab_future.done():
-        #         time.sleep(0.1)
+        #         await self._async_sleep(0.1)
         #     grab_gh = grab_future.result()
         #     if grab_gh.accepted:
         #         res_future = grab_gh.get_result_async()
@@ -321,7 +295,7 @@ class SearchRetrieveServer(Node):
         #                 goal_handle.canceled()
         #                 result.success = False
         #                 return result
-        #             time.sleep(0.1)
+        #             await self._async_sleep(0.1)
         # ---------------------------------------------------
         
         # Simulation delay
@@ -330,7 +304,7 @@ class SearchRetrieveServer(Node):
                 goal_handle.canceled()
                 result.success = False
                 return result
-            time.sleep(0.1)
+            await self._async_sleep(0.1)
 
         # 6. Return Home
         self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
@@ -350,7 +324,7 @@ class SearchRetrieveServer(Node):
         
         send_goal_future = self.nav_client.send_goal_async(nav_goal)
         while rclpy.ok() and not send_goal_future.done():
-            time.sleep(0.1)
+            await self._async_sleep(0.1)
             
         nav_goal_handle = send_goal_future.result()
         if nav_goal_handle.accepted:
@@ -361,11 +335,11 @@ class SearchRetrieveServer(Node):
                     goal_handle.canceled()
                     result.success = False
                     return result
-                time.sleep(0.1)
+                await self._async_sleep(0.1)
 
         # Simulated Release
         self.publish_feedback(goal_handle, "releasing", 0.98, "Releasing object")
-        time.sleep(2.0)
+        await self._async_sleep(2.0)
 
         result.success = True
         result.message = "Successfully retrieved object and returned"
