@@ -31,7 +31,7 @@ class SemanticMemoryNode(Node):
 
         # === 參數設定 ===
         self.declare_parameter('target_frame', 'map')           
-        self.declare_parameter('distance_threshold', 0.1)        
+        self.declare_parameter('distance_threshold', 0.4)
         self.declare_parameter('memory_timeout_sec', 600.0)       
         self.declare_parameter('position_alpha', 0.3)            
         self.declare_parameter('depth_topic', '/depth_to_rgb/image_raw')
@@ -173,10 +173,11 @@ class SemanticMemoryNode(Node):
         with self.memory_lock:
             closest_id = None
             min_dist = float('inf')
-    
+
             for obj_id, obj_data in self.memory.items():
                 if obj_data['class_name'] == class_name:
-                    dist = math.sqrt((obj_data['x']-x)**2 + (obj_data['y']-y)**2 + (obj_data['z']-z)**2)
+                    # Use XY-only distance: Z (depth) has much higher noise
+                    dist = math.sqrt((obj_data['x']-x)**2 + (obj_data['y']-y)**2)
                     if dist < min_dist:
                         min_dist = dist
                         closest_id = obj_id
@@ -281,9 +282,7 @@ class SemanticMemoryNode(Node):
             for obj_id, obj_data in self.memory.items():
                 self.get_logger().debug(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
                 
-                # 目前設定為 hits >= 1 (看過 1 次就發布，方便 Debug)
-                # 等系統穩定後，建議改回 3 以過濾閃爍雜訊
-                if obj_data['hits'] >= 1:
+                if obj_data['hits'] >= 3:
                     memory_list.append({
                         "id": obj_id, 
                         "class_name": obj_data['class_name'],
@@ -301,7 +300,7 @@ class SemanticMemoryNode(Node):
 
         with self.memory_lock:
             for obj_id, obj_data in self.memory.items():
-                if obj_data['hits'] < 1: 
+                if obj_data['hits'] < 3:
                     continue
     
                 # 產生穩定的整數 ID，確保 RViz 知道這是同一個物件，直接覆蓋更新而不產生殘影
