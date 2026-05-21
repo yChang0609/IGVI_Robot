@@ -13,8 +13,7 @@ from rclpy.time import Time
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from std_msgs.msg import String
-from std_srvs.srv import Trigger
+from std_msgs.msg import Empty, String
 from sensor_msgs.msg import CameraInfo, Image
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import PointStamped
@@ -87,8 +86,8 @@ class SemanticMemoryNode(Node):
         self.memory_pub = self.create_publisher(String, '/semantic_memory', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/semantic_memory_markers', 10)
 
-        self.create_service(Trigger, '/semantic_memory/clear', self._on_clear,
-                            callback_group=self.callback_group)
+        self.create_subscription(Empty, '/semantic_memory/clear', self._on_clear, 10,
+                                 callback_group=self.callback_group)
 
         self.create_timer(1.0, self.cleanup_memory)
         self.create_timer(0.1, self.publish_memory)
@@ -98,14 +97,11 @@ class SemanticMemoryNode(Node):
             f"merge_radius={self.merge_radius}m"
         )
 
-    def _on_clear(self, _request, response):
+    def _on_clear(self, _msg: Empty):
         with self.memory_lock:
             count = len(self.memory)
             self.memory.clear()
-        response.success = True
-        response.message = f"cleared {count} objects"
         self.get_logger().info(f"semantic memory cleared ({count} objects)")
-        return response
 
     def camera_info_callback(self, msg: CameraInfo):
         if not self.camera_info_received:

@@ -29,7 +29,7 @@ from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Empty, Float64MultiArray, String
-from std_srvs.srv import Empty as EmptySrv, Trigger
+from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -165,7 +165,7 @@ class BridgeNode(Node):
         self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
         self._semantic_memory: dict = {}
         self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
-        self._semantic_memory_clear_client = self.create_client(Trigger, "/semantic_memory/clear")
+        self._semantic_memory_clear_pub = self.create_publisher(Empty, "/semantic_memory/clear", 10)
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
@@ -876,27 +876,9 @@ class BridgeNode(Node):
         return self._semantic_memory
 
     def clear_semantic_memory(self) -> tuple[bool, str]:
-        if not self._semantic_memory_clear_client.wait_for_service(timeout_sec=1.0):
-            return False, "/semantic_memory/clear service not available"
-
-        done = threading.Event()
-        result: dict[str, Any] = {"ok": False, "message": "timed out"}
-        future = self._semantic_memory_clear_client.call_async(Trigger.Request())
-
-        def _finished(_future: Any) -> None:
-            try:
-                resp = _future.result()
-                result["ok"] = resp.success
-                result["message"] = resp.message
-            except Exception as exc:  # noqa: BLE001
-                result["ok"] = False
-                result["message"] = str(exc)
-            finally:
-                done.set()
-
-        future.add_done_callback(_finished)
-        done.wait(timeout=3.0)
-        return bool(result["ok"]), str(result["message"])
+        self._semantic_memory = {}
+        self._semantic_memory_clear_pub.publish(Empty())
+        return True, "semantic memory cleared"
 
     # ── EKF fusion source freshness ──────────────────────────────────────────
 
