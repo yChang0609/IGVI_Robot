@@ -34,7 +34,7 @@ make install DATA_ROOT=/your/shared/path
 ```
 
 This creates `docker/compose/.env` from the example template and ensures the shared data
-directories (`slam/`, `maps/`) exist at `IGVI_DATA_ROOT`. Because `.env` is gitignored,
+directories (`slam/`, `maps/`, `models/eto_eye/`, `migraphx_cache/eto_eye/`) exist at `IGVI_DATA_ROOT`. Because `.env` is gitignored,
 every worktree on the same machine should run `make install` once — they will all point
 to the same absolute path, so robot data is shared regardless of which worktree is running.
 
@@ -157,6 +157,8 @@ Detailed KROS car notes are in `docs/README_kros_car.md`.
 
 `eto_eye` is integrated as the YOLO detector for the Kinect RGB topic. The CPU and GPU variants are separate profiles so only one detector publishes `/detections_json` at a time.
 
+Place the ONNX model at `${IGVI_DATA_ROOT}/models/eto_eye/best.onnx` on the host. With the default install path, that is `~/igvi_robot/models/eto_eye/best.onnx`; the detector sees it inside the container as `/models/best.onnx`.
+
 ```bash
 # Kinect + Foxglove
 docker compose -f docker/compose/compose.yaml --profile kinect --profile monitoring up -d
@@ -170,5 +172,4 @@ docker compose -f docker/compose/compose.yaml --profile eto_eye_gpu up -d eto_ey
 
 Foxglove can connect to `ws://localhost:8765`. Useful topics are `/eto_eye/annotated_image/compressed` and `/detections_json`.
 
-The GPU path expects the ASUS Vivobook AMD setup that was validated with kernel `6.17.0-29-generic`, Ubuntu inbox `amdgpu`, UMA set to 8GB, ROCm `7.2.1`, and `MIGraphXExecutionProvider`. MIGraphX compiled model cache is stored under `data/migraphx_cache/eto_eye`, which is runtime data and should stay untracked.
-
+The GPU path expects the ASUS Vivobook AMD setup that was validated with kernel `6.17.0-29-generic`, Ubuntu inbox `amdgpu`, UMA set to 8GB, ROCm `7.2.1`, and `MIGraphXExecutionProvider`. MIGraphX compiled model cache is stored under `${IGVI_DATA_ROOT}/migraphx_cache/eto_eye`.

@@ -16,7 +16,7 @@ REMOTE_IP := $(filter-out run app host,$(MAKECMDGOALS))
 help:
 	@echo "IGVI Robot commands:"
 	@echo "  make install              - One-time setup: create .env and shared data directories"
-	@echo "  make install DATA_ROOT=X  - Use a custom shared data path (default: /opt/igvi_robot)"
+	@echo "  make install DATA_ROOT=X  - Use a custom shared data path (default: $(HOME)/igvi_robot)"
 	@echo "  make sync                 - Install/sync Python dependencies"
 	@echo "  make host                 - Run igvi-host (loopback only)"
 	@echo "  make host lan             - Run igvi-host bound to 0.0.0.0 (exposed on LAN)"
@@ -39,7 +39,7 @@ install:
 		DATA=$(DATA_ROOT) && \
 		echo "  Added IGVI_DATA_ROOT=$(DATA_ROOT) to $(ENV_FILE)"; \
 	fi; \
-	mkdir -p "$$DATA/slam" "$$DATA/maps" && \
+	mkdir -p "$$DATA/slam" "$$DATA/maps" "$$DATA/models/eto_eye" "$$DATA/migraphx_cache/eto_eye" && \
 	echo "  Data directories ready at $$DATA"
 
 _check-env:

@@ -25,7 +25,7 @@ x-eto-eye-env: &eto_eye_env
   DEPTH_MIN_VALID_PIXELS: "20"
   DEPTH_MAX_AGE_SEC: "0.5"
 
-x-model-volume: &model_volume ../../../robot_ws/models/eto_eye:/models:ro
+x-model-volume: &model_volume ${IGVI_DATA_ROOT}/models/eto_eye:/models:ro
 
 services:
   eto_eye_cpu:
