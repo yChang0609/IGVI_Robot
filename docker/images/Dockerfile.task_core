@@ -1,0 +1,15 @@
+FROM ghcr.io/screamlab/wildbot_base_image:latest
+
+# Copy and build the package so the entry point is installed.
+# The source is then overlaid by a volume mount for live editing.
+WORKDIR /workspace
+
+COPY robot_ws/src/igvi_task_core /workspace/src/igvi_task_core
+COPY robot_ws/src/wildbot_grasp  /workspace/src/wildbot_grasp
+
+RUN . /opt/ros/jazzy/setup.sh && \
+    colcon build \
+      --packages-select igvi_task_core wildbot_grasp \
+      --symlink-install \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log

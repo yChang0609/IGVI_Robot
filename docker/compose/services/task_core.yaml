@@ -1,0 +1,41 @@
+name: igvi_robot
+
+x-base-service: &base_service
+  env_file:
+    - ../.env
+  networks:
+    - robot_net
+
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
+x-task-source-volume: &task_source_volume ../../../robot_ws/src/igvi_task_core/igvi_task_core:/workspace/src/igvi_task_core/igvi_task_core:ro
+
+services:
+  task_core:
+    <<: *base_service
+    profiles: ["tasks"]
+    x-description: "Competition task state machine — Nav2 + GrabObject + detection"
+    build:
+      context: ../../..
+      dockerfile: docker/images/Dockerfile.task_core
+    image: igvi_task_core:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - *task_source_volume
+      - ../../../robot_ws/configs/task_waypoints.yaml:/configs/task_waypoints.yaml:ro
+    ports:
+      - "8772:8772"
+    command: >
+      bash -c "
+        source /opt/ros/jazzy/setup.bash &&
+        source /workspace/install/setup.bash &&
+        ros2 run igvi_task_core task_manager_node
+          --ros-args --params-file /configs/task_waypoints.yaml
+      "
+    restart: unless-stopped
+    depends_on: []
+
+networks:
+  robot_net:
+    driver: bridge

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>igvi_task_core</name>
+  <version>0.1.0</version>
+  <description>
+    Competition task state machine node.
+    Executes tasks (bridge, bridge_grab, door, find_grab) via Nav2 and wildbot_grasp.
+    Exposes HTTP API on port 8772 for igvi_host to relay UI commands.
+  </description>
+  <maintainer email="igvi@example.com">IGVI</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>wildbot_grasp</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_pep8</test_depend>
+  <test_depend>ament_xmllint</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

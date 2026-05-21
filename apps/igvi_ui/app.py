@@ -26,6 +26,7 @@ from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.pages.docker_page import DockerPage
 from igvi_ui.pages.robot_page import RobotPage
 from igvi_ui.pages.settings_page import SettingsPage
+from igvi_ui.pages.tasks_page import TasksPage
 from igvi_ui.theme import STYLE_SHEET
 from igvi_ui.widgets.status_badge import StatusBadge
 
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         pages = [
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
+            ("Tasks", TasksPage(self.client)),
             ("Settings", SettingsPage(self.client)),
         ]
         for index, (label, page) in enumerate(pages):

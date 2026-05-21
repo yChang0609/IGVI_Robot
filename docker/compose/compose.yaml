@@ -10,6 +10,7 @@ include:
   - services/nav2.yaml
   - services/motion_arbiter.yaml
   - services/wildbot_grasp.yaml
+  - services/task_core.yaml
   - services/eto_eye_gpu.yaml
   # - services/eto_eye_cpu.yaml
   # LiDAR: single container running driver + NaN filter + timestamp re-stamper.

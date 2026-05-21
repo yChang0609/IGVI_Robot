@@ -209,3 +209,21 @@ class HostClient:
 
     def set_calibration(self, data: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", "/api/calibration", data)
+
+    # ── Task control (executed by ROS task_core node) ─────────────────────────
+
+    def task_start(self, task_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/task/{task_id}/start", {})
+
+    def task_pause(self, task_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/task/{task_id}/pause", {})
+
+    def task_resume(self, task_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/task/{task_id}/resume", {})
+
+    def task_interrupt(self, task_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/task/{task_id}/interrupt", {})
+
+    def task_status(self, task_id: str) -> dict[str, Any]:
+        """Returns {ok, state, step_index, step_name, log: [str]}."""
+        return self.request("GET", f"/api/task/{task_id}/status")

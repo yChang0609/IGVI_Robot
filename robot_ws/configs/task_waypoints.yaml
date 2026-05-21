@@ -1,0 +1,36 @@
+# Task waypoint configuration for igvi_task_core
+# Units: metres and radians (map frame)
+# Edit these values to match your competition arena.
+
+/igvi_task_core:
+  ros__parameters:
+    http_port: 8772
+
+    # ── Task 1 & 2: Bridge ────────────────────────────────────────────────────
+    wp.target_bridge.x: 2.0
+    wp.target_bridge.y: 0.0
+    wp.target_bridge.yaw: 0.0
+
+    wp.home_bridge.x: 0.0
+    wp.home_bridge.y: 0.0
+    wp.home_bridge.yaw: 3.14159
+
+    # ── Task 3: Door ──────────────────────────────────────────────────────────
+    wp.target_door.x: 3.5
+    wp.target_door.y: 1.0
+    wp.target_door.yaw: 0.0
+
+    # ── Task 4: Find & Grab (ordered search waypoints) ────────────────────────
+    wp.target_find_grab.count: 3
+
+    wp.target_find_grab.0.x: 1.5
+    wp.target_find_grab.0.y: 0.0
+    wp.target_find_grab.0.yaw: 0.0
+
+    wp.target_find_grab.1.x: 2.5
+    wp.target_find_grab.1.y: 1.5
+    wp.target_find_grab.1.yaw: 1.5708
+
+    wp.target_find_grab.2.x: 1.0
+    wp.target_find_grab.2.y: 2.5
+    wp.target_find_grab.2.yaw: 3.14159
