@@ -29,7 +29,7 @@ from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Empty, Float64MultiArray, String
-from std_srvs.srv import Empty as EmptySrv
+from std_srvs.srv import Empty as EmptySrv, Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -165,6 +165,7 @@ class BridgeNode(Node):
         self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
         self._semantic_memory: dict = {}
         self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
+        self._semantic_memory_clear_client = self.create_client(Trigger, "/semantic_memory/clear")
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
@@ -874,6 +875,29 @@ class BridgeNode(Node):
     def snapshot_semantic_memory(self) -> dict[str, Any]:
         return self._semantic_memory
 
+    def clear_semantic_memory(self) -> tuple[bool, str]:
+        if not self._semantic_memory_clear_client.wait_for_service(timeout_sec=1.0):
+            return False, "/semantic_memory/clear service not available"
+
+        done = threading.Event()
+        result: dict[str, Any] = {"ok": False, "message": "timed out"}
+        future = self._semantic_memory_clear_client.call_async(Trigger.Request())
+
+        def _finished(_future: Any) -> None:
+            try:
+                resp = _future.result()
+                result["ok"] = resp.success
+                result["message"] = resp.message
+            except Exception as exc:  # noqa: BLE001
+                result["ok"] = False
+                result["message"] = str(exc)
+            finally:
+                done.set()
+
+        future.add_done_callback(_finished)
+        done.wait(timeout=3.0)
+        return bool(result["ok"]), str(result["message"])
+
     # ── EKF fusion source freshness ──────────────────────────────────────────
 
     def _on_wheel_freshness(self, _msg: Odometry) -> None:
@@ -1257,6 +1281,9 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/imu/calibration/start":
                 node.start_imu_calibration()
                 self._json({"ok": True, "action": "imu_calibration_start", "message": "IMU calibration window started"})
+            elif path == "/api/semantic_memory/clear":
+                ok, msg = node.clear_semantic_memory()
+                self._json({"ok": ok, "action": "semantic_memory_clear", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()

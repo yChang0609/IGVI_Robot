@@ -206,6 +206,9 @@ class HostClient:
     def semantic_memory(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
 
+    def semantic_memory_clear(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/semantic_memory/clear", {}, timeout=5.0)
+
     def imu_calibration_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)
 

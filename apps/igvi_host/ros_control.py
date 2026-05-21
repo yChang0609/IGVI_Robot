@@ -143,6 +143,18 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def clear_semantic_memory(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._post_semantic_memory_clear)
+
+    def _post_semantic_memory_clear(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/semantic_memory/clear"
+        req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
 

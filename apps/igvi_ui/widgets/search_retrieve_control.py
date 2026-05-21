@@ -29,6 +29,7 @@ class SearchRetrieveControl(QWidget):
         
         self._home_pose: tuple[float, float, float] | None = None
         self._target_id: str = ""
+        self._current_objects: list = []
         
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
@@ -47,6 +48,12 @@ class SearchRetrieveControl(QWidget):
         self.target_combo = QComboBox()
         self.target_combo.currentIndexChanged.connect(self._on_target_selected)
         target_layout.addWidget(self.target_combo, 1)
+        self.clear_memory_btn = QPushButton("Clear")
+        self.clear_memory_btn.setObjectName("Danger")
+        self.clear_memory_btn.setFixedWidth(52)
+        self.clear_memory_btn.setToolTip("Clear all objects from semantic memory")
+        self.clear_memory_btn.clicked.connect(self._clear_memory)
+        target_layout.addWidget(self.clear_memory_btn)
         layout.addLayout(target_layout)
 
         # Home Pose Selection
@@ -88,10 +95,11 @@ class SearchRetrieveControl(QWidget):
         current_id = self.target_combo.currentData()
         self.target_combo.blockSignals(True)
         self.target_combo.clear()
-        
+
         objects = memory.get('objects', [])
+        self._current_objects = objects
         idx_to_restore = -1
-        
+
         for i, obj in enumerate(objects):
             obj_id = obj.get('id', '')
             short_id = obj_id[:6] if len(obj_id) > 6 else obj_id
@@ -100,7 +108,7 @@ class SearchRetrieveControl(QWidget):
             self.target_combo.addItem(display_text, obj_id)
             if obj_id == current_id:
                 idx_to_restore = i
-                
+
         if idx_to_restore >= 0:
             self.target_combo.setCurrentIndex(idx_to_restore)
             self._target_id = current_id
@@ -109,12 +117,14 @@ class SearchRetrieveControl(QWidget):
             self._target_id = self.target_combo.itemData(0)
         else:
             self._target_id = ""
-            
+
         self.target_combo.blockSignals(False)
+        self.map_2d.update_semantic_objects(self._current_objects, self._target_id)
 
     def _on_target_selected(self, index: int) -> None:
         if index >= 0:
             self._target_id = self.target_combo.itemData(index)
+            self.map_2d.update_semantic_objects(self._current_objects, self._target_id)
 
     def _toggle_set_home(self) -> None:
         is_setting = self.set_home_btn.isChecked()
@@ -181,6 +191,16 @@ class SearchRetrieveControl(QWidget):
                 
         except HostClientError:
             pass
+
+    def _clear_memory(self) -> None:
+        try:
+            res = self.client.semantic_memory_clear()
+            if res.get("ok"):
+                self.status_label.setText("Memory cleared.")
+            else:
+                QMessageBox.warning(self, "Clear failed", res.get("message", "Unknown error"))
+        except HostClientError as e:
+            QMessageBox.warning(self, "Clear failed", str(e))
 
     def shutdown(self) -> None:
         self._status_timer.stop()

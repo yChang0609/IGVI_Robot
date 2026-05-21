@@ -24,6 +24,8 @@ class Map2DView(QWidget):
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
         self._home_pose: tuple[float, float, float] | None = None
         self._waypoints: dict[str, dict[str, float]] = {}
+        self._semantic_objects: list[dict[str, Any]] = []
+        self._selected_target_id: str = ""
         # Pick target controls what mouseRelease emits:
         #   ""             → nav goal (default)
         #   "waypoint"     → waypoint_point_picked
@@ -58,6 +60,11 @@ class Map2DView(QWidget):
 
     def set_home_pose(self, home_pose: tuple[float, float, float] | None) -> None:
         self._home_pose = home_pose
+        self.update()
+
+    def update_semantic_objects(self, objects: list[dict[str, Any]], selected_id: str = "") -> None:
+        self._semantic_objects = list(objects or [])
+        self._selected_target_id = selected_id
         self.update()
 
     def set_pick_mode(self, enabled: bool) -> None:
@@ -152,6 +159,36 @@ class Map2DView(QWidget):
             )
             painter.setPen(label_color)
             painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Bridge" if is_bridge else str(name))
+
+        for obj in self._semantic_objects:
+            pos = obj.get("position", {})
+            wx, wy = pos.get("x"), pos.get("y")
+            if wx is None or wy is None:
+                continue
+            pt = self._world_to_widget(wx, wy, map_rect)
+            if pt is None:
+                continue
+            obj_id = obj.get("id", "")
+            is_selected = obj_id == self._selected_target_id
+            name = obj.get("class_name", "?")
+            short_id = obj_id[:6] if len(obj_id) > 6 else obj_id
+            if is_selected:
+                painter.setPen(QPen(QColor("#f97316"), 2))
+                painter.setBrush(QColor(249, 115, 22, 200))
+                painter.drawEllipse(pt, 9, 9)
+                # Cross-hair on selected target
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                r = 15.0
+                painter.drawLine(QPointF(pt.x() - r, pt.y()), QPointF(pt.x() + r, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - r), QPointF(pt.x(), pt.y() + r))
+                painter.setPen(QColor("#fed7aa"))
+                painter.drawText(QPointF(pt.x() + 11, pt.y() - 8), f"{name} [{short_id}]")
+            else:
+                painter.setPen(QPen(QColor("#4ade80"), 1))
+                painter.setBrush(QColor(74, 222, 128, 140))
+                painter.drawEllipse(pt, 6, 6)
+                painter.setPen(QColor("#86efac"))
+                painter.drawText(QPointF(pt.x() + 8, pt.y() - 5), short_id)
 
         if self._drag_origin and self._drag_current:
             ox, oy = self._drag_origin

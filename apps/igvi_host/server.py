@@ -492,6 +492,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_semantic_memory() -> dict:
         return await run_ros(lambda client: client.get_semantic_memory())
 
+    @app.post("/api/ros/semantic_memory/clear")
+    async def ros_semantic_memory_clear() -> dict:
+        return await run_ros(lambda client: client.clear_semantic_memory())
+
     @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
     async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:
         target = request.target if request else "local"
