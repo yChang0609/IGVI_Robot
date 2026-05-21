@@ -16,7 +16,6 @@ install(PROGRAMS
   scripts/gripper_command
   scripts/arm_safeguard_node
   scripts/bear_grasp_task_node
-  scripts/bear_nav_interface_node
   scripts/grasp_stack
   DESTINATION lib/${PROJECT_NAME}
 )

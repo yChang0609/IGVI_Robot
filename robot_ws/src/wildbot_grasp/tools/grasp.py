@@ -99,7 +99,6 @@ def state(args: argparse.Namespace) -> None:
 
 def check(_args: argparse.Namespace) -> None:
     compose("ps")
-    ros_exec("wildbot_grasp", "ros2 param get /bear_grasp_task_node target_min_distance_m")
     ros_exec("wildbot_grasp", "ros2 param get /bear_grasp_task_node target_max_distance_m")
     ros_exec("wildbot_grasp", "ros2 param get /bear_grasp_task_node target_center_x_px")
     ros_exec("wildbot_grasp", "ros2 topic echo /arm_joint_temperatures --once")

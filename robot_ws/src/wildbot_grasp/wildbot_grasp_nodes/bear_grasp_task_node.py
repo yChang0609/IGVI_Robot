@@ -33,13 +33,11 @@ class TargetDetection:
 
 class TaskState(str, Enum):
     IDLE = "idle"
-    WAITING_FOR_NAV = "waiting_for_nav"
     WAITING_FOR_BEAR = "waiting_for_bear"
     ALIGNING = "aligning"
     GRASPING = "grasping"
     BACKING_UP = "backing_up"
     REALIGNING = "realigning"
-    RETURN_HOME_RESERVED = "return_home_reserved"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -58,23 +56,15 @@ class BearGraspTaskNode(Node):
         self.grasp_retry_count = 0
         self.goal_in_flight = False
         self.in_grasp_range = False
-        self.capture_area_reached = False
-        self.home_reached = False
         self.last_state_publish = 0.0
         self.last_detection_log = 0.0
-        self.last_target_command = Twist()
 
         detection_topic = str(self.get_parameter("detection_topic").value)
         cmd_topic = str(self.get_parameter("cmd_vel_topic").value)
         state_topic = str(self.get_parameter("state_topic").value)
-        nav_status_topic = str(self.get_parameter("nav_status_topic").value)
-        nav_request_topic = str(self.get_parameter("nav_request_topic").value)
-
         self.create_subscription(String, detection_topic, self._on_detections, 10, callback_group=self.callback_group)
-        self.create_subscription(String, nav_status_topic, self._on_nav_status, 10, callback_group=self.callback_group)
         self.cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
         self.state_pub = self.create_publisher(String, state_topic, 10)
-        self.nav_request_pub = self.create_publisher(String, nav_request_topic, 10)
         self.grab_client = ActionClient(
             self,
             GrabObject,
@@ -96,9 +86,7 @@ class BearGraspTaskNode(Node):
             self._set_state(TaskState.IDLE, "waiting for ~/start")
         self.get_logger().info(
             f"Bear grasp task ready: detections={detection_topic} cmd={cmd_topic} "
-            f"target_distance_range={self.get_parameter('target_min_distance_m').value}-"
-            f"{self.get_parameter('target_max_distance_m').value}m "
-            f"navigation_enabled={self.get_parameter('enable_navigation').value}"
+            f"target_max_distance={self.get_parameter('target_max_distance_m').value}m"
         )
 
     def _declare_parameters(self):
@@ -109,7 +97,6 @@ class BearGraspTaskNode(Node):
         self.declare_parameter("grab_action_name", "grab_object")
         self.declare_parameter("target_labels", ["bear", "teddy bear", "xiong", "熊"])
         self.declare_parameter("min_confidence", 0.35)
-        self.declare_parameter("target_min_distance_m", 0.22)
         self.declare_parameter("target_max_distance_m", 0.24)
         # Once the target enters the grasp band, depth noise must exceed this
         # margin (in metres) past target_max before we drop back to approaching.
@@ -126,29 +113,17 @@ class BearGraspTaskNode(Node):
         self.declare_parameter("max_linear_x", 0.06)
         self.declare_parameter("min_linear_x", 0.025)
         self.declare_parameter("linear_kp", 0.35)
-        self.declare_parameter("stop_before_grasp_sec", 0.0)
         self.declare_parameter("backup_linear_x", -0.05)
         self.declare_parameter("backup_duration_sec", 0.8)
         self.declare_parameter("retry_pause_sec", 0.4)
         self.declare_parameter("max_task_retries", 0)
-        self.declare_parameter("enable_navigation", False)
-        self.declare_parameter("nav_request_topic", "/bear_grasp/nav/request")
-        self.declare_parameter("nav_status_topic", "/bear_grasp/nav/status")
-        self.declare_parameter("return_home_after_grasp", False)
-        self.declare_parameter("home_frame_id", "map")
-        self.declare_parameter("home_pose", [0.0, 0.0, 0.0])
 
     def _on_start(self, _request, response):
         self.active = True
         self.grasp_retry_count = 0
         self.goal_in_flight = False
         self.in_grasp_range = False
-        if bool(self.get_parameter("enable_navigation").value):
-            self.capture_area_reached = False
-            self._request_navigation("go_to_capture_area")
-            self._set_state(TaskState.WAITING_FOR_NAV, "manual start; waiting for navigation capture area")
-        else:
-            self._set_state(TaskState.WAITING_FOR_BEAR, "manual start")
+        self._set_state(TaskState.WAITING_FOR_BEAR, "manual start")
         response.success = True
         response.message = "bear grasp task started"
         return response
@@ -230,7 +205,7 @@ class BearGraspTaskNode(Node):
         return best
 
     def _target_priority(self, detection: TargetDetection):
-        # A target without depth cannot enter the 0.22-0.24 m grasp gate.
+        # A target without depth cannot enter the grasp distance gate.
         # Prefer usable depth over a high-score edge detection with depth=None.
         has_distance = 1 if detection.distance_m is not None else 0
         center_error = abs(self._center_error_px(detection))
@@ -252,11 +227,6 @@ class BearGraspTaskNode(Node):
         if self.state == TaskState.IDLE:
             return
         if self.state == TaskState.SUCCEEDED:
-            if bool(self.get_parameter("return_home_after_grasp").value):
-                self._set_state(TaskState.RETURN_HOME_RESERVED, "return home requested")
-            return
-        if self.state == TaskState.RETURN_HOME_RESERVED:
-            self._handle_return_home_reserved()
             return
 
         detection = self._fresh_detection()
@@ -264,10 +234,6 @@ class BearGraspTaskNode(Node):
             self.in_grasp_range = False
             self._publish_stop()
             self._set_state(TaskState.WAITING_FOR_BEAR, "waiting for fresh target detection")
-            return
-        if bool(self.get_parameter("enable_navigation").value) and not self._navigation_reached_capture_area():
-            self._publish_stop()
-            self._set_state(TaskState.WAITING_FOR_NAV, "waiting for navigation capture area")
             return
         if not self._distance_ready(detection):
             self._drive_toward_distance(detection)
@@ -277,9 +243,6 @@ class BearGraspTaskNode(Node):
         self._publish_stop()
         self.goal_in_flight = True
         self._set_state(TaskState.GRASPING, f"target in range for {detection.label}; grabbing")
-        stop_sec = float(self.get_parameter("stop_before_grasp_sec").value)
-        if stop_sec > 0.0:
-            time.sleep(stop_sec)
         self._send_grab_goal(detection)
 
     def _fresh_detection(self) -> TargetDetection | None:
@@ -296,7 +259,7 @@ class BearGraspTaskNode(Node):
 
         if detection.distance_m is None:
             # Depth often drops out at very close range. If we already reached the
-            # grasp band, stay latched and proceed to align/grasp instead of stalling.
+            # grasp range, stay latched and proceed to grasp instead of stalling.
             if self.in_grasp_range:
                 return True
             return not bool(self.get_parameter("require_valid_distance").value)
@@ -312,8 +275,7 @@ class BearGraspTaskNode(Node):
                 return False
             return True
 
-        # Close enough means ready: getting closer than target_min is fine to grasp,
-        # we only use the band to decide where to stop while approaching.
+        # Close enough means ready: target_max is the only active distance gate.
         if detection.distance_m <= max_distance:
             self.in_grasp_range = True
             self.get_logger().info(
@@ -326,25 +288,16 @@ class BearGraspTaskNode(Node):
         if detection.distance_m is None:
             self._publish_stop()
             return
-        min_distance = float(self.get_parameter("target_min_distance_m").value)
         max_distance = float(self.get_parameter("target_max_distance_m").value)
-        if detection.distance_m > max_distance:
-            distance_error = detection.distance_m - max_distance
-        elif detection.distance_m < min_distance:
-            distance_error = detection.distance_m - min_distance
-        else:
-            distance_error = 0.0
+        distance_error = max(0.0, detection.distance_m - max_distance)
         twist = self._centering_twist(detection)
         linear = distance_error * float(self.get_parameter("linear_kp").value)
         max_linear = float(self.get_parameter("max_linear_x").value)
         min_linear = max(0.0, float(self.get_parameter("min_linear_x").value))
         if distance_error > 0.0:
             linear = max(min_linear, linear)
-        elif distance_error < 0.0:
-            linear = min(-min_linear, linear)
         twist.linear.x = max(-max_linear, min(max_linear, linear))
         self.cmd_pub.publish(twist)
-        self.last_target_command = twist
 
     def _centering_twist(self, detection: TargetDetection) -> Twist:
         error_px = self._center_error_px(detection)
@@ -425,37 +378,6 @@ class BearGraspTaskNode(Node):
             self.cmd_pub.publish(twist)
             time.sleep(0.05)
         self._publish_stop()
-
-    def _on_nav_status(self, msg: String):
-        try:
-            payload = json.loads(msg.data)
-        except json.JSONDecodeError as exc:
-            self.get_logger().warning(f"invalid nav status JSON: {exc}")
-            return
-        if "capture_area_reached" in payload:
-            self.capture_area_reached = bool(payload["capture_area_reached"])
-        if "home_reached" in payload:
-            self.home_reached = bool(payload["home_reached"])
-
-    def _request_navigation(self, command: str):
-        msg = String()
-        msg.data = json.dumps({
-            "command": command,
-            "home_frame_id": str(self.get_parameter("home_frame_id").value),
-            "home_pose": list(self.get_parameter("home_pose").value),
-            "stamp_monotonic": time.monotonic(),
-        })
-        self.nav_request_pub.publish(msg)
-        self.get_logger().info(f"navigation request: {msg.data}")
-
-    def _navigation_reached_capture_area(self) -> bool:
-        return self.capture_area_reached
-
-    def _handle_return_home_reserved(self):
-        self._publish_stop()
-        self._request_navigation("return_home")
-        self.active = False
-        self._set_state(TaskState.IDLE, "return-home navigation requested through nav interface")
 
     def _publish_stop(self):
         self.cmd_pub.publish(Twist())
