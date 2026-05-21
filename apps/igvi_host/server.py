@@ -440,10 +440,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
 
     @app.post("/api/ros/search_retrieve/start", response_model=RosActionResponse)
     async def ros_search_retrieve_start(request: SearchRetrieveRequest) -> RosActionResponse:
-        await run_ros(lambda client: client.start_search_retrieve(
+        result = await run_ros(lambda client: client.start_search_retrieve(
             request.target_id, request.home_pose_x, request.home_pose_y, request.home_pose_yaw
         ))
-        return RosActionResponse(ok=True, action="search_retrieve_start", message="search and retrieve task started")
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action="search_retrieve_start",
+            message=str(result.get("message", "search and retrieve task started"))
+        )
 
     @app.post("/api/ros/search_retrieve/cancel", response_model=RosActionResponse)
     async def ros_search_retrieve_cancel() -> RosActionResponse:

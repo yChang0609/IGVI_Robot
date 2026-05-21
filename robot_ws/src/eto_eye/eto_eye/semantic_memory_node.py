@@ -341,7 +341,8 @@ class SemanticMemoryNode(Node):
                 t.color.r = 1.0
                 t.color.g = 1.0
                 t.color.b = 1.0
-                t.text = f"{obj_data['class_name']} ({obj_data.get('score', 0.0):.2f})"
+                short_id = obj_id[:8] if len(obj_id) > 8 else obj_id
+                t.text = f"{obj_data['class_name']} [{short_id}] ({obj_data.get('score', 0.0):.2f})"
                 t.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg() # 同樣加上 10 秒壽命
     
                 marker_array.markers.append(m)

@@ -129,6 +129,7 @@ class SearchRetrieveControl(QWidget):
         self.home_label.setText(f"x: {x:.2f}, y: {y:.2f}, yaw: {yaw:.2f}")
         self.set_home_btn.setChecked(False)
         self.set_home_btn.setText("Set Home on Map")
+        self.map_2d.set_home_pose_mode(False)
 
     def _start_task(self) -> None:
         if not self._target_id:

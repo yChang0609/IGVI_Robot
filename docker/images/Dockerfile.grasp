@@ -1,7 +1,26 @@
 FROM ghcr.io/screamlab/wildbot_base_image:latest
 ENV ROS_DISTRO=jazzy
+ENV ROS2_WS=/workspace
 
 WORKDIR /workspace
+
+# --- Pin ROS 2 apt to a fixed, internally-consistent snapshot (2026-04-13) ---
+# Prevents the Fast-CDR/typesupport ABI mismatch.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg && \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0xAD19BAB3CBF125EA" \
+      | gpg --dearmor -o /usr/share/keyrings/ros-snapshots.gpg && \
+    rm -f /etc/apt/sources.list.d/ros2.list /etc/apt/sources.list.d/ros2-latest.list && \
+    printf 'Types: deb\nURIs: http://snapshots.ros.org/jazzy/2026-04-13/ubuntu\nSuites: noble\nComponents: main\nSigned-By: /usr/share/keyrings/ros-snapshots.gpg\n' \
+      > /etc/apt/sources.list.d/ros2.sources && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-nav2-msgs \
+    ros-${ROS_DISTRO}-geometry-msgs \
+    ros-${ROS_DISTRO}-tf2-ros \
+    && rm -rf /var/lib/apt/lists/*
 
 # Build wildbot_grasp once into /workspace/install. The compose service mounts
 # robot_ws/src/wildbot_grasp back onto this same source path, so Python-only
