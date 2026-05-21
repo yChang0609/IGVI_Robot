@@ -40,6 +40,9 @@ from .models import (
     LogsResponse,
     NavGoalRequest,
     NavStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -423,6 +426,22 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             return Response(status_code=204, headers=headers)
         return Response(content=payload, media_type="image/jpeg", headers=headers)
 
+
+    @app.post("/api/ros/params/set", response_model=RosActionResponse)
+    async def ros_params_set(request: ParamsSetRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.set_ros_parameters(request))
+
+    @app.post("/api/ros/open_door/start", response_model=RosActionResponse)
+    async def ros_open_door_start(request: OpenDoorGoalRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_start(request))
+
+    @app.post("/api/ros/open_door/cancel", response_model=RosActionResponse)
+    async def ros_open_door_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_cancel())
+
+    @app.get("/api/ros/open_door/status", response_model=OpenDoorStatusResponse)
+    async def ros_open_door_status() -> OpenDoorStatusResponse:
+        return await RobotBridgeClient(current_settings()).open_door_status()
 
     @app.get("/api/ros/arm/temperatures", response_model=ArmTemperaturesResponse)
     async def ros_arm_temperatures() -> ArmTemperaturesResponse:

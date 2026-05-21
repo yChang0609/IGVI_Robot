@@ -15,6 +15,9 @@ docker/compose/slam_data/
 
 # Local models and accelerator caches
 *.onnx
+*.pt
+kinect_dataset/
+tuner_output/
 robot_ws/models/
 data/migraphx_cache/
 # Byte-compiled / optimized / DLL files

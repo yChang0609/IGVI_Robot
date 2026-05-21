@@ -150,6 +150,22 @@ class HostClient:
             raise HostClientError(str(exc)) from exc
 
 
+    def set_params(self, node: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/params/set", {"node": node, "params": params}
+        )
+
+    def open_door_start(self, ready_distance_m: float = 0.0) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/open_door/start", {"ready_distance_m": ready_distance_m}
+        )
+
+    def open_door_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/cancel", {})
+
+    def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
+
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
 

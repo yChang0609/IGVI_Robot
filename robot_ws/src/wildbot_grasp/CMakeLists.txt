@@ -9,6 +9,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GrabObject.action"
   "action/SearchAndRetrieve.action"
   "action/BridgeRetrieve.action"
+  "action/OpenDoor.action"
 )
 
 ament_python_install_package(wildbot_grasp_nodes)
@@ -21,6 +22,8 @@ install(PROGRAMS
   scripts/bridge_retrieve_server
   scripts/bear_grasp_task_node
   scripts/grasp_stack
+  scripts/open_door_server
+  scripts/tune_open_door
   DESTINATION lib/${PROJECT_NAME}
 )
 
