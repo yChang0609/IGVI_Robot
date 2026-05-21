@@ -22,6 +22,8 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    BridgeRetrieveRequest,
+    BridgeRetrieveStatusResponse,
     ClearCostmapRequest,
     CalibrationModel,
     CmdVelRequest,
@@ -452,6 +454,29 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_search_retrieve_status() -> SearchRetrieveStatusResponse:
         result = await run_ros(lambda client: client.get_search_retrieve_status())
         return SearchRetrieveStatusResponse(**result)
+
+    @app.post("/api/ros/bridge_retrieve/start", response_model=RosActionResponse)
+    async def ros_bridge_retrieve_start(request: BridgeRetrieveRequest) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_bridge_retrieve(request))
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_retrieve_start",
+            message=str(result.get("message", "bridge retrieve task started")),
+        )
+
+    @app.post("/api/ros/bridge_retrieve/cancel", response_model=RosActionResponse)
+    async def ros_bridge_retrieve_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_bridge_retrieve())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_retrieve_cancel",
+            message=str(result.get("message", "bridge retrieve task canceled")),
+        )
+
+    @app.get("/api/ros/bridge_retrieve/status", response_model=BridgeRetrieveStatusResponse)
+    async def ros_bridge_retrieve_status() -> BridgeRetrieveStatusResponse:
+        result = await run_ros(lambda client: client.get_bridge_retrieve_status())
+        return BridgeRetrieveStatusResponse(**result)
 
     @app.get("/api/ros/semantic_memory")
     async def ros_semantic_memory() -> dict:

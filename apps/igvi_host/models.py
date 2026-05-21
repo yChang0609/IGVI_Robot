@@ -176,6 +176,22 @@ class SearchRetrieveStatusResponse(BaseModel):
     feedback: dict = Field(default_factory=dict)
 
 
+class BridgeRetrieveRequest(BaseModel):
+    target_class: str = "xiong_qiao"
+    bridge_waypoint_name: str = "bridge_center"
+    bridge_pose_x: float | None = None
+    bridge_pose_y: float | None = None
+    bridge_pose_yaw: float = 0.0
+
+
+class BridgeRetrieveStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
 class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 

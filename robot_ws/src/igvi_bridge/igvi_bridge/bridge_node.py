@@ -25,7 +25,7 @@ from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from wildbot_grasp.action import SearchAndRetrieve
+from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
@@ -78,6 +78,12 @@ class BridgeNode(Node):
         self._search_goal_handle = None
         self._search_goal: dict[str, Any] | None = None
         self._search_feedback: dict[str, Any] = {}
+        self._bridge_mission_lock = threading.Lock()
+        self._bridge_mission_state: str = "idle"
+        self._bridge_mission_message: str = ""
+        self._bridge_mission_goal_handle = None
+        self._bridge_mission_goal: dict[str, Any] | None = None
+        self._bridge_mission_feedback: dict[str, Any] = {}
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
@@ -147,6 +153,7 @@ class BridgeNode(Node):
         self._rtabmap_backup_client = self.create_client(EmptySrv, "/rtabmap/backup")
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self._search_client = ActionClient(self, SearchAndRetrieve, "search_retrieve")
+        self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
         self._semantic_memory: dict = {}
         self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
@@ -641,6 +648,121 @@ class BridgeNode(Node):
             self._update_search_state("idle", "cancel accepted")
         else:
             self._update_search_state("active", "cancel rejected")
+    # ── Bridge Retrieve Mission ──────────────────────────────────────────────
+
+    def _update_bridge_mission_state(self, state: str, message: str) -> None:
+        with self._bridge_mission_lock:
+            self._bridge_mission_state = state
+            self._bridge_mission_message = message
+        self.get_logger().info(f"Bridge mission state: {state} — {message}")
+
+    def send_bridge_mission_goal(
+        self,
+        target_class: str,
+        bridge_x: float,
+        bridge_y: float,
+        bridge_yaw: float,
+    ) -> tuple[bool, str]:
+        if not self._bridge_mission_client.server_is_ready():
+            if not self._bridge_mission_client.wait_for_server(timeout_sec=2.0):
+                self._update_bridge_mission_state("unavailable", "Bridge retrieve server offline")
+                return False, "Bridge retrieve server offline"
+        goal_msg = BridgeRetrieve.Goal()
+        goal_msg.target_class = str(target_class)
+        goal_msg.bridge_pose_x = float(bridge_x)
+        goal_msg.bridge_pose_y = float(bridge_y)
+        goal_msg.bridge_pose_yaw = float(bridge_yaw)
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal = {
+                "target_class": target_class,
+                "bridge_pose_x": bridge_x,
+                "bridge_pose_y": bridge_y,
+                "bridge_pose_yaw": bridge_yaw,
+            }
+            self._bridge_mission_feedback = {}
+        self._update_bridge_mission_state("sending", "goal dispatched")
+        future = self._bridge_mission_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._on_bridge_mission_feedback,
+        )
+        future.add_done_callback(self._on_bridge_mission_response)
+        return True, "goal dispatched"
+
+    def send_bridge_mission_waypoint_goal(
+        self,
+        target_class: str,
+        waypoint_name: str,
+    ) -> tuple[bool, str]:
+        name = str(waypoint_name).strip()
+        with self._waypoints_lock:
+            wp = self._waypoints.get(name)
+            wp = dict(wp) if wp else None
+        if wp is None:
+            return False, f"no waypoint named '{name}'"
+        return self.send_bridge_mission_goal(target_class, wp["x"], wp["y"], wp["yaw"])
+
+    def cancel_bridge_mission_goal(self) -> tuple[bool, str]:
+        with self._bridge_mission_lock:
+            handle = self._bridge_mission_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_bridge_mission_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_bridge_mission_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_bridge_mission(self) -> dict[str, Any]:
+        with self._bridge_mission_lock:
+            return {
+                "state": self._bridge_mission_state,
+                "message": self._bridge_mission_message,
+                "goal": dict(self._bridge_mission_goal) if self._bridge_mission_goal else None,
+                "feedback": dict(self._bridge_mission_feedback),
+                "server_ready": self._bridge_mission_client.server_is_ready(),
+            }
+
+    def _on_bridge_mission_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._bridge_mission_lock:
+            self._bridge_mission_feedback = {
+                "stage": fb.stage,
+                "progress": float(fb.progress),
+                "detail": fb.detail,
+            }
+
+    def _on_bridge_mission_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._update_bridge_mission_state("idle", "goal rejected")
+            return
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal_handle = goal_handle
+        self._update_bridge_mission_state("active", "goal accepted")
+        res_future = goal_handle.get_result_async()
+        res_future.add_done_callback(self._on_bridge_mission_result)
+
+    def _on_bridge_mission_result(self, future) -> None:
+        result = future.result()
+        status = result.status
+        with self._bridge_mission_lock:
+            self._bridge_mission_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            msg = result.result.message if hasattr(result.result, "message") else "succeeded"
+            self._update_bridge_mission_state("idle", f"success: {msg}")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._update_bridge_mission_state("idle", "canceled")
+        elif status == GoalStatus.STATUS_ABORTED:
+            msg = result.result.message if hasattr(result.result, "message") else "aborted"
+            self._update_bridge_mission_state("idle", f"aborted: {msg}")
+        else:
+            self._update_bridge_mission_state("idle", f"completed with status {status}")
+
+    def _on_bridge_mission_cancel_response(self, future) -> None:
+        response = future.result()
+        if len(response.goals_canceling) > 0:
+            self._update_bridge_mission_state("idle", "cancel accepted")
+        else:
+            self._update_bridge_mission_state("active", "cancel rejected")
 
     # ── Semantic Memory ──────────────────────────────────────────────────────
 
@@ -899,6 +1021,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_semantic_memory())
             elif path == "/api/search_retrieve/status":
                 self._json(node.snapshot_search())
+            elif path == "/api/bridge_retrieve/status":
+                self._json(node.snapshot_bridge_mission())
             elif path == "/api/waypoints":
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
@@ -989,6 +1113,24 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/search_retrieve/cancel":
                 ok, msg = node.cancel_search_goal()
                 self._json({"ok": ok, "action": "search_cancel", "message": msg})
+            elif path == "/api/bridge_retrieve/start":
+                waypoint_name = str(body.get("bridge_waypoint_name", ""))
+                if waypoint_name:
+                    ok, msg = node.send_bridge_mission_waypoint_goal(
+                        str(body.get("target_class", "xiong_qiao")),
+                        waypoint_name,
+                    )
+                else:
+                    ok, msg = node.send_bridge_mission_goal(
+                        str(body.get("target_class", "xiong_qiao")),
+                        float(body.get("bridge_pose_x", 0.0)),
+                        float(body.get("bridge_pose_y", 0.0)),
+                        float(body.get("bridge_pose_yaw", 0.0)),
+                    )
+                self._json({"ok": ok, "action": "bridge_retrieve_start", "message": msg})
+            elif path == "/api/bridge_retrieve/cancel":
+                ok, msg = node.cancel_bridge_mission_goal()
+                self._json({"ok": ok, "action": "bridge_retrieve_cancel", "message": msg})
             elif path == "/api/waypoints/save":
                 x = body.get("x")
                 y = body.get("y")

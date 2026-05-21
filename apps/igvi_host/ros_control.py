@@ -22,6 +22,7 @@ from .models import (
     RosConnectionResponse,
     SaveMapResponse,
     WaypointListResponse,
+    BridgeRetrieveRequest,
 )
 
 
@@ -90,6 +91,36 @@ class RobotBridgeClient:
 
     def _fetch_search_retrieve_status(self) -> dict[str, Any]:
         url = self.settings.bridge_url.rstrip("/") + "/api/search_retrieve/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def start_bridge_retrieve(self, request: BridgeRetrieveRequest) -> dict[str, Any]:
+        payload: dict[str, Any] = {"target_class": request.target_class}
+        if request.bridge_waypoint_name:
+            payload["bridge_waypoint_name"] = request.bridge_waypoint_name
+        else:
+            payload.update(
+                bridge_pose_x=request.bridge_pose_x or 0.0,
+                bridge_pose_y=request.bridge_pose_y or 0.0,
+                bridge_pose_yaw=request.bridge_pose_yaw,
+            )
+        return await asyncio.to_thread(
+            self._bridge_post,
+            "/api/bridge_retrieve/start",
+            payload,
+        )
+
+    async def cancel_bridge_retrieve(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/bridge_retrieve/cancel", {})
+
+    async def get_bridge_retrieve_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_bridge_retrieve_status)
+
+    def _fetch_bridge_retrieve_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/bridge_retrieve/status"
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 return dict(json.loads(r.read()))

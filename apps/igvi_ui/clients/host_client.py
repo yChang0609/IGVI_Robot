@@ -186,6 +186,20 @@ class HostClient:
     def search_retrieve_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/search_retrieve/status")
 
+    def bridge_retrieve_start(self, bridge_waypoint_name: str, target_class: str = "xiong_qiao") -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/api/ros/bridge_retrieve/start",
+            {"bridge_waypoint_name": bridge_waypoint_name, "target_class": target_class},
+            timeout=8.0,
+        )
+
+    def bridge_retrieve_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/bridge_retrieve/cancel", {}, timeout=5.0)
+
+    def bridge_retrieve_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/bridge_retrieve/status")
+
     def semantic_memory(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
 

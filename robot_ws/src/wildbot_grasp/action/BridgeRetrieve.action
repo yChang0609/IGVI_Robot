@@ -1,0 +1,15 @@
+# Bridge retrieval mission.
+# Navigate to a bridge-center waypoint, acquire the target class on the bridge,
+# carry it back to the robot's starting pose, then release it.
+
+string target_class
+float64 bridge_pose_x
+float64 bridge_pose_y
+float64 bridge_pose_yaw
+---
+bool success
+string message
+---
+string stage
+float32 progress
+string detail
