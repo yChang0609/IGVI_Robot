@@ -144,7 +144,7 @@ class ImageTopicsResponse(BaseModel):
 
 class ArmTemperaturesResponse(BaseModel):
     ok: bool = False
-    temperatures: list[float] = Field(default_factory=list)
+    temperatures: list[float | None] = Field(default_factory=list)
     gripper_index: int = 2
     gripper_temperature: float | None = None
     stamp_sec: float | None = None

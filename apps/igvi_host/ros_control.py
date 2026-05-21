@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -205,11 +206,26 @@ class RobotBridgeClient:
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 data = json.loads(r.read())
+
+            def coerce_temperature(value: Any) -> float | None:
+                try:
+                    temperature = float(value)
+                except (TypeError, ValueError):
+                    return None
+                return None if math.isnan(temperature) else temperature
+
+            temperatures: list[float | None] = []
+            for value in data.get("temperatures", []):
+                temperatures.append(coerce_temperature(value))
+            try:
+                gripper_index = int(data.get("gripper_index", 2))
+            except (TypeError, ValueError):
+                gripper_index = 2
             return ArmTemperaturesResponse(
                 ok=bool(data.get("ok", False)),
-                temperatures=[float(value) for value in data.get("temperatures", [])],
-                gripper_index=int(data.get("gripper_index", 2)),
-                gripper_temperature=data.get("gripper_temperature"),
+                temperatures=temperatures,
+                gripper_index=gripper_index,
+                gripper_temperature=coerce_temperature(data.get("gripper_temperature")),
                 stamp_sec=data.get("stamp_sec"),
             )
         except Exception as exc:
