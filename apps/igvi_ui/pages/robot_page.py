@@ -19,6 +19,7 @@ from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.widgets.arm_control import ArmControl
 from igvi_ui.widgets.bridge_retrieve_control import BridgeRetrieveControl
+from igvi_ui.widgets.door_mission_control import DoorMissionControl
 from igvi_ui.widgets.image_view import ImageView
 from igvi_ui.widgets.map_views import Map2DView
 from igvi_ui.widgets.navigation_control import NavigationControl
@@ -297,6 +298,7 @@ class RobotPage(QWidget):
         self.arm_control = ArmControl(self.client)
         self.search_retrieve_control = SearchRetrieveControl(self.client, self.map_2d)
         self.bridge_retrieve_control = BridgeRetrieveControl(self.client, self.map_2d)
+        self.door_mission_control = DoorMissionControl(self.client, self.map_2d)
         
         self.control_tabs.addTab(self.drive_control, "Drive")
         self.control_tabs.addTab(self.nav_control, "Navigation")
@@ -304,6 +306,7 @@ class RobotPage(QWidget):
         self.control_tabs.addTab(self.arm_control, "Arm")
         self.control_tabs.addTab(self.search_retrieve_control, "Search & Retrieve")
         self.control_tabs.addTab(self.bridge_retrieve_control, "Bridge Mission")
+        self.control_tabs.addTab(self.door_mission_control, "Door Mission")
         control_layout.addWidget(self.control_tabs, 1)
         layout.addWidget(control_panel, 1, 2)
 
@@ -340,6 +343,7 @@ class RobotPage(QWidget):
         self.arm_control.shutdown()
         self.search_retrieve_control.shutdown()
         self.bridge_retrieve_control.shutdown()
+        self.door_mission_control.shutdown()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

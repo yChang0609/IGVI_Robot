@@ -123,10 +123,10 @@ class DoorPage(QWidget):
 
         header = QVBoxLayout()
         header.setSpacing(2)
-        title = QLabel("Door Opener — Red-Bar Detector")
+        title = QLabel("Door Debug — Detector & Arm Tuning")
         title.setObjectName("Title")
         subtitle = QLabel(
-            "Live /open_door/debug_image, HSV tuning, and one-click trigger. "
+            "Live /open_door/debug_image, HSV tuning, arm pose tuning, and direct open-door test. "
             "Tuning sliders set parameters on open_door_server instantly."
         )
         subtitle.setObjectName("Muted")
@@ -188,7 +188,7 @@ class DoorPage(QWidget):
         layout.addLayout(row)
 
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("Start Open Door")
+        self.start_btn = QPushButton("Start Open Door Test")
         self.start_btn.clicked.connect(self._on_start)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel)

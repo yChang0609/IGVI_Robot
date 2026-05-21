@@ -73,7 +73,7 @@ class MainWindow(QMainWindow):
         pages = [
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
-            ("Door", door_page),
+            ("Door Debug", door_page),
             ("Settings", SettingsPage(self.client)),
         ]
         for index, (label, page) in enumerate(pages):
