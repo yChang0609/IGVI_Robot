@@ -30,6 +30,9 @@ COPY robot_ws/src/wildbot_grasp src/wildbot_grasp
 RUN /bin/bash -lc "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     colcon build --symlink-install --packages-select wildbot_grasp"
 
+# Direct `docker run` is a narrow fallback that starts only the action server.
+# The normal robot path is Docker Compose, where services/wildbot_grasp.yaml
+# overrides this CMD and launches `grasp_stack` for the full bear task.
 CMD ["/bin/bash", "-lc", \
      "source /opt/ros/${ROS_DISTRO}/setup.bash && \
       source /workspace/install/setup.bash && \

@@ -19,6 +19,8 @@ install(PROGRAMS
   scripts/arm_safeguard_node
   scripts/search_retrieve_server
   scripts/bridge_retrieve_server
+  scripts/bear_grasp_task_node
+  scripts/grasp_stack
   DESTINATION lib/${PROJECT_NAME}
 )
 
