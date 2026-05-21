@@ -92,6 +92,9 @@ class SemanticMemoryNode(Node):
         self.create_timer(1.0, self.cleanup_memory)
         self.create_timer(0.1, self.publish_memory)
 
+        # Publish empty memory immediately so any bridge/UI caches reset on restart.
+        self.publish_memory()
+
         self.get_logger().info(
             f"Semantic Memory Node started. frame={self.target_frame} "
             f"merge_radius={self.merge_radius}m"

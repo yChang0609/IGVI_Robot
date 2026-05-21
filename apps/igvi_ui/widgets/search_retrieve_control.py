@@ -119,12 +119,18 @@ class SearchRetrieveControl(QWidget):
             self._target_id = ""
 
         self.target_combo.blockSignals(False)
-        self.map_2d.update_semantic_objects(self._current_objects, self._target_id)
+        self._sync_map()
 
     def _on_target_selected(self, index: int) -> None:
         if index >= 0:
             self._target_id = self.target_combo.itemData(index)
+        self._sync_map()
+
+    def _sync_map(self) -> None:
+        if self._target_id:
             self.map_2d.update_semantic_objects(self._current_objects, self._target_id)
+        else:
+            self.map_2d.update_semantic_objects([], "")
 
     def _toggle_set_home(self) -> None:
         is_setting = self.set_home_btn.isChecked()
