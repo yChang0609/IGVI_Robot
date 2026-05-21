@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pids=()
+
+cleanup() {
+  echo "[grasp_stack] stopping child nodes..."
+  for pid in "${pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  wait || true
+}
+
+trap cleanup INT TERM EXIT
+
+start_node() {
+  local name="$1"
+  shift
+  echo "[grasp_stack] starting ${name}: $*"
+  "$@" &
+  pids+=("$!")
+}
+
+append_param() {
+  local -n args_ref="$1"
+  local env_name="$2"
+  local param_name="$3"
+  local value="${!env_name:-}"
+  if [[ -n "${value}" ]]; then
+    args_ref+=(-p "${param_name}:=${value}")
+  fi
+}
+
+grab_args=(--ros-args)
+append_param grab_args GRASP_DETECT_MIN_ERROR_DEG grasp_detect_min_error_deg
+append_param grab_args GRASP_DETECT_MIN_CLOSE_MOTION_DEG grasp_detect_min_close_motion_deg
+append_param grab_args GRASP_DETECT_SETTLE_SEC grasp_detect_settle_sec
+append_param grab_args GRASP_CHECK_TIMEOUT_SEC grasp_check_timeout_sec
+append_param grab_args GRASP_MAX_ATTEMPTS max_grasp_attempts
+append_param grab_args GRASP_ARM_TOPIC arm_topic
+append_param grab_args GRASP_MOVE_DURATION_SEC move_duration_sec
+append_param grab_args GRASP_SETTLE_SEC settle_sec
+
+start_node grab_object_server ros2 run wildbot_grasp grab_object_server "${grab_args[@]}"
+start_node arm_safeguard_node ros2 run wildbot_grasp arm_safeguard_node
+
+bear_task_args=(--ros-args -p auto_start:=false -p enable_navigation:=false)
+append_param bear_task_args BEAR_TARGET_CENTER_X_PX target_center_x_px
+append_param bear_task_args BEAR_TARGET_MIN_DISTANCE_M target_min_distance_m
+append_param bear_task_args BEAR_TARGET_MAX_DISTANCE_M target_max_distance_m
+append_param bear_task_args BEAR_BACKUP_LINEAR_X backup_linear_x
+append_param bear_task_args BEAR_BACKUP_DURATION_SEC backup_duration_sec
+append_param bear_task_args BEAR_MAX_TASK_RETRIES max_task_retries
+start_node bear_grasp_task_node ros2 run wildbot_grasp bear_grasp_task_node "${bear_task_args[@]}"
+start_node bear_nav_interface_node ros2 run wildbot_grasp bear_nav_interface_node
+
+while true; do
+  for pid in "${pids[@]}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "[grasp_stack] child process ${pid} exited; shutting down stack"
+      exit 1
+    fi
+  done
+  sleep 1
+done

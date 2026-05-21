@@ -471,6 +471,8 @@ class DetectorNode(Node):
                     "nanosec": image_msg.header.stamp.nanosec,
                 },
                 "frame_id": image_msg.header.frame_id,
+                "image_width": int(image_msg.width),
+                "image_height": int(image_msg.height),
                 "detections": [self._json_detection(d) for d in detections],
             }
         )

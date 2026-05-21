@@ -12,8 +12,8 @@ x-grasp-source-volume: &grasp_source_volume ../../../robot_ws/src/wildbot_grasp:
 services:
   wildbot_grasp:
     <<: *base_service
-    profiles: ["grasp"]
-    x-description: "High-level grasp action server for the arm/gripper"
+    profiles: ["grasp", "grasp_task"]
+    x-description: "Unified grasp stack: action server, arm safeguard, bear task, and nav topic interface"
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.grasp
@@ -23,19 +23,7 @@ services:
     volumes:
       - *config_volume
       - *grasp_source_volume
-    restart: unless-stopped
-
-  arm_safeguard:
-    <<: *base_service
-    profiles: ["grasp"]
-    x-description: "Hardware safety proxy and cooler for the arm/gripper"
-    image: wildbot_grasp:latest   
-    environment:
-      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
-    volumes:
-      - *config_volume
-      - *grasp_source_volume
-    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp arm_safeguard_node"]
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp grasp_stack"]
     restart: unless-stopped
 
 networks:

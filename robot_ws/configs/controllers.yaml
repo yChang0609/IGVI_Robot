@@ -1,10 +1,10 @@
 controller_manager:
   ros__parameters:
-    # Raised 15 -> 50: this is the hardware-interface read() loop rate, i.e.
-    # how fresh /base_controller/odom is. It is the low-latency backbone for
-    # the robot_localization EKF (odom->base_link). If the wheel serial bus
-    # (115200 on /dev/usb_wheel) cannot sustain 50 Hz, drop back toward 30.
-    update_rate: 50
+    # Keep this low enough for the arm TTL serial bus. During a 1s trajectory,
+    # joint_trajectory_controller produces a new interpolated arm position every
+    # control tick; at 50 Hz the hardware plugin can queue servo writes faster
+    # than the 3-servo command packet can be sent, causing "Arm cmd tx slow/fail".
+    update_rate: 15
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster

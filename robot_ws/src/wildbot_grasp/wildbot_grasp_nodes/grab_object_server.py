@@ -27,6 +27,8 @@ class GrabObjectServer(Node):
         self.declare_parameter("gripper_temperature_index", 2)
         self.declare_parameter("gripper_max_start_temp_c", 68.0)
         self.declare_parameter("gripper_resume_temp_c", 65.0)
+        self.declare_parameter("initial_pose_on_start", True)
+        self.declare_parameter("initial_pose_delay_sec", 1.0)
 
         self.latest_joint_state = None
         self.latest_temperatures = None
@@ -55,7 +57,22 @@ class GrabObjectServer(Node):
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
         )
+        self.initial_pose_timer = None
+        if bool(self.get_parameter("initial_pose_on_start").value):
+            delay = max(0.1, float(self.get_parameter("initial_pose_delay_sec").value))
+            self.initial_pose_timer = self.create_timer(
+                delay,
+                self.publish_initial_pose_once,
+                callback_group=self.callback_group,
+            )
         self.get_logger().info("Ready: /grab_object")
+
+    def publish_initial_pose_once(self):
+        if self.initial_pose_timer is not None:
+            self.initial_pose_timer.cancel()
+            self.initial_pose_timer = None
+        self.get_logger().info("moving arm to initial/home pose")
+        self.arm.send_named("initial_home_pose", "home_pose_deg")
 
     def joint_state_callback(self, msg):
         self.latest_joint_state = msg
@@ -423,8 +440,10 @@ class GrabObjectServer(Node):
             grasp_detail = carry_detail
 
             if object_grasped:
-                self.publish_feedback(goal_handle, "release_at_place", 0.95, "object still held; opening gripper at place pose")
+                self.publish_feedback(goal_handle, "release_at_place", 0.92, "object still held; opening gripper at place pose")
                 self.arm.send_named("release_at_place", "place_pose_deg")
+                self.publish_feedback(goal_handle, "return_home_after_release", 0.97, "object released; returning arm to home pose")
+                self.arm.send_named("return_home_after_release", "home_pose_deg")
                 break
 
             if attempt < max_attempts:
@@ -438,8 +457,8 @@ class GrabObjectServer(Node):
             return result
 
         if not object_grasped and not safety_abort:
-            self.publish_feedback(goal_handle, "reset_to_place", 0.9, grasp_detail)
-            self.arm.send_named("reset_to_place", "place_pose_deg")
+            self.publish_feedback(goal_handle, "reset_to_home", 0.9, grasp_detail)
+            self.arm.send_named("reset_to_home", "home_pose_deg")
 
         result.success = bool(object_grasped)
         result.object_grasped = bool(object_grasped)
