@@ -43,6 +43,8 @@ from .models import (
     RosConnectionResponse,
     SaveMapRequest,
     SaveMapResponse,
+    SearchRetrieveRequest,
+    SearchRetrieveStatusResponse,
     ServiceDescriptor,
     SettingsModel,
     UiBridgeHealth,
@@ -433,6 +435,27 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/nav/cancel", response_model=RosActionResponse)
     async def ros_nav_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.cancel_nav_goal())
+
+    @app.post("/api/ros/search_retrieve/start", response_model=RosActionResponse)
+    async def ros_search_retrieve_start(request: SearchRetrieveRequest) -> RosActionResponse:
+        await run_ros(lambda client: client.start_search_retrieve(
+            request.target_id, request.home_pose_x, request.home_pose_y, request.home_pose_yaw
+        ))
+        return RosActionResponse(ok=True, action="search_retrieve_start", message="search and retrieve task started")
+
+    @app.post("/api/ros/search_retrieve/cancel", response_model=RosActionResponse)
+    async def ros_search_retrieve_cancel() -> RosActionResponse:
+        await run_ros(lambda client: client.cancel_search_retrieve())
+        return RosActionResponse(ok=True, action="search_retrieve_cancel", message="search and retrieve task canceled")
+
+    @app.get("/api/ros/search_retrieve/status", response_model=SearchRetrieveStatusResponse)
+    async def ros_search_retrieve_status() -> SearchRetrieveStatusResponse:
+        result = await run_ros(lambda client: client.get_search_retrieve_status())
+        return SearchRetrieveStatusResponse(**result)
+
+    @app.get("/api/ros/semantic_memory")
+    async def ros_semantic_memory() -> dict:
+        return await run_ros(lambda client: client.get_semantic_memory())
 
     @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
     async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:

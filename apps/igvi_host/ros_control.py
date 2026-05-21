@@ -76,6 +76,37 @@ class RobotBridgeClient:
         )
         return RosActionResponse(ok=True, action="initial_pose", message="initial pose published")
 
+    async def start_search_retrieve(self, target_id: str, home_pose_x: float, home_pose_y: float, home_pose_yaw: float) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._bridge_post, "/api/search_retrieve/start",
+            {"target_id": target_id, "home_pose_x": home_pose_x, "home_pose_y": home_pose_y, "home_pose_yaw": home_pose_yaw},
+        )
+
+    async def cancel_search_retrieve(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/search_retrieve/cancel", {})
+
+    async def get_search_retrieve_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_search_retrieve_status)
+
+    def _fetch_search_retrieve_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/search_retrieve/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_semantic_memory(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_semantic_memory)
+
+    def _fetch_semantic_memory(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/semantic_memory"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
 

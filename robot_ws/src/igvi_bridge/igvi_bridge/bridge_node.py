@@ -23,6 +23,7 @@ from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from wildbot_grasp.action import SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
@@ -68,6 +69,13 @@ class BridgeNode(Node):
         self._nav_goal_handle = None
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
+
+        self._search_lock = threading.Lock()
+        self._search_state: str = "idle"
+        self._search_message: str = ""
+        self._search_goal_handle = None
+        self._search_goal: dict[str, Any] | None = None
+        self._search_feedback: dict[str, Any] = {}
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
@@ -140,6 +148,9 @@ class BridgeNode(Node):
         # Used by save_map() to freeze the live mapping into arena_map.db.
         self._rtabmap_backup_client = self.create_client(EmptySrv, "/rtabmap/backup")
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self._search_client = ActionClient(self, SearchAndRetrieve, "search_retrieve")
+        self._semantic_memory: dict = {}
+        self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
         # Relay motion_arbiter's /cmd_vel (TwistStamped) to /base_controller/cmd_vel.
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_nav_cmd_vel_stamped, 10)
         # Track latest arbiter state for HTTP diagnostics.
@@ -552,6 +563,106 @@ class BridgeNode(Node):
         payload["fusion_sources"] = self.snapshot_fusion_sources()
         return payload
 
+    # ── Search and Retrieve ──────────────────────────────────────────────────
+
+    def _update_search_state(self, state: str, message: str) -> None:
+        with self._search_lock:
+            self._search_state = state
+            self._search_message = message
+        self.get_logger().info(f"Search state: {state} — {message}")
+
+    def send_search_goal(self, target_id: str, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        if not self._search_client.server_is_ready():
+            if not self._search_client.wait_for_server(timeout_sec=2.0):
+                self._update_search_state("unavailable", "Search server offline")
+                return False, "Search server offline"
+        goal_msg = SearchAndRetrieve.Goal()
+        goal_msg.target_id = str(target_id)
+        goal_msg.home_pose_x = float(x)
+        goal_msg.home_pose_y = float(y)
+        goal_msg.home_pose_yaw = float(yaw)
+        with self._search_lock:
+            self._search_goal = {"target_id": target_id, "home_pose_x": x, "home_pose_y": y, "home_pose_yaw": yaw}
+            self._search_feedback = {}
+        self._update_search_state("sending", "goal dispatched")
+        future = self._search_client.send_goal_async(goal_msg, feedback_callback=self._on_search_feedback)
+        future.add_done_callback(self._on_search_response)
+        return True, "goal dispatched"
+
+    def cancel_search_goal(self) -> tuple[bool, str]:
+        with self._search_lock:
+            handle = self._search_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_search_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_search_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_search(self) -> dict[str, Any]:
+        with self._search_lock:
+            return {
+                "state": self._search_state,
+                "message": self._search_message,
+                "goal": dict(self._search_goal) if self._search_goal else None,
+                "feedback": dict(self._search_feedback),
+                "server_ready": self._search_client.server_is_ready(),
+            }
+
+    def _on_search_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._search_lock:
+            self._search_feedback = {
+                "stage": fb.stage,
+                "progress": float(fb.progress),
+                "detail": fb.detail,
+            }
+
+    def _on_search_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._update_search_state("idle", "goal rejected")
+            return
+        with self._search_lock:
+            self._search_goal_handle = goal_handle
+        self._update_search_state("active", "goal accepted")
+        res_future = goal_handle.get_result_async()
+        res_future.add_done_callback(self._on_search_result)
+
+    def _on_search_result(self, future) -> None:
+        result = future.result()
+        status = result.status
+        with self._search_lock:
+            self._search_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            msg = result.result.message if hasattr(result.result, "message") else "succeeded"
+            self._update_search_state("idle", f"success: {msg}")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._update_search_state("idle", "canceled")
+        elif status == GoalStatus.STATUS_ABORTED:
+            msg = result.result.message if hasattr(result.result, "message") else "aborted"
+            self._update_search_state("idle", f"aborted: {msg}")
+        else:
+            self._update_search_state("idle", f"completed with status {status}")
+
+    def _on_search_cancel_response(self, future) -> None:
+        response = future.result()
+        if len(response.goals_canceling) > 0:
+            self._update_search_state("idle", "cancel accepted")
+        else:
+            self._update_search_state("active", "cancel rejected")
+
+    # ── Semantic Memory ──────────────────────────────────────────────────────
+
+    def _on_semantic_memory(self, msg: String) -> None:
+        try:
+            self._semantic_memory = json.loads(msg.data)
+        except Exception:
+            pass
+
+    def snapshot_semantic_memory(self) -> dict[str, Any]:
+        return self._semantic_memory
+
     # ── EKF fusion source freshness ──────────────────────────────────────────
 
     def _on_wheel_freshness(self, _msg: Odometry) -> None:
@@ -794,6 +905,10 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_health())
             elif path == "/api/nav/status":
                 self._json(node.snapshot_nav())
+            elif path == "/api/semantic_memory":
+                self._json(node.snapshot_semantic_memory())
+            elif path == "/api/search_retrieve/status":
+                self._json(node.snapshot_search())
             elif path == "/api/waypoints":
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
@@ -873,6 +988,17 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/nav/cancel":
                 ok, msg = node.cancel_nav_goal()
                 self._json({"ok": ok, "action": "nav_cancel", "message": msg})
+            elif path == "/api/search_retrieve/start":
+                ok, msg = node.send_search_goal(
+                    str(body.get("target_id", "")),
+                    float(body.get("home_pose_x", 0.0)),
+                    float(body.get("home_pose_y", 0.0)),
+                    float(body.get("home_pose_yaw", 0.0)),
+                )
+                self._json({"ok": ok, "action": "search_start", "message": msg})
+            elif path == "/api/search_retrieve/cancel":
+                ok, msg = node.cancel_search_goal()
+                self._json({"ok": ok, "action": "search_cancel", "message": msg})
             elif path == "/api/waypoints/save":
                 x = body.get("x")
                 y = body.get("y")

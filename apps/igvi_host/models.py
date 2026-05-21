@@ -161,6 +161,21 @@ class NavGoalRequest(BaseModel):
     yaw: float = 0.0
 
 
+class SearchRetrieveRequest(BaseModel):
+    target_id: str
+    home_pose_x: float
+    home_pose_y: float
+    home_pose_yaw: float = 0.0
+
+
+class SearchRetrieveStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
 class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 
