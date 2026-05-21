@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import rclpy
+import tf2_ros
+from tf2_ros import TransformException
 import yaml
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
@@ -118,16 +120,12 @@ class BridgeNode(Node):
         )
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
-        self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
-        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self.create_timer(0.05, self._update_pose_from_tf)
+        
         self.create_subscription(Float64MultiArray, "/arm_joint_temperatures", self._on_arm_temperatures, 10)
-        # RTAB-Map publishes this only after visual loop closure confirms the
-        # robot's location on the saved map. Highest priority because it's the
-        # only map-frame pose when no AMCL/lidar is in the loop.
-        self.create_subscription(
-            PoseWithCovarianceStamped, "/rtabmap/localization_pose",
-            self._on_rtabmap_loc, 10,
-        )
 
         # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
@@ -172,36 +170,28 @@ class BridgeNode(Node):
                 "data": list(msg.data),
             }
 
-    def _on_odom(self, msg: Odometry) -> None:
-        if self._pose_source in ("amcl", "rtabmap_loc"):
-            return
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "odom"
-
-    def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
-        if self._pose_source == "rtabmap_loc":
-            return
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "amcl"
-
-    def _on_rtabmap_loc(self, msg: PoseWithCovarianceStamped) -> None:
-        with self._lock:
-            self._pose = _pose_from_q(
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.orientation,
-            )
-            self._pose_source = "rtabmap_loc"
+    def _update_pose_from_tf(self) -> None:
+        try:
+            t = self._tf_buffer.lookup_transform("map", "base_link", rclpy.time.Time())
+            with self._lock:
+                self._pose = _pose_from_q(
+                    t.transform.translation.x,
+                    t.transform.translation.y,
+                    t.transform.rotation,
+                )
+                self._pose_source = "tf_map"
+        except TransformException:
+            try:
+                t = self._tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time())
+                with self._lock:
+                    self._pose = _pose_from_q(
+                        t.transform.translation.x,
+                        t.transform.translation.y,
+                        t.transform.rotation,
+                    )
+                    self._pose_source = "tf_odom"
+            except TransformException:
+                pass
 
     def _on_nav_cmd_vel_stamped(self, msg: TwistStamped) -> None:
         # Re-stamp before forwarding so the wheel controller's cmd_vel_timeout
