@@ -29,6 +29,7 @@ class GrabObjectServer(Node):
         self.declare_parameter("gripper_resume_temp_c", 65.0)
         self.declare_parameter("initial_pose_on_start", True)
         self.declare_parameter("initial_pose_delay_sec", 1.0)
+        self.declare_parameter("release_after_grasp", False)
 
         self.latest_joint_state = None
         self.latest_temperatures = None
@@ -335,11 +336,6 @@ class GrabObjectServer(Node):
         place_pose = self.arm.pose_deg("place_pose_deg")
         return [grasp_pose[0], grasp_pose[1], place_pose[2]]
 
-    def place_holding_pose_deg(self):
-        grasp_pose = self.arm.pose_deg("grasp_pose_deg")
-        place_pose = self.arm.pose_deg("place_pose_deg")
-        return [place_pose[0], place_pose[1], grasp_pose[2]]
-
     def execute_callback(self, goal_handle):
         result = GrabObject.Result()
         goal = goal_handle.request
@@ -425,29 +421,37 @@ class GrabObjectServer(Node):
                     self.publish_feedback(goal_handle, "retry", 0.58, f"not grasped; retrying. {attempt_details[-1]}")
                 continue
 
-            self.publish_feedback(goal_handle, "move_to_place_holding", 0.72, "grasp detected; moving to place pose while keeping gripper closed")
-            place_holding_pose_rad = self.arm.send_degrees("move_to_place_holding", self.place_holding_pose_deg())
+            self.publish_feedback(
+                goal_handle,
+                "move_to_carry_holding",
+                0.72,
+                "grasp detected; moving to carry pose while keeping gripper closed",
+            )
+            carry_pose_rad = self.arm.send_named("move_to_carry_holding", "carry_pose_deg")
             self.publish_feedback(
                 goal_handle,
                 "gripper_angle",
                 0.8,
-                f"attempt {attempt}/{max_attempts}: {self.gripper_position_detail('after move_to_place_holding')}",
+                f"attempt {attempt}/{max_attempts}: {self.gripper_position_detail('after move_to_carry_holding')}",
             )
 
-            self.publish_feedback(goal_handle, "verify_at_place", 0.84, "checking object is still held before release")
-            object_grasped, carry_detail = self.detect_grasp(place_holding_pose_rad[2], open_gripper_rad)
-            attempt_details.append(f"attempt {attempt}/{max_attempts} place check: {carry_detail}")
+            self.publish_feedback(goal_handle, "verify_at_carry", 0.84, "checking object is still held in carry pose")
+            object_grasped, carry_detail = self.detect_grasp(carry_pose_rad[2], open_gripper_rad)
+            attempt_details.append(f"attempt {attempt}/{max_attempts} carry check: {carry_detail}")
             grasp_detail = carry_detail
 
             if object_grasped:
-                self.publish_feedback(goal_handle, "release_at_place", 0.92, "object still held; opening gripper at place pose")
-                self.arm.send_named("release_at_place", "place_pose_deg")
-                self.publish_feedback(goal_handle, "return_home_after_release", 0.97, "object released; returning arm to home pose")
-                self.arm.send_named("return_home_after_release", "home_pose_deg")
+                if bool(self.get_parameter("release_after_grasp").value):
+                    self.publish_feedback(goal_handle, "release_at_place", 0.92, "object still held; opening gripper at place pose")
+                    self.arm.send_named("release_at_place", "place_pose_deg")
+                    self.publish_feedback(goal_handle, "return_home_after_release", 0.97, "object released; returning arm to home pose")
+                    self.arm.send_named("return_home_after_release", "home_pose_deg")
+                else:
+                    self.publish_feedback(goal_handle, "hold_for_navigation", 0.97, "object held; staying in carry pose for navigation")
                 break
 
             if attempt < max_attempts:
-                self.publish_feedback(goal_handle, "retry", 0.88, f"object was not held at place; retrying. {attempt_details[-1]}")
+                self.publish_feedback(goal_handle, "retry", 0.88, f"object was not held at carry pose; retrying. {attempt_details[-1]}")
 
         if goal_handle.is_cancel_requested:
             goal_handle.canceled()

@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="run the usual grasp diagnostics").set_defaults(func=check)
 
     gripper_parser = sub.add_parser("gripper", help="test only the gripper command")
-    gripper_parser.add_argument("command", choices=["open", "close"])
+    gripper_parser.add_argument("command", choices=["open", "close", "home", "place", "release", "carry", "hold", "grasp"])
     gripper_parser.set_defaults(func=gripper)
 
     return parser

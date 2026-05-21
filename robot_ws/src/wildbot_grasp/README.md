@@ -12,11 +12,12 @@ Kinect + YOLO 偵測熊
 -> 距離 > 0.24 m 時用 /motion/cmd 靠近，並同步做 X 軸置中輔助
 -> 距離 <= 0.24 m 時停車
 -> 立即呼叫 /grab_object action
--> grab_object_server 執行開爪、關爪、檢查、放置、回 home
+-> grab_object_server 執行開爪、關爪、檢查
+-> 夾到後移到 carry pose `[190.0, 0.0, 170.6]`，保持夾爪關閉等待導航
 -> 抓失敗時後退 0.8 秒，再重新靠近重抓
 ```
 
-成功抓取一次後，任務會停在 `succeeded`，不會自動找下一隻。要再抓一次，先 `stop` 再 `start`。
+成功抓取一次後，任務會停在 `succeeded`，手臂保持 carry pose 並夾著熊，不會自動找下一隻。要再抓一次，先 `stop` 再 `start`。
 
 ## 一行啟動
 
@@ -67,6 +68,12 @@ python3 robot_ws/src/wildbot_grasp/tools/grasp.py logs --tail 200
 
 ```bash
 python3 robot_ws/src/wildbot_grasp/tools/grasp.py stop
+```
+
+手動測 carry pose：
+
+```bash
+python3 robot_ws/src/wildbot_grasp/tools/grasp.py gripper carry
 ```
 
 改過 `.env`、compose、或需要清掉舊 container 狀態時：
@@ -227,6 +234,7 @@ docker compose --env-file docker/compose/.env -f docker/compose/compose.yaml exe
 | Pose | arm_1 | arm_2 | gripper | 用途 |
 |---|---:|---:|---:|---|
 | `grasp_pose_deg` | 167.0 | 75.0 | 170.6 | 夾取位置，關爪 |
+| `carry_pose_deg` | 190.0 | 0.0 | 170.6 | 夾到後導航返回用的抱熊姿勢，保持關爪 |
 | `place_pose_deg` | 120.0 | 75.0 | 239.0 | 放置位置，開爪/放開 |
 | `home_pose_deg` | 190.0 | 0.0 | 240.0 | 啟動初始位置、放熊後最後回來的位置 |
 
@@ -236,10 +244,12 @@ docker compose --env-file docker/compose/.env -f docker/compose/compose.yaml exe
 initial_home       = [190.0, 0.0, 240.0]
 open_at_grasp     = [167.0, 75.0, 239.0]
 close_at_grasp    = [167.0, 75.0, 170.6]
-place_holding     = [120.0, 75.0, 170.6]
-release_at_place  = [120.0, 75.0, 239.0]
-return_home_final = [190.0, 0.0, 240.0]
+carry_holding     = [190.0, 0.0, 170.6]
+release_at_place  = [120.0, 75.0, 239.0]  # optional/manual release
+return_home_final = [190.0, 0.0, 240.0]   # after release
 ```
+
+`place_pose_deg` 保留為放熊/開爪位置，不拿來當導航抱熊姿勢。`release_after_grasp=false` 時，`/grab_object` 成功後會停在 `carry_pose_deg` 並保持夾爪關閉；如果之後需要恢復「抓到就放」的舊測試流程，可以把 `GRASP_RELEASE_AFTER_GRASP=true` 傳給 `grab_object_server`。
 
 ## Safety
 
