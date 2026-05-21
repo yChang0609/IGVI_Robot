@@ -17,7 +17,7 @@ from .motion import ArmCommander
 class GrabObjectServer(Node):
     def __init__(self):
         super().__init__("grab_object_server")
-        self.declare_parameter("grasp_detect_min_error_deg", 5.0)
+        self.declare_parameter("grasp_detect_min_error_deg", 2.5)
         self.declare_parameter("grasp_detect_min_close_motion_deg", 5.0)
         self.declare_parameter("grasp_detect_settle_sec", 1.0)
         self.declare_parameter("grasp_check_timeout_sec", 1.5)

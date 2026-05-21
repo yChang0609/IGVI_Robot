@@ -224,9 +224,8 @@ class BearGraspTaskNode(Node):
         self._publish_state_periodic()
         if not self.active or self.goal_in_flight:
             return
-        if self.state == TaskState.IDLE:
-            return
-        if self.state == TaskState.SUCCEEDED:
+        if self.state in (TaskState.IDLE, TaskState.SUCCEEDED, TaskState.FAILED,
+                          TaskState.BACKING_UP, TaskState.REALIGNING):
             return
 
         detection = self._fresh_detection()
