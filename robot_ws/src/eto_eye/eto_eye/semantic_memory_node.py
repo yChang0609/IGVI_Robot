@@ -9,6 +9,8 @@ import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 from std_msgs.msg import String
 from sensor_msgs.msg import CameraInfo, Image
@@ -52,11 +54,16 @@ class SemanticMemoryNode(Node):
         self.camera_info_received = False
         self.latest_depth_img = None
         self.camera_frame_id = None
+        self.latest_depth_stamp = None
 
         # 記憶體結構 { object_id: {"class_name": str, "x": float, "y": float, "z": float, "last_seen": float, "hits": int} }
         self.memory = {}
+        self.memory_lock = __import__('threading').Lock()
 
         # === 訂閱與發布 ===
+        # 建立一個允許平行處理的群組
+        self.callback_group = ReentrantCallbackGroup()
+
         self.create_subscription(
             CameraInfo, 
             self.get_parameter('camera_info_topic').value, 
@@ -67,7 +74,8 @@ class SemanticMemoryNode(Node):
             String, 
             self.get_parameter('detection_topic').value, 
             self.detection_callback, 
-            10
+            10,
+            callback_group=self.callback_group
         )
         self.create_subscription(
             Image, 
@@ -98,6 +106,9 @@ class SemanticMemoryNode(Node):
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         self.latest_depth_img = np.asarray(cv_image)
         self.camera_frame_id = msg.header.frame_id
+        
+        # [新增] 把這張深度圖專屬的時間戳記存下來
+        self.latest_depth_stamp = msg.header.stamp
 
     def detection_callback(self, msg: String):
         if not self.camera_info_received:
@@ -114,14 +125,16 @@ class SemanticMemoryNode(Node):
             return
 
         msg_time = Time(seconds=data['stamp']['sec'], nanoseconds=data['stamp']['nanosec'])
-        now_sec = time.time()
+        # 改用 YOLO 影像本身的「精準時間」，取代電腦的處理時間
+        now_sec = msg_time.nanoseconds / 1e9
 
         try:
+            # 改回 msg_time，並給予 0.5 秒的耐心等待 SLAM 更新
             transform = self.tf_buffer.lookup_transform(
-                self.target_frame, frame_id, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.05)
+                self.target_frame, frame_id, msg_time, timeout=rclpy.duration.Duration(seconds=0.5)
             )
         except TransformException as ex:
-            self.get_logger().warning(f"【TF 轉換失敗】 無法將 {frame_id} 轉換到 {self.target_frame}。詳細原因: {ex}")
+            self.get_logger().warning(f"【TF 等待超時】 無法取得精準對齊的座標: {ex}")
             return
 
         for det in detections:
@@ -157,122 +170,126 @@ class SemanticMemoryNode(Node):
         # self.publish_memory()  <--- 【刪除或註解這一行！】
 
     def associate_and_update(self, class_name, x, y, z, now_sec, score):
-        closest_id = None
-        min_dist = float('inf')
-
-        for obj_id, obj_data in self.memory.items():
-            if obj_data['class_name'] == class_name:
-                dist = math.sqrt((obj_data['x']-x)**2 + (obj_data['y']-y)**2 + (obj_data['z']-z)**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_id = obj_id
-
-        if closest_id is not None and min_dist < self.dist_thresh:
-            self.memory[closest_id]['x'] = self.alpha * x + (1 - self.alpha) * self.memory[closest_id]['x']
-            self.memory[closest_id]['y'] = self.alpha * y + (1 - self.alpha) * self.memory[closest_id]['y']
-            self.memory[closest_id]['z'] = self.alpha * z + (1 - self.alpha) * self.memory[closest_id]['z']
-            self.memory[closest_id]['last_seen'] = now_sec
-            self.memory[closest_id]['hits'] += 1
-            old_score = self.memory[closest_id].get('score', score)
-            self.memory[closest_id]['score'] = 0.5 * score + 0.5 * old_score
-        else:
-            new_id = str(uuid.uuid4())[:8]
-            self.memory[new_id] = {
-                'class_name': class_name, 'x': x, 'y': y, 'z': z, 'last_seen': now_sec, 'hits': 1, 'score': score
-            }
+        with self.memory_lock:
+            closest_id = None
+            min_dist = float('inf')
+    
+            for obj_id, obj_data in self.memory.items():
+                if obj_data['class_name'] == class_name:
+                    dist = math.sqrt((obj_data['x']-x)**2 + (obj_data['y']-y)**2 + (obj_data['z']-z)**2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_id = obj_id
+    
+            if closest_id is not None and min_dist < self.dist_thresh:
+                self.memory[closest_id]['x'] = self.alpha * x + (1 - self.alpha) * self.memory[closest_id]['x']
+                self.memory[closest_id]['y'] = self.alpha * y + (1 - self.alpha) * self.memory[closest_id]['y']
+                self.memory[closest_id]['z'] = self.alpha * z + (1 - self.alpha) * self.memory[closest_id]['z']
+                self.memory[closest_id]['last_seen'] = now_sec
+                self.memory[closest_id]['hits'] += 1
+                old_score = self.memory[closest_id].get('score', score)
+                self.memory[closest_id]['score'] = 0.5 * score + 0.5 * old_score
+            else:
+                new_id = str(uuid.uuid4())[:8]
+                self.memory[new_id] = {
+                    'class_name': class_name, 'x': x, 'y': y, 'z': z, 'last_seen': now_sec, 'hits': 1, 'score': score
+                }
 
     def cleanup_memory(self):
-        if self.latest_depth_img is None or self.camera_frame_id is None or not self.camera_info_received:
+        if self.latest_depth_img is None or self.camera_frame_id is None or not self.camera_info_received or self.latest_depth_stamp is None:
             return
 
-        now_sec = time.time()
+        # 這裡改用 ROS 專屬時鐘，確保支援 Gazebo 模擬時間與 Rosbag 暫停
+        now_sec = self.get_clock().now().nanoseconds / 1e9
         expired_ids = []
         img_height, img_width = self.latest_depth_img.shape[:2]
 
         try:
-            # 取得「當下」的座標狀態，用來判定視野
+            # [修改] 使用深度圖的專屬時間去查 TF，達到 100% 時空對齊
             transform_world_to_cam = self.tf_buffer.lookup_transform(
-                self.camera_frame_id, self.target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5)
+                self.camera_frame_id, self.target_frame, self.latest_depth_stamp, timeout=rclpy.duration.Duration(seconds=0.5)
             )
         except TransformException as e:
             # === 抓出兇手 3：如果 TF 失敗，印出警告 ===
             self.get_logger().warning(f"【清理異常】 TF 轉換失敗，暫停清理記憶: {e}")
             return
 
-        for obj_id, obj_data in self.memory.items():
-            time_since_last_seen = now_sec - obj_data['last_seen']
-            if time_since_last_seen < 2.0:
-                continue # 容錯期
+        with self.memory_lock:
+            for obj_id, obj_data in self.memory.items():
+                time_since_last_seen = now_sec - obj_data['last_seen']
+                if time_since_last_seen < 2.0:
+                    continue # 容錯期
+                    
+                # === 修復兇手 1：拿掉 * 5，只要超過 600 秒沒更新就強制刪除 ===
+                if time_since_last_seen > self.timeout_sec:
+                    self.get_logger().debug(f"【超時遺忘】 {obj_data['class_name']} [{obj_id}] 超過 600 秒未見，強制刪除！")
+                    expired_ids.append(obj_id) 
+                    continue
+    
+                point_world = PointStamped()
+                point_world.header.frame_id = self.target_frame
+                point_world.point.x, point_world.point.y, point_world.point.z = obj_data['x'], obj_data['y'], obj_data['z']
                 
-            # === 修復兇手 1：拿掉 * 5，只要超過 600 秒沒更新就強制刪除 ===
-            if time_since_last_seen > self.timeout_sec:
-                self.get_logger().debug(f"【超時遺忘】 {obj_data['class_name']} [{obj_id}] 超過 600 秒未見，強制刪除！")
-                expired_ids.append(obj_id) 
-                continue
-
-            point_world = PointStamped()
-            point_world.header.frame_id = self.target_frame
-            point_world.point.x, point_world.point.y, point_world.point.z = obj_data['x'], obj_data['y'], obj_data['z']
-            
-            point_cam = tf2_geometry_msgs.do_transform_point(point_world, transform_world_to_cam)
-            cam_x, cam_y, cam_z = point_cam.point.x, point_cam.point.y, point_cam.point.z
-
-            if cam_z <= 0.1:
-                continue # 在相機背後
-
-            u, v = self.cam_model.project3dToPixel((cam_x, cam_y, cam_z))
-            u, v = int(round(u)), int(round(v))
-
-            margin = 30 
-            if margin <= u < img_width - margin and margin <= v < img_height - margin:
-                v_start = max(0, v - 2)
-                v_end = min(img_height, v + 3)
-                u_start = max(0, u - 2)
-                u_end = min(img_width, u + 3)
-                roi = self.latest_depth_img[v_start:v_end, u_start:u_end].astype(np.float32)
-                valid_depths = roi[(roi > 0) & np.isfinite(roi)] * self.depth_scale
-                
-                # ==== 修正的邏輯區塊 ====
-                if valid_depths.size > 0:
-                    actual_depth = np.median(valid_depths)
-                    if actual_depth < cam_z - 0.1:
-                        self.get_logger().debug(f"【保留記憶】 {obj_data['class_name']} [{obj_id}] 疑似被前方物體遮擋。")
-                        continue # 被前方物體遮擋，保留記憶
-
-                    # 只有在「確定測到有效深度，且沒有被遮擋」的情況下，才確認消失
-                    self.get_logger().debug(f"【確認消失】 視野內該位置已淨空，立刻刪除 {obj_data['class_name']} [{obj_id}]！")
-                    expired_ids.append(obj_id)
+                point_cam = tf2_geometry_msgs.do_transform_point(point_world, transform_world_to_cam)
+                cam_x, cam_y, cam_z = point_cam.point.x, point_cam.point.y, point_cam.point.z
+    
+                if cam_z <= 0.1:
+                    continue # 在相機背後
+    
+                u, v = self.cam_model.project3dToPixel((cam_x, cam_y, cam_z))
+                u, v = int(round(u)), int(round(v))
+    
+                margin = 30 
+                if margin <= u < img_width - margin and margin <= v < img_height - margin:
+                    v_start = max(0, v - 2)
+                    v_end = min(img_height, v + 3)
+                    u_start = max(0, u - 2)
+                    u_end = min(img_width, u + 3)
+                    roi = self.latest_depth_img[v_start:v_end, u_start:u_end].astype(np.float32)
+                    valid_depths = roi[(roi > 0) & np.isfinite(roi)] * self.depth_scale
+                    
+                    # ==== 修正的邏輯區塊 ====
+                    if valid_depths.size > 0:
+                        actual_depth = np.median(valid_depths)
+                        if actual_depth < cam_z - 0.1:
+                            self.get_logger().debug(f"【保留記憶】 {obj_data['class_name']} [{obj_id}] 疑似被前方物體遮擋。")
+                            continue # 被前方物體遮擋，保留記憶
+    
+                        # 只有在「確定測到有效深度，且沒有被遮擋」的情況下，才確認消失
+                        self.get_logger().debug(f"【確認消失】 視野內該位置已淨空，立刻刪除 {obj_data['class_name']} [{obj_id}]！")
+                        expired_ids.append(obj_id)
+                    else:
+                        # 深度圖在該位置剛好破洞、反光或超出感測範圍
+                        # 為了安全起見，我們假裝沒看見，讓它繼續保留在記憶裡，等待 10 秒超時
+                        # self.get_logger().debug(f"【深度無效】 {obj_data['class_name']} [{obj_id}] 無法判斷是否消失。")
+                        pass
                 else:
-                    # 深度圖在該位置剛好破洞、反光或超出感測範圍
-                    # 為了安全起見，我們假裝沒看見，讓它繼續保留在記憶裡，等待 10 秒超時
-                    # self.get_logger().debug(f"【深度無效】 {obj_data['class_name']} [{obj_id}] 無法判斷是否消失。")
+                    # 不在視野內，保留等待 timeout_sec (10秒)
                     pass
-            else:
-                # 不在視野內，保留等待 timeout_sec (10秒)
-                pass
         
-        for obj_id in expired_ids:
-            if obj_id in self.memory:
-                del self.memory[obj_id]
+            for obj_id in expired_ids:
+                if obj_id in self.memory:
+                    del self.memory[obj_id]
 
     def publish_memory(self):
         memory_list = []
         
-        # === Debug 發布檢查 ===
-        self.get_logger().debug(f"【Debug 發布檢查】 當前記憶庫共有 {len(self.memory)} 個物件")
-        
-        for obj_id, obj_data in self.memory.items():
-            self.get_logger().debug(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
+        with self.memory_lock:
+            # === Debug 發布檢查 ===
+            self.get_logger().debug(f"【Debug 發布檢查】 當前記憶庫共有 {len(self.memory)} 個物件")
             
-            # 目前設定為 hits >= 1 (看過 1 次就發布，方便 Debug)
-            # 等系統穩定後，建議改回 3 以過濾閃爍雜訊
-            if obj_data['hits'] >= 1:
-                memory_list.append({
-                    "id": obj_id, 
-                    "class_name": obj_data['class_name'],
-                    "score": obj_data.get('score', 0.0),
-                    "position": {"x": obj_data['x'], "y": obj_data['y'], "z": obj_data['z']}
-                })
+            for obj_id, obj_data in self.memory.items():
+                self.get_logger().debug(f"  -> {obj_data['class_name']} [{obj_id}]: hits={obj_data['hits']}, 座標=({obj_data['x']:.2f}, {obj_data['y']:.2f}, {obj_data['z']:.2f})")
+                
+                # 目前設定為 hits >= 1 (看過 1 次就發布，方便 Debug)
+                # 等系統穩定後，建議改回 3 以過濾閃爍雜訊
+                if obj_data['hits'] >= 1:
+                    memory_list.append({
+                        "id": obj_id, 
+                        "class_name": obj_data['class_name'],
+                        "score": obj_data.get('score', 0.0),
+                        "position": {"x": obj_data['x'], "y": obj_data['y'], "z": obj_data['z']}
+                    })
 
         # === 1. 發布 JSON 訊息 ===
         msg = String()
@@ -282,60 +299,66 @@ class SemanticMemoryNode(Node):
         # === 2. 發布 RViz Marker ===
         marker_array = MarkerArray()
 
-        for obj_id, obj_data in self.memory.items():
-            if obj_data['hits'] < 1: 
-                continue
-
-            # 產生穩定的整數 ID，確保 RViz 知道這是同一個物件，直接覆蓋更新而不產生殘影
-            stable_int_id = hash(obj_id) % 2147483647 
-
-            # --- 球體 Marker ---
-            m = Marker()
-            m.header.frame_id = self.target_frame
-            m.header.stamp = self.get_clock().now().to_msg()
-            m.ns = "semantic_objects"
-            m.id = stable_int_id
-            m.type = Marker.SPHERE
-            m.action = Marker.ADD  
-            m.pose.position.x = obj_data['x']
-            m.pose.position.y = obj_data['y']
-            m.pose.position.z = obj_data['z']
-            m.scale.x = m.scale.y = m.scale.z = 0.15 # 15 公分大小
-            m.color.a = 0.8
-            m.color.r = 0.0
-            m.color.g = 1.0
-            m.color.b = 0.0
-            # 加入壽命：10 秒內沒收到新的更新，RViz 就會自動刪除它
-            m.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg()
-
-            # --- 文字標籤 Marker ---
-            t = Marker()
-            t.header = m.header
-            t.ns = "semantic_labels"
-            t.id = stable_int_id + 1000000  # 文字的 ID 加上偏移量避免與球體 ID 衝突
-            t.type = Marker.TEXT_VIEW_FACING
-            t.action = Marker.ADD
-            t.pose.position.x = obj_data['x']
-            t.pose.position.y = obj_data['y']
-            t.pose.position.z = obj_data['z'] + 0.2 # 浮在球體正上方 20 公分處
-            t.scale.z = 0.1
-            t.color.a = 1.0
-            t.color.r = 1.0
-            t.color.g = 1.0
-            t.color.b = 1.0
-            t.text = f"{obj_data['class_name']} ({obj_data.get('score', 0.0):.2f})"
-            t.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg() # 同樣加上 10 秒壽命
-
-            marker_array.markers.append(m)
-            marker_array.markers.append(t)
+        with self.memory_lock:
+            for obj_id, obj_data in self.memory.items():
+                if obj_data['hits'] < 1: 
+                    continue
+    
+                # 產生穩定的整數 ID，確保 RViz 知道這是同一個物件，直接覆蓋更新而不產生殘影
+                stable_int_id = hash(obj_id) % 2147483647 
+    
+                # --- 球體 Marker ---
+                m = Marker()
+                m.header.frame_id = self.target_frame
+                m.header.stamp = self.get_clock().now().to_msg()
+                m.ns = "semantic_objects"
+                m.id = stable_int_id
+                m.type = Marker.SPHERE
+                m.action = Marker.ADD  
+                m.pose.position.x = obj_data['x']
+                m.pose.position.y = obj_data['y']
+                m.pose.position.z = obj_data['z']
+                m.scale.x = m.scale.y = m.scale.z = 0.15 # 15 公分大小
+                m.color.a = 0.8
+                m.color.r = 0.0
+                m.color.g = 1.0
+                m.color.b = 0.0
+                # 加入壽命：10 秒內沒收到新的更新，RViz 就會自動刪除它
+                m.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg()
+    
+                # --- 文字標籤 Marker ---
+                t = Marker()
+                t.header = m.header
+                t.ns = "semantic_labels"
+                t.id = stable_int_id + 1000000  # 文字的 ID 加上偏移量避免與球體 ID 衝突
+                t.type = Marker.TEXT_VIEW_FACING
+                t.action = Marker.ADD
+                t.pose.position.x = obj_data['x']
+                t.pose.position.y = obj_data['y']
+                t.pose.position.z = obj_data['z'] + 0.2 # 浮在球體正上方 20 公分處
+                t.scale.z = 0.1
+                t.color.a = 1.0
+                t.color.r = 1.0
+                t.color.g = 1.0
+                t.color.b = 1.0
+                t.text = f"{obj_data['class_name']} ({obj_data.get('score', 0.0):.2f})"
+                t.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg() # 同樣加上 10 秒壽命
+    
+                marker_array.markers.append(m)
+                marker_array.markers.append(t)
 
         self.marker_pub.publish(marker_array)
 
 def main(args=None):
     rclpy.init(args=args)
     node = SemanticMemoryNode()
+    
+    # 啟用多執行緒引擎，讓 TF 接收與 Callback 等待可以同時進行
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
