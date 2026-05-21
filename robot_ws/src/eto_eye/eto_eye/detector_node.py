@@ -71,6 +71,7 @@ class DetectorNode(Node):
         self.declare_parameter("input_size", 640)
         self.declare_parameter("conf_threshold", 0.25)
         self.declare_parameter("iou_threshold", 0.45)
+        self.declare_parameter("class_filter", os.getenv("CLASS_FILTER", ""))
 
         model_path = Path(self.get_parameter("model_path").value)
         if not model_path.is_file():
@@ -83,6 +84,9 @@ class DetectorNode(Node):
         self.input_size = int(self.get_parameter("input_size").value)
         self.conf_threshold = float(self.get_parameter("conf_threshold").value)
         self.iou_threshold = float(self.get_parameter("iou_threshold").value)
+        self.class_filter = self._parse_class_filter(
+            self.get_parameter("class_filter").value
+        )
         self.output_format = self.get_parameter("output_format").value
         self.enable_annotated_image = bool(
             self.get_parameter("enable_annotated_image").value
@@ -132,6 +136,13 @@ class DetectorNode(Node):
         self.get_logger().info(f"Active providers: {active}")
         if self.class_names:
             self.get_logger().info(f"Class names: {self.class_names}")
+        if self.class_filter:
+            filtered_names = [
+                self._class_name(class_id) for class_id in sorted(self.class_filter)
+            ]
+            self.get_logger().info(
+                f"Class filter enabled: {sorted(self.class_filter)} ({filtered_names})"
+            )
 
         self.bridge = CvBridge()
         self.latest_depth = None
@@ -207,6 +218,28 @@ class DetectorNode(Node):
 
     def _class_name(self, class_id):
         return self.class_names.get(int(class_id), str(class_id))
+
+    def _parse_class_filter(self, value):
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            raw_items = [item.strip() for item in value.split(",")]
+        elif isinstance(value, (list, tuple)):
+            raw_items = value
+        else:
+            raw_items = [value]
+
+        class_ids = set()
+        for item in raw_items:
+            if item == "":
+                continue
+            try:
+                class_ids.add(int(item))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"class_filter must be comma-separated class IDs, got {value!r}"
+                ) from exc
+        return class_ids
 
     def _resolve_providers(self, ep):
         requested = PROVIDERS_MAP[ep]
@@ -287,6 +320,14 @@ class DetectorNode(Node):
         class_ids = class_ids[keep]
         if mask_coeffs is not None:
             mask_coeffs = mask_coeffs[keep]
+
+        if self.class_filter:
+            keep_classes = np.isin(class_ids, list(self.class_filter))
+            boxes_cxcywh = boxes_cxcywh[keep_classes]
+            max_scores = max_scores[keep_classes]
+            class_ids = class_ids[keep_classes]
+            if mask_coeffs is not None:
+                mask_coeffs = mask_coeffs[keep_classes]
 
         if len(boxes_cxcywh) == 0:
             return []

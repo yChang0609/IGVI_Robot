@@ -11,6 +11,7 @@ x-eto-eye-env: &eto_eye_env
   IMAGE_TOPIC: /rgb/image_raw
   DETECTION_FORMAT: json
   DETECTION_TOPIC: /detections_json
+  CLASS_FILTER: "4,6"
   ENABLE_ANNOTATED_IMAGE: "true"
   ANNOTATED_TOPIC: /eto_eye/annotated_image/compressed
   ANNOTATED_MAX_FPS: "5"
