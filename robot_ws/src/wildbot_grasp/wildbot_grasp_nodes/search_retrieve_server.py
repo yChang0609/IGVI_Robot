@@ -13,7 +13,7 @@ class SearchRetrieveServer(RetrieveBase):
     def __init__(self):
         super().__init__(
             "search_retrieve_server",
-            standoff_distance=0.25,
+            standoff_distance=0.45,
             visual_servo_kp=0.005,
             visual_servo_timeout=15.0,
         )
@@ -66,7 +66,16 @@ class SearchRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 4. Grasp via GrabObjectServer
+        # 4. Visual approach: drive toward bear until at grab distance
+        self.publish_feedback(goal_handle, "approaching", 0.6, f"Visually approaching {target_name}")
+        ok, message = self.visual_approach(goal_handle, target_name)
+        if not ok:
+            result.success = False
+            result.message = message
+            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            return result
+
+        # 5. Grasp via GrabObjectServer
         self.publish_feedback(goal_handle, "grabbing", 0.7, f"Grabbing {target_name}")
         ok, message = self.call_grab_object(goal_handle, target_name)
         if not ok:
@@ -75,7 +84,7 @@ class SearchRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 5. Return to caller-specified home pose
+        # 6. Return to caller-specified home pose
         self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
         home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning", 0.9)
@@ -85,7 +94,7 @@ class SearchRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 6. Release
+        # 7. Release
         self.publish_feedback(goal_handle, "releasing", 0.98, "Releasing object")
         ok, message = self.release_arm(goal_handle)
         if not ok:

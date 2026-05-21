@@ -39,8 +39,11 @@ class RetrieveBase(Node):
         self.declare_parameter("visual_servo_tolerance_px", 15.0)
         self.declare_parameter("image_center_x", 320.0)
         self.declare_parameter("nav_server_timeout", 30.0)
-        self.declare_parameter("arrival_tolerance", 0.18)
+        self.declare_parameter("arrival_tolerance", 0.10)
         self.declare_parameter("arrival_timeout", 45.0)
+        self.declare_parameter("approach_target_distance_m", 0.24)
+        self.declare_parameter("approach_linear_speed", 0.05)
+        self.declare_parameter("approach_timeout_sec", 20.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -255,13 +258,25 @@ class RetrieveBase(Node):
 
         start_pose = self.make_pose(robot_pose[0], robot_pose[1], robot_pose[2])
         standoff = float(self.get_parameter("standoff_distance").value)
+        bx, by = float(target_pos["x"]), float(target_pos["y"])
+        rx, ry = robot_pose[0], robot_pose[1]
         best_len = float("inf")
         best_pose = None
 
-        for angle_deg in [0, 45, 90, 135, 180, -135, -90, -45]:
+        all_angles = [0, 45, 90, 135, 180, -135, -90, -45]
+        # Prefer standoffs on the same side of the bear as the robot.
+        # dot(standoff - bear, robot - bear) >= 0 means they are on the same side.
+        # This prevents the planner from choosing an approach that goes through the bear
+        # (which is not in the costmap and thus appears as free space to Nav2).
+        same_side = [a for a in all_angles
+                     if (math.cos(math.radians(a)) * (rx - bx)
+                         + math.sin(math.radians(a)) * (ry - by)) >= 0]
+        candidates = same_side if same_side else all_angles
+
+        for angle_deg in candidates:
             angle_rad = math.radians(angle_deg)
-            cx = float(target_pos["x"]) + standoff * math.cos(angle_rad)
-            cy = float(target_pos["y"]) + standoff * math.sin(angle_rad)
+            cx = bx + standoff * math.cos(angle_rad)
+            cy = by + standoff * math.sin(angle_rad)
             goal_pose = self.make_pose(cx, cy, angle_rad + math.pi)
 
             req = ComputePathToPose.Goal()
@@ -339,6 +354,64 @@ class RetrieveBase(Node):
 
         self.cmd_vel_pub.publish(Twist())
         return False, "visual alignment timed out; continuing"
+
+    # ------------------------------------------------------------------
+    # Visual approach: drive toward target until at grab distance
+    # ------------------------------------------------------------------
+
+    def visual_approach(self, goal_handle, target_class: str):
+        """Slowly drive forward while centering on the target until
+        the detection depth reaches approach_target_distance_m."""
+        target_dist = float(self.get_parameter("approach_target_distance_m").value)
+        linear_speed = float(self.get_parameter("approach_linear_speed").value)
+        kp = float(self.get_parameter("visual_servo_kp").value)
+        center_x = float(self.get_parameter("image_center_x").value)
+        timeout = float(self.get_parameter("approach_timeout_sec").value)
+        deadline = time.monotonic() + timeout
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled"
+
+            with self.detections_lock:
+                detections = list(self.latest_detections)
+
+            best = None
+            for det in detections:
+                label = str(det.get("class_name") or det.get("class_id") or "")
+                if label.lower() != target_class.lower():
+                    continue
+                if not det.get("depth_valid"):
+                    continue
+                depth = det.get("depth_m")
+                if depth is None:
+                    continue
+                if best is None or depth < best.get("depth_m", float("inf")):
+                    best = det
+
+            if best is None:
+                # Target not visible — stop and wait
+                self.cmd_vel_pub.publish(Twist())
+                time.sleep(0.1)
+                continue
+
+            depth = float(best["depth_m"])
+            if depth <= target_dist:
+                self.cmd_vel_pub.publish(Twist())
+                return True, f"reached target at {depth:.2f}m"
+
+            # Still approaching: center + drive forward
+            det_cx = best.get("bbox", {}).get("center_x", center_x)
+            angular = max(-0.3, min(0.3, (center_x - float(det_cx)) * kp))
+            twist = Twist()
+            twist.linear.x = linear_speed
+            twist.angular.z = angular
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return False, f"visual approach timed out after {timeout:.0f}s"
 
     # ------------------------------------------------------------------
     # Grasp and release
