@@ -121,8 +121,11 @@ class BridgeNode(Node):
         self.create_subscription(
             Odometry, "/base_controller/odom", self._on_wheel_freshness, 10,
         )
+        # /imu/calibrated is published with sensor-data QoS (BEST_EFFORT); a
+        # default RELIABLE subscriber would be QoS-incompatible and never
+        # receive a single message, leaving the IMU badge permanently dark.
         self.create_subscription(
-            Imu, "/imu/calibrated", self._on_imu_freshness, 10,
+            Imu, "/imu/calibrated", self._on_imu_freshness, qos_profile_sensor_data,
         )
         self.create_subscription(
             Odometry, "/odom_lidar", self._on_lidar_freshness, 10,
