@@ -57,7 +57,7 @@ services:
 
   open_door_server:
     <<: *base_service
-    profiles: ["grasp", "open_door"]
+    profiles: ["grasp"]
     x-description: "Vision-guided door-opening FSM (consumes /detections_json from eto_eye)"
     image: wildbot_grasp:latest
     environment:
