@@ -399,6 +399,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_map() -> RobotMapResponse:
         return await run_ros(lambda client: client.get_map())
 
+    @app.get("/api/ros/costmap", response_model=RobotMapResponse)
+    async def ros_costmap() -> RobotMapResponse:
+        return await run_ros(lambda client: client.get_costmap())
+
     @app.get("/api/ros/pose", response_model=RobotPoseResponse)
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())

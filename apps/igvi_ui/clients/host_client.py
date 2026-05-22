@@ -124,6 +124,9 @@ class HostClient:
     def ros_map(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/map", timeout=5.0)
 
+    def ros_costmap(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/costmap", timeout=3.0)
+
     def ros_pose(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/pose")
 

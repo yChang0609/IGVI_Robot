@@ -37,6 +37,7 @@ class _RosPoller(QThread):
     """Background thread: polls /api/ros/pose every 200 ms, /api/ros/map every 3 s."""
 
     map_received = Signal(dict)
+    costmap_received = Signal(dict)
     pose_received = Signal(dict)
     semantic_memory_received = Signal(dict)
 
@@ -64,6 +65,12 @@ class _RosPoller(QThread):
                     pass
 
             if tick % 5 == 0:
+                try:
+                    data = self.client.ros_costmap()
+                    if data.get("ok"):
+                        self.costmap_received.emit(data)
+                except Exception:
+                    pass
                 try:
                     data = self.client.semantic_memory()
                     self.semantic_memory_received.emit(data)
@@ -318,6 +325,7 @@ class RobotPage(QWidget):
         if self._poller is None:
             self._poller = _RosPoller(self.client)
             self._poller.map_received.connect(self.map_2d.update_map)
+            self._poller.costmap_received.connect(self.map_2d.update_costmap)
             self._poller.pose_received.connect(self._on_pose)
             self._poller.semantic_memory_received.connect(self.search_retrieve_control.update_semantic_memory)
             self._poller.start()

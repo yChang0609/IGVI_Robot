@@ -22,6 +22,8 @@ class Map2DView(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._map_data: dict[str, Any] | None = None
         self._map_pixmap: QPixmap | None = None
+        self._costmap_data: dict[str, Any] | None = None
+        self._costmap_image: QImage | None = None
         self._pose: dict[str, float] | None = None
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
         self._home_pose: tuple[float, float, float] | None = None
@@ -50,6 +52,13 @@ class Map2DView(QWidget):
             return
         self._map_data = data
         self._map_pixmap = QPixmap.fromImage(_build_image(data))
+        self.update()
+
+    def update_costmap(self, data: dict[str, Any]) -> None:
+        if not data or not data.get("width") or not data.get("data"):
+            return
+        self._costmap_data = data
+        self._costmap_image = _build_costmap_image(data)
         self.update()
 
     def update_pose(self, pose: dict[str, float]) -> None:
@@ -105,6 +114,20 @@ class Map2DView(QWidget):
         oy = (self.height() - scaled.height()) // 2
         painter.drawPixmap(ox, oy, scaled)
         map_rect = QRectF(ox, oy, scaled.width(), scaled.height())
+
+        if self._costmap_image and self._costmap_data and self._map_data:
+            cd = self._costmap_data
+            pt_bl = self._world_to_widget(cd["origin_x"], cd["origin_y"], map_rect)
+            pt_tr = self._world_to_widget(
+                cd["origin_x"] + cd["width"] * cd["resolution"],
+                cd["origin_y"] + cd["height"] * cd["resolution"],
+                map_rect,
+            )
+            if pt_bl and pt_tr and pt_tr.x() > pt_bl.x() and pt_bl.y() > pt_tr.y():
+                cm_rect = QRectF(pt_bl.x(), pt_tr.y(), pt_tr.x() - pt_bl.x(), pt_bl.y() - pt_tr.y())
+                painter.setOpacity(0.6)
+                painter.drawImage(cm_rect, self._costmap_image)
+                painter.setOpacity(1.0)
 
         if self._goal:
             gx, gy, gyaw = self._goal
@@ -366,6 +389,32 @@ def _build_image(data: dict[str, Any]) -> QImage:
 
     buf = np.stack([grey, grey, grey], axis=1).flatten().tobytes()
     img = QImage(buf, width, height, width * 3, QImage.Format.Format_RGB888)
+    return img.mirrored(False, True)
+
+
+def _build_costmap_image(data: dict[str, Any]) -> QImage:
+    width: int = data["width"]
+    height: int = data["height"]
+    raw = np.asarray(data["data"], dtype=np.int8)
+
+    rgba = np.zeros((raw.size, 4), dtype=np.uint8)
+
+    # inflation (1–99) → orange, alpha scales with cost value
+    inf_mask = (raw >= 1) & (raw < 100)
+    rgba[inf_mask, 0] = 255
+    rgba[inf_mask, 1] = 140
+    rgba[inf_mask, 2] = 0
+    rgba[inf_mask, 3] = np.clip(raw[inf_mask].astype(np.int16) * 2, 30, 180).astype(np.uint8)
+
+    # lethal (100+) → red
+    let_mask = raw >= 100
+    rgba[let_mask, 0] = 220
+    rgba[let_mask, 1] = 40
+    rgba[let_mask, 2] = 40
+    rgba[let_mask, 3] = 200
+
+    buf = rgba.tobytes()
+    img = QImage(buf, width, height, width * 4, QImage.Format.Format_RGBA8888)
     return img.mirrored(False, True)
 
 

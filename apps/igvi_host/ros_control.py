@@ -158,6 +158,20 @@ class RobotBridgeClient:
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
 
+    async def get_costmap(self) -> RobotMapResponse:
+        return await asyncio.to_thread(self._fetch_costmap)
+
+    def _fetch_costmap(self) -> RobotMapResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/costmap"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                data = json.loads(r.read())
+            if not data.get("width"):
+                return RobotMapResponse(ok=False)
+            return RobotMapResponse(ok=True, **{k: data[k] for k in ("width", "height", "resolution", "origin_x", "origin_y", "data") if k in data})
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     def _fetch_map(self) -> RobotMapResponse:
         url = self.settings.bridge_url.rstrip("/") + "/api/map"
         try:

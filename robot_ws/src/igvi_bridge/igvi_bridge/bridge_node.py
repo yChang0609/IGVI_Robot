@@ -57,6 +57,7 @@ class BridgeNode(Node):
         super().__init__("igvi_bridge")
         self._lock = threading.Lock()
         self._map: dict[str, Any] | None = None
+        self._costmap: dict[str, Any] | None = None
         self._pose: dict[str, float] = {"x": 0.0, "y": 0.0, "yaw": 0.0}
         self._pose_source = "none"
 
@@ -132,6 +133,7 @@ class BridgeNode(Node):
         )
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
+        self.create_subscription(OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS)
         
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -182,6 +184,17 @@ class BridgeNode(Node):
     def _on_map(self, msg: OccupancyGrid) -> None:
         with self._lock:
             self._map = {
+                "width": msg.info.width,
+                "height": msg.info.height,
+                "resolution": float(msg.info.resolution),
+                "origin_x": float(msg.info.origin.position.x),
+                "origin_y": float(msg.info.origin.position.y),
+                "data": list(msg.data),
+            }
+
+    def _on_costmap(self, msg: OccupancyGrid) -> None:
+        with self._lock:
+            self._costmap = {
                 "width": msg.info.width,
                 "height": msg.info.height,
                 "resolution": float(msg.info.resolution),
@@ -278,6 +291,10 @@ class BridgeNode(Node):
     def snapshot_map(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._map) if self._map else None
+
+    def snapshot_costmap(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._costmap) if self._costmap else None
 
     def snapshot_pose(self) -> dict[str, float]:
         with self._lock:
@@ -1133,6 +1150,9 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             if path == "/api/map":
                 data = node.snapshot_map()
+                self._json(data if data is not None else {})
+            elif path == "/api/costmap":
+                data = node.snapshot_costmap()
                 self._json(data if data is not None else {})
             elif path == "/api/pose":
                 self._json(node.snapshot_pose())

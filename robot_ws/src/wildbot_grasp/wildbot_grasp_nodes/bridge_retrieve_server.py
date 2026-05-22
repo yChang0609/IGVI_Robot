@@ -76,8 +76,8 @@ class BridgeRetrieveServer(RetrieveBase):
             return result
 
         # 2. Locate the target. If a remembered point of this class sits near the
-        # bridge, just turn to face it; otherwise scan-rotate until the bear shows
-        # up in YOLO (CW 45deg -> CCW 90deg -> keep rotating).
+        # bridge, rotate to face it first; then verify the bear is in YOLO view.
+        # If it's still not visible (stale memory, angle drift), fall back to scan.
         bridge_point = (goal.bridge_pose_x, goal.bridge_pose_y)
         mem = self.find_memory_near(
             target_class, bridge_point, float(self.get_parameter("bridge_memory_radius_m").value)
@@ -85,17 +85,33 @@ class BridgeRetrieveServer(RetrieveBase):
         if mem is not None:
             pos = mem["position"]
             self.publish_feedback(goal_handle, "facing_target", 0.45,
-                                  f"Memory point near bridge; facing {target_class}")
+                                  f"Memory point near bridge; rotating to face {target_class}")
             ok, message = self.face_point(goal_handle, (pos["x"], pos["y"]))
+            if not ok:
+                result.success = False
+                result.message = message
+                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                return result
+            # After facing the memory point, verify the bear is actually in YOLO view.
+            # Memory can be stale or the angle slightly off — scan as fallback.
+            if self.detection_for_class(target_class) is None:
+                self.publish_feedback(goal_handle, "scanning", 0.5,
+                                      f"Bear not visible after facing memory point; scanning")
+                ok, message = self.scan_for_target(goal_handle, target_class)
+                if not ok:
+                    result.success = False
+                    result.message = message
+                    goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                    return result
         else:
             self.publish_feedback(goal_handle, "scanning", 0.45,
                                   f"No memory near bridge; scanning for {target_class}")
             ok, message = self.scan_for_target(goal_handle, target_class)
-        if not ok:
-            result.success = False
-            result.message = message
-            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-            return result
+            if not ok:
+                result.success = False
+                result.message = message
+                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                return result
 
         # 3. Grasp state: YOLO centering + approach + grab (shared with search_retrieve)
         self.publish_feedback(goal_handle, "grasping", 0.62, f"Approaching and grabbing {target_class}")
