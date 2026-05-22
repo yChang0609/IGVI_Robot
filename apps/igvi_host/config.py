@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,21 @@ class HostSettings:
             files.append(self.compose_dev_file)
         return files
 
+    @property
+    def data_root(self) -> Path:
+        env_file = self.repo_root / "docker" / "compose" / ".env"
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, value = raw.split("=", 1)
+                if key.strip() == "IGVI_DATA_ROOT":
+                    return Path(os.path.expandvars(os.path.expanduser(value.strip())))
+        except OSError:
+            pass
+        return Path.home() / "igvi_robot"
+
     def to_json_dict(self) -> dict[str, Any]:
         return {
             "repo_root": str(self.repo_root),
@@ -79,6 +95,7 @@ class HostSettings:
             "port": self.port,
             "bridge_url": self.bridge_url,
             "shm_path": str(self.shm_path),
+            "data_root": str(self.data_root),
             "dev_mode": self.dev_mode,
         }
 

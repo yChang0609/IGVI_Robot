@@ -434,7 +434,7 @@ class RobotBridgeClient:
         params = dict(result.get("params") or {})
         ordered_params = {name: params.get(name) for name in param_names}
         payload = {"open_door_server": {"ros__parameters": ordered_params}}
-        out_path = Path(self.settings.repo_root) / "tuner_output" / "tuned_open_door.yaml"
+        out_path = Path(self.settings.data_root) / "open_door" / "tuned_open_door.yaml"
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

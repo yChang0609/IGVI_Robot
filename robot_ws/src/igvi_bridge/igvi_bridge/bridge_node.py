@@ -23,8 +23,6 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Twi
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry
-from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
@@ -39,75 +37,8 @@ try:
 except ImportError:  # pragma: no cover
     PILImage = None  # type: ignore
 
-try:
-    from wildbot_grasp.action import OpenDoor  # type: ignore
-    _OPEN_DOOR_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    OpenDoor = None  # type: ignore
-    _OPEN_DOOR_AVAILABLE = False
-
-
-def _make_parameter(name: str, value: Any) -> Parameter:
-    """Wrap a Python value in an rcl_interfaces/msg/Parameter.
-
-    Scalars map to BOOL/INTEGER/DOUBLE/STRING; lists map to the matching array
-    type. Numeric lists (e.g. arm poses like [167.0, 80.0, 170.6]) become
-    DOUBLE_ARRAY so float angles survive intact.
-    """
-    p = Parameter()
-    p.name = name
-    pv = ParameterValue()
-    if isinstance(value, bool):  # must precede int — bool is an int subclass
-        pv.type = ParameterType.PARAMETER_BOOL
-        pv.bool_value = value
-    elif isinstance(value, int):
-        pv.type = ParameterType.PARAMETER_INTEGER
-        pv.integer_value = int(value)
-    elif isinstance(value, float):
-        pv.type = ParameterType.PARAMETER_DOUBLE
-        pv.double_value = float(value)
-    elif isinstance(value, str):
-        pv.type = ParameterType.PARAMETER_STRING
-        pv.string_value = value
-    elif isinstance(value, (list, tuple)):
-        items = list(value)
-        if items and all(isinstance(v, bool) for v in items):
-            pv.type = ParameterType.PARAMETER_BOOL_ARRAY
-            pv.bool_array_value = [bool(v) for v in items]
-        elif items and all(isinstance(v, str) for v in items):
-            pv.type = ParameterType.PARAMETER_STRING_ARRAY
-            pv.string_array_value = [str(v) for v in items]
-        elif items and all(isinstance(v, int) and not isinstance(v, bool) for v in items):
-            pv.type = ParameterType.PARAMETER_INTEGER_ARRAY
-            pv.integer_array_value = [int(v) for v in items]
-        else:
-            # Default numeric/empty/mixed-numeric lists to double array.
-            pv.type = ParameterType.PARAMETER_DOUBLE_ARRAY
-            pv.double_array_value = [float(v) for v in items]
-    else:
-        raise ValueError(f"unsupported parameter value type for {name}: {type(value).__name__}")
-    p.value = pv
-    return p
-
-
-def _parameter_value_to_python(value: ParameterValue) -> Any:
-    if value.type == ParameterType.PARAMETER_BOOL:
-        return bool(value.bool_value)
-    if value.type == ParameterType.PARAMETER_INTEGER:
-        return int(value.integer_value)
-    if value.type == ParameterType.PARAMETER_DOUBLE:
-        return float(value.double_value)
-    if value.type == ParameterType.PARAMETER_STRING:
-        return str(value.string_value)
-    if value.type == ParameterType.PARAMETER_BOOL_ARRAY:
-        return [bool(v) for v in value.bool_array_value]
-    if value.type == ParameterType.PARAMETER_INTEGER_ARRAY:
-        return [int(v) for v in value.integer_array_value]
-    if value.type == ParameterType.PARAMETER_DOUBLE_ARRAY:
-        return [float(v) for v in value.double_array_value]
-    if value.type == ParameterType.PARAMETER_STRING_ARRAY:
-        return [str(v) for v in value.string_array_value]
-    return None
+from .open_door_proxy import OpenDoorProxy
+from .params_gateway import ParamsGateway
 
 _MAP_QOS = QoSProfile(
     depth=1,
@@ -158,18 +89,8 @@ class BridgeNode(Node):
         self._bridge_mission_goal: dict[str, Any] | None = None
         self._bridge_mission_feedback: dict[str, Any] = {}
 
-        # Open-door action state — mirrors the nav action machinery.
-        self._open_door_lock = threading.Lock()
-        self._open_door_state: str = "idle" if _OPEN_DOOR_AVAILABLE else "unavailable"
-        self._open_door_stage: str = ""
-        self._open_door_message: str = (
-            "" if _OPEN_DOOR_AVAILABLE else "wildbot_grasp not installed in bridge image"
-        )
-        self._open_door_progress: float = 0.0
-        self._open_door_goal_handle = None
-        self._open_door_client = (
-            ActionClient(self, OpenDoor, "open_door") if _OPEN_DOOR_AVAILABLE else None
-        )
+        self.params = ParamsGateway(self)
+        self.open_door = OpenDoorProxy(self)
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
@@ -591,219 +512,6 @@ class BridgeNode(Node):
         future.add_done_callback(_finished)
         done.wait(timeout=3.0)
         return bool(result["ok"]), str(result["message"])
-
-    # ── Remote ROS parameter setting (live tuning) ────────────────────────────
-
-    def set_remote_parameters(
-        self, node_name: str, params: dict[str, Any]
-    ) -> tuple[bool, str]:
-        """Set parameters on another node via its /<node>/set_parameters service.
-
-        Used by the UI to live-tune detectors and controllers (e.g. open_door's
-        HSV thresholds) without redeploying. Values may be bool/int/float/str;
-        the type is inferred per call.
-        """
-        if not node_name:
-            return False, "node name required"
-        service_name = f"/{node_name.strip('/')}/set_parameters"
-        client = self.create_client(SetParameters, service_name)
-        try:
-            if not client.wait_for_service(timeout_sec=1.0):
-                return False, f"service {service_name} not available"
-
-            request = SetParameters.Request()
-            for name, value in params.items():
-                try:
-                    request.parameters.append(_make_parameter(name, value))
-                except ValueError as exc:
-                    return False, str(exc)
-
-            done = threading.Event()
-            outcome: dict[str, Any] = {"ok": False, "message": "set_parameters timed out"}
-            future = client.call_async(request)
-
-            def _finished(_future: Any) -> None:
-                try:
-                    response = _future.result()
-                    failures = [
-                        f"{p.name}: {r.reason or 'rejected'}"
-                        for p, r in zip(request.parameters, response.results)
-                        if not r.successful
-                    ]
-                    if failures:
-                        outcome["message"] = "; ".join(failures)
-                    else:
-                        outcome["ok"] = True
-                        outcome["message"] = (
-                            f"set {len(request.parameters)} parameter(s) on {node_name}"
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    outcome["message"] = f"set_parameters failed: {exc}"
-                finally:
-                    done.set()
-
-            future.add_done_callback(_finished)
-            done.wait(timeout=3.0)
-            return bool(outcome["ok"]), str(outcome["message"])
-        finally:
-            # Don't leak service clients across many tuning calls.
-            self.destroy_client(client)
-
-    def get_remote_parameters(
-        self, node_name: str, names: list[str]
-    ) -> tuple[bool, dict[str, Any], str]:
-        """Read parameters from another node via its /<node>/get_parameters service."""
-        if not node_name:
-            return False, {}, "node name required"
-        clean_names = [str(name).strip() for name in names if str(name).strip()]
-        if not clean_names:
-            return False, {}, "parameter names required"
-
-        service_name = f"/{node_name.strip('/')}/get_parameters"
-        client = self.create_client(GetParameters, service_name)
-        try:
-            if not client.wait_for_service(timeout_sec=1.0):
-                return False, {}, f"service {service_name} not available"
-
-            request = GetParameters.Request()
-            request.names = clean_names
-            done = threading.Event()
-            outcome: dict[str, Any] = {
-                "ok": False,
-                "params": {},
-                "message": "get_parameters timed out",
-            }
-            future = client.call_async(request)
-
-            def _finished(_future: Any) -> None:
-                try:
-                    response = _future.result()
-                    outcome["params"] = {
-                        name: _parameter_value_to_python(value)
-                        for name, value in zip(clean_names, response.values)
-                    }
-                    outcome["ok"] = True
-                    outcome["message"] = (
-                        f"read {len(outcome['params'])} parameter(s) from {node_name}"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    outcome["message"] = f"get_parameters failed: {exc}"
-                finally:
-                    done.set()
-
-            future.add_done_callback(_finished)
-            done.wait(timeout=3.0)
-            return (
-                bool(outcome["ok"]),
-                dict(outcome["params"]),
-                str(outcome["message"]),
-            )
-        finally:
-            self.destroy_client(client)
-
-    # ── Open-door action (red-bar FSM trigger) ────────────────────────────────
-
-    def snapshot_open_door(self) -> dict[str, Any]:
-        with self._open_door_lock:
-            return {
-                "available": _OPEN_DOOR_AVAILABLE,
-                "state": self._open_door_state,
-                "stage": self._open_door_stage,
-                "message": self._open_door_message,
-                "progress": self._open_door_progress,
-            }
-
-    def send_open_door_goal(self, ready_distance_m: float = 0.0) -> tuple[bool, str]:
-        if not _OPEN_DOOR_AVAILABLE or self._open_door_client is None:
-            return False, "wildbot_grasp action types not installed in bridge image"
-        client = self._open_door_client
-        if not client.server_is_ready():
-            if not client.wait_for_server(timeout_sec=2.0):
-                self._set_open_door_state(
-                    "unavailable", "", "open_door action server not running — check wildbot_grasp"
-                )
-                return False, "open_door action server not running"
-
-        goal_msg = OpenDoor.Goal()
-        goal_msg.ready_distance_m = float(ready_distance_m)
-
-        self._set_open_door_state("sending", "", "goal dispatched", progress=0.0)
-        future = client.send_goal_async(goal_msg, feedback_callback=self._on_open_door_feedback)
-        future.add_done_callback(self._on_open_door_goal_response)
-        return True, f"open_door dispatched (ready_distance_m={ready_distance_m})"
-
-    def cancel_open_door_goal(self) -> tuple[bool, str]:
-        with self._open_door_lock:
-            handle = self._open_door_goal_handle
-        if handle is None:
-            return False, "no active open_door goal"
-        handle.cancel_goal_async()
-        self._set_open_door_state("cancelling", "", "cancel requested")
-        return True, "cancel requested"
-
-    def _on_open_door_feedback(self, msg: Any) -> None:
-        fb = getattr(msg, "feedback", None)
-        if fb is None:
-            return
-        self._set_open_door_state(
-            "running",
-            stage=str(getattr(fb, "stage", "")),
-            message=str(getattr(fb, "detail", "")),
-            progress=float(getattr(fb, "progress", 0.0)),
-        )
-
-    def _on_open_door_goal_response(self, future: Any) -> None:
-        try:
-            handle = future.result()
-        except Exception as exc:  # noqa: BLE001
-            self._set_open_door_state("error", "", f"send_goal failed: {exc}")
-            return
-        if not handle.accepted:
-            self._set_open_door_state("rejected", "", "goal rejected by server")
-            return
-        with self._open_door_lock:
-            self._open_door_goal_handle = handle
-        self._set_open_door_state("running", "", "goal accepted")
-        handle.get_result_async().add_done_callback(self._on_open_door_result)
-
-    def _on_open_door_result(self, future: Any) -> None:
-        try:
-            wrapped = future.result()
-            result = wrapped.result
-            status = wrapped.status
-        except Exception as exc:  # noqa: BLE001
-            self._set_open_door_state("error", "", f"result fetch failed: {exc}")
-            return
-        with self._open_door_lock:
-            self._open_door_goal_handle = None
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self._set_open_door_state(
-                "succeeded", "complete",
-                str(getattr(result, "message", "")) or "door opened",
-                progress=1.0,
-            )
-        elif status == GoalStatus.STATUS_CANCELED:
-            self._set_open_door_state("canceled", "", "goal canceled")
-        else:
-            self._set_open_door_state(
-                "aborted", "",
-                str(getattr(result, "message", "")) or f"status={status}",
-            )
-
-    def _set_open_door_state(
-        self,
-        state: str,
-        stage: str = "",
-        message: str = "",
-        progress: float | None = None,
-    ) -> None:
-        with self._open_door_lock:
-            self._open_door_state = state
-            if stage:
-                self._open_door_stage = stage
-            self._open_door_message = message
-            if progress is not None:
-                self._open_door_progress = float(progress)
 
     # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
 
@@ -1429,7 +1137,7 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/imu/calibration":
                 self._json(node.snapshot_imu_calibration())
             elif path == "/api/open_door/status":
-                self._json(node.snapshot_open_door())
+                self._json(node.open_door.snapshot())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -1566,7 +1274,7 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                     self.end_headers()
                     self.wfile.write(b"node and non-empty params dict required")
                     return
-                ok, msg = node.set_remote_parameters(target_node, params)
+                ok, msg = node.params.set(target_node, params)
                 self._json({"ok": ok, "action": "params_set", "message": msg})
             elif path == "/api/params/get":
                 target_node = str(body.get("node", "")).strip()
@@ -1577,13 +1285,13 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                     self.end_headers()
                     self.wfile.write(b"node and non-empty names list required")
                     return
-                ok, params, msg = node.get_remote_parameters(target_node, names)
+                ok, params, msg = node.params.get(target_node, names)
                 self._json({"ok": ok, "action": "params_get", "params": params, "message": msg})
             elif path == "/api/open_door/start":
-                ok, msg = node.send_open_door_goal(float(body.get("ready_distance_m", 0.0)))
+                ok, msg = node.open_door.start(float(body.get("ready_distance_m", 0.0)))
                 self._json({"ok": ok, "action": "open_door_start", "message": msg})
             elif path == "/api/open_door/cancel":
-                ok, msg = node.cancel_open_door_goal()
+                ok, msg = node.open_door.cancel()
                 self._json({"ok": ok, "action": "open_door_cancel", "message": msg})
             else:
                 self.send_response(404)

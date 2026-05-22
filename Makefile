@@ -39,7 +39,7 @@ install:
 		DATA=$(DATA_ROOT) && \
 		echo "  Added IGVI_DATA_ROOT=$(DATA_ROOT) to $(ENV_FILE)"; \
 	fi; \
-	mkdir -p "$$DATA/slam" "$$DATA/maps" "$$DATA/models/eto_eye" "$$DATA/migraphx_cache/eto_eye" && \
+	mkdir -p "$$DATA/slam" "$$DATA/maps" "$$DATA/models/eto_eye" "$$DATA/migraphx_cache/eto_eye" "$$DATA/open_door" && \
 	echo "  Data directories ready at $$DATA"
 
 _check-env:
@@ -58,7 +58,7 @@ _check-env:
 		echo ""; \
 		exit 1; \
 	fi; \
-	if [ ! -d "$$DATA/slam" ] || [ ! -d "$$DATA/maps" ]; then \
+	if [ ! -d "$$DATA/slam" ] || [ ! -d "$$DATA/maps" ] || [ ! -d "$$DATA/open_door" ]; then \
 		echo ""; \
 		echo "  ERROR: Data directories missing at $$DATA"; \
 		echo "  Run 'make install' to create them."; \
