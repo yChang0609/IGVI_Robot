@@ -248,6 +248,9 @@ class DoorPage(QWidget):
         home_btn = QPushButton("Go Home pose")
         home_btn.clicked.connect(self._go_home)
         bottom_row.addWidget(home_btn)
+        export_btn = QPushButton("Export Poses YAML")
+        export_btn.clicked.connect(self._export_poses)
+        bottom_row.addWidget(export_btn)
         self.pose_status = QLabel("")
         self.pose_status.setObjectName("Muted")
         bottom_row.addWidget(self.pose_status, 1)
@@ -313,6 +316,19 @@ class DoorPage(QWidget):
             self.client.arm_trajectory(positions_rad, time_from_start=1.0)
         except HostClientError as exc:
             self.log_message.emit(f"Go home failed: {exc}")
+
+    def _export_poses(self) -> None:
+        try:
+            result = self.client.export_open_door_params()
+        except HostClientError as exc:
+            self.log_message.emit(f"Export poses failed: {exc}")
+            return
+        message = str(result.get("message", ""))
+        if result.get("ok", False):
+            self.pose_status.setText("Exported poses YAML")
+            self.log_message.emit(message)
+        else:
+            self.log_message.emit(f"Export poses rejected: {message or 'unknown error'}")
 
     def _build_tuning_card(self) -> QWidget:
         card = QFrame()

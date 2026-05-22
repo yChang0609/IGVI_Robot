@@ -155,6 +155,9 @@ class HostClient:
             "POST", "/api/ros/params/set", {"node": node, "params": params}
         )
 
+    def export_open_door_params(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/export_params", {}, timeout=5.0)
+
     def open_door_start(self, ready_distance_m: float = 0.0) -> dict[str, Any]:
         return self.request(
             "POST", "/api/ros/open_door/start", {"ready_distance_m": ready_distance_m}

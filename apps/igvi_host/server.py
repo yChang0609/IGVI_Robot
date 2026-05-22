@@ -431,6 +431,10 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_params_set(request: ParamsSetRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.set_ros_parameters(request))
 
+    @app.post("/api/ros/open_door/export_params", response_model=RosActionResponse)
+    async def ros_open_door_export_params() -> RosActionResponse:
+        return await run_ros(lambda client: client.export_open_door_parameters())
+
     @app.post("/api/ros/open_door/start", response_model=RosActionResponse)
     async def ros_open_door_start(request: OpenDoorGoalRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.open_door_start(request))

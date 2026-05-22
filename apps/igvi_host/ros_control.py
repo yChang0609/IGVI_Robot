@@ -5,7 +5,10 @@ import json
 import math
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .config import HostSettings
 from .models import (
@@ -405,6 +408,47 @@ class RobotBridgeClient:
             ok=bool(result.get("ok", False)),
             action=str(result.get("action", "params_set")),
             message=str(result.get("message", "")),
+        )
+
+    async def export_open_door_parameters(self) -> RosActionResponse:
+        param_names = [
+            "ready_distance_m",
+            "door_home_pose_deg",
+            "door_pose_1_deg",
+            "door_pose_2_deg",
+            "door_pose_3_deg",
+        ]
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/params/get",
+            {"node": "open_door_server", "names": param_names},
+            3.0,
+        )
+        if not result.get("ok", False):
+            return RosActionResponse(
+                ok=False,
+                action="open_door_params_export",
+                message=str(result.get("message", "failed to read open_door_server params")),
+            )
+
+        params = dict(result.get("params") or {})
+        ordered_params = {name: params.get(name) for name in param_names}
+        payload = {"open_door_server": {"ros__parameters": ordered_params}}
+        out_path = Path(self.settings.repo_root) / "tuner_output" / "tuned_open_door.yaml"
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        except OSError as exc:
+            return RosActionResponse(
+                ok=False,
+                action="open_door_params_export",
+                message=f"failed to write {out_path}: {exc}",
+            )
+
+        return RosActionResponse(
+            ok=True,
+            action="open_door_params_export",
+            message=f"exported open_door params to {out_path}",
         )
 
     async def open_door_start(self, request: OpenDoorGoalRequest) -> RosActionResponse:
