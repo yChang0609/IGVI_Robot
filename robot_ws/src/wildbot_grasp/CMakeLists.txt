@@ -23,6 +23,8 @@ install(PROGRAMS
   scripts/bridge_retrieve_launch
   scripts/bear_grasp_task_node
   scripts/grasp_stack
+  scripts/camera_masker_node
+  scripts/camera_router_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

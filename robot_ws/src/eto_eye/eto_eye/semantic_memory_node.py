@@ -76,12 +76,12 @@ class SemanticMemoryNode(Node):
             10,
             callback_group=self.callback_group
         )
-        self.create_subscription(
-            Image,
-            self.get_parameter('depth_topic').value,
-            self.depth_callback,
-            10
-        )
+        # Continuous Dynamic Subscription variables for Depth topic
+        self.current_subscribed_depth_type = None
+        self.depth_sub = None
+
+        # Background timer for continuous dynamic depth routing
+        self.create_timer(1.0, self.check_depth_topic_and_subscribe)
 
         self.memory_pub = self.create_publisher(String, '/semantic_memory', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/semantic_memory_markers', 10)
@@ -99,6 +99,43 @@ class SemanticMemoryNode(Node):
             f"Semantic Memory Node started. frame={self.target_frame} "
             f"merge_radius={self.merge_radius}m"
         )
+
+    def check_depth_topic_and_subscribe(self):
+        filtered_topic = "/depth_to_rgb/image_filtered"
+        try:
+            num_publishers = self.count_publishers(filtered_topic)
+            has_filtered = num_publishers > 0
+        except Exception:
+            has_filtered = False
+
+        target_type = "filtered" if has_filtered else "raw"
+
+        if self.current_subscribed_depth_type != target_type:
+            self._do_depth_subscribe(target_type)
+
+    def _do_depth_subscribe(self, target_type):
+        # 1. Destroy existing subscription
+        if self.depth_sub is not None:
+            self.destroy_subscription(self.depth_sub)
+            self.depth_sub = None
+
+        # 2. Determine topic name
+        if target_type == "filtered":
+            depth_topic = "/depth_to_rgb/image_filtered"
+        else:
+            depth_topic = self.get_parameter('depth_topic').value
+
+        # 3. Create new subscription
+        self.depth_sub = self.create_subscription(
+            Image,
+            depth_topic,
+            self.depth_callback,
+            10
+        )
+        self.get_logger().info(
+            f"Semantic Memory dynamically switched depth input to {target_type} topic: {depth_topic}"
+        )
+        self.current_subscribed_depth_type = target_type
 
     def _on_clear(self, _msg: Empty):
         with self.memory_lock:

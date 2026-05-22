@@ -46,6 +46,7 @@ append_param grab_args GRASP_RELEASE_AFTER_GRASP release_after_grasp
 
 start_node grab_object_server ros2 run wildbot_grasp grab_object_server "${grab_args[@]}"
 start_node arm_safeguard_node ros2 run wildbot_grasp arm_safeguard_node
+start_node camera_masker_node ros2 run wildbot_grasp camera_masker_node
 
 bear_task_args=(--ros-args -p auto_start:=false)
 append_param bear_task_args BEAR_TARGET_CENTER_X_PX target_center_x_px

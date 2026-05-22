@@ -151,35 +151,11 @@ class DetectorNode(Node):
         self.latest_depth_encoding = None
         self.latest_depth_frame_id = None
 
-        image_topic = self.get_parameter("image_topic").value
         detection_topic = self.get_parameter("detection_topic").value
-
-        if self.enable_depth:
-            depth_topic = self.get_parameter("depth_topic").value
-            # 使用 message_filters 來同步影像與深度
-            self.image_sub = message_filters.Subscriber(self, Image, image_topic)
-            self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
-            
-            # slop 參數設定容許的時間差 (例如 0.05 秒內視為同一幀)
-            self.ts = message_filters.ApproximateTimeSynchronizer(
-                [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
-            )
-            self.ts.registerCallback(self.sync_callback)
-            
-            self.get_logger().info(
-                f"Subscribed to synchronized {image_topic} and {depth_topic} "
-                f"scale={self.depth_unit_scale} roi_scale={self.depth_roi_scale}"
-            )
-        else:
-            self.subscription = self.create_subscription(
-                Image, image_topic, self.image_callback, 10
-            )
-            self.depth_subscription = None
         if self.output_format == "vision_msgs":
             from vision_msgs.msg import (
                 Detection2DArray,
             )
-
             self.publisher = self.create_publisher(Detection2DArray, detection_topic, 10)
         else:
             self.publisher = self.create_publisher(String, detection_topic, 10)
@@ -193,9 +169,79 @@ class DetectorNode(Node):
             )
         else:
             self.annotated_publisher = None
-        self.get_logger().info(
-            f"Subscribed to {image_topic}, publishing {self.output_format} to {detection_topic}"
-        )
+
+        # Continuous Dynamic Subscription variables
+        self.current_subscribed_topic_type = None
+        self.image_sub = None
+        self.depth_sub = None
+        self.ts = None
+        self.subscription = None
+
+        # Background timer for continuous dynamic topic routing
+        self.create_timer(1.0, self.check_topics_and_subscribe)
+
+    def check_topics_and_subscribe(self):
+        filtered_topic = "/rgb/image_filtered"
+        try:
+            num_publishers = self.count_publishers(filtered_topic)
+            has_filtered = num_publishers > 0
+        except Exception:
+            has_filtered = False
+
+        target_type = "filtered" if has_filtered else "raw"
+
+        if self.current_subscribed_topic_type != target_type:
+            self._do_subscribe(target_type)
+
+    def _do_subscribe(self, target_type):
+        # 1. Destroy existing subscriptions
+        if self.subscription is not None:
+            self.destroy_subscription(self.subscription)
+            self.subscription = None
+
+        if self.image_sub is not None:
+            try:
+                self.destroy_subscription(self.image_sub.sub)
+            except Exception:
+                pass
+            self.image_sub = None
+
+        if self.depth_sub is not None:
+            try:
+                self.destroy_subscription(self.depth_sub.sub)
+            except Exception:
+                pass
+            self.depth_sub = None
+        self.ts = None
+
+        # 2. Determine topic names
+        if target_type == "filtered":
+            image_topic = "/rgb/image_filtered"
+            depth_topic = "/depth_to_rgb/image_filtered"
+        else:
+            image_topic = self.get_parameter("image_topic").value
+            depth_topic = self.get_parameter("depth_topic").value
+
+        # 3. Create new subscriptions
+        if self.enable_depth:
+            self.image_sub = message_filters.Subscriber(self, Image, image_topic)
+            self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+            self.ts = message_filters.ApproximateTimeSynchronizer(
+                [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
+            )
+            self.ts.registerCallback(self.sync_callback)
+            self.get_logger().info(
+                f"YOLO detector dynamically switched to synchronized {target_type} topics: {image_topic} & {depth_topic}"
+            )
+        else:
+            self.subscription = self.create_subscription(
+                Image, image_topic, self.image_callback, 10
+            )
+            self.get_logger().info(
+                f"YOLO detector dynamically switched to {target_type} image topic: {image_topic}"
+            )
+
+        self.current_subscribed_topic_type = target_type
 
     def _prepare_migraphx_cache(self, ep):
         if ep != "migraphx":
