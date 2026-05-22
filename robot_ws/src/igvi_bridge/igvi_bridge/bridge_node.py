@@ -653,11 +653,12 @@ class BridgeNode(Node):
     def call_open_door_step(self, step: str) -> tuple[bool, str]:
         """Call one of open_door_server's debug Trigger services individually.
 
-        Lets the UI fire the arm press, the forward push, or the retract-home as
-        separate steps (run_press / run_push / go_home) to debug without running
-        the full ALIGN→APPROACH→PRESS→PUSH action.
+        Lets the UI fire the arm slam, the arm push, the base forward drive, or
+        the retract-home as separate steps (run_press / run_arm_push / run_push /
+        go_home) to debug without running the full ALIGN→APPROACH→PRESS→
+        ARM_PUSH→PUSH action.
         """
-        allowed = {"run_press", "run_push", "go_home"}
+        allowed = {"run_press", "run_arm_push", "run_push", "go_home"}
         if step not in allowed:
             return False, f"unknown open_door step '{step}'"
         service_name = f"/open_door_server/{step}"

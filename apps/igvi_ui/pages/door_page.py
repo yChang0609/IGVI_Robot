@@ -181,8 +181,12 @@ class DoorPage(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(12)
 
+        # Three independently tunable + savable + runnable door motions:
+        #   1) arm slam-down (unlatch)   2) arm push (shove open)   3) base drive
+        self._step_buttons: list[QPushButton] = []
         layout.addWidget(self._build_action_card())
         layout.addWidget(self._build_arm_card())
+        layout.addWidget(self._build_arm_push_card())
         layout.addWidget(self._build_push_card())
         layout.addWidget(self._build_tuning_card())
         layout.addWidget(self._build_legend_card())
@@ -244,9 +248,17 @@ class DoorPage(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(6)
 
-        heading = QLabel("Arm poses (sequence: 1 → 2 → 3)")
+        heading = QLabel("1 · Arm slam-down (unlatch) — poses 1 → 2 → 3")
         heading.setStyleSheet("font-weight: 600;")
         layout.addWidget(heading)
+
+        hint = QLabel(
+            "Dial the arm with the sliders, then capture it into a slam pose or "
+            "the arm-push pose below. Sliders are shared by both arm motions."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.jog_check = QCheckBox("Live jog — slider moves the real arm")
         self.jog_check.setChecked(False)
@@ -269,15 +281,21 @@ class DoorPage(QWidget):
             save_row.addWidget(btn)
         layout.addLayout(save_row)
 
-        bottom_row = QHBoxLayout()
+        run_row = QHBoxLayout()
+        slam_btn = QPushButton("Run SLAM (arm)")
+        slam_btn.setToolTip("Play door_pose 1→2→3 on the arm. Base does not move.")
+        slam_btn.clicked.connect(lambda: self._run_step("run_press", "SLAM"))
+        self._step_buttons.append(slam_btn)
+        run_row.addWidget(slam_btn)
         home_btn = QPushButton("Go Home pose")
         home_btn.clicked.connect(self._go_home)
-        bottom_row.addWidget(home_btn)
-        save_yaml_btn = QPushButton("Save poses to YAML")
+        run_row.addWidget(home_btn)
+        layout.addLayout(run_row)
+
+        save_yaml_btn = QPushButton("Save slam to YAML")
         save_yaml_btn.setToolTip("Persist current poses + tuning so they survive a restart")
         save_yaml_btn.clicked.connect(self._save_poses_yaml)
-        bottom_row.addWidget(save_yaml_btn)
-        layout.addLayout(bottom_row)
+        layout.addWidget(save_yaml_btn)
 
         self.pose_status = QLabel("")
         self.pose_status.setObjectName("Muted")
@@ -334,6 +352,20 @@ class DoorPage(QWidget):
         else:
             self.log_message.emit(f"Pose {n}: {result.get('message', 'rejected')}")
 
+    def _save_arm_push_pose(self) -> None:
+        pose = self._current_arm_deg()
+        try:
+            result = self.client.set_params(SERVER_NODE, {"door_arm_push_pose_deg": pose})
+        except HostClientError as exc:
+            self.log_message.emit(f"Save Arm Push failed: {exc}")
+            return
+        if result.get("ok", False):
+            pretty = ", ".join(f"{v:.1f}" for v in pose)
+            self.pose_status.setText(f"Arm Push pose = [{pretty}]")
+            self.log_message.emit(f"Saved Arm Push pose = [{pretty}]")
+        else:
+            self.log_message.emit(f"Arm Push: {result.get('message', 'rejected')}")
+
     def _save_poses_yaml(self) -> None:
         try:
             result = self.client.open_door_save_poses()
@@ -355,6 +387,67 @@ class DoorPage(QWidget):
         except HostClientError as exc:
             self.log_message.emit(f"Go home failed: {exc}")
 
+    def _build_arm_push_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        heading = QLabel("2 · Arm push (shove door open with arm)")
+        heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(heading)
+
+        hint = QLabel(
+            "Dial the arm-push target with the sliders above, then capture it. "
+            "ARM_PUSH runs after the slam to shove the door open with the arm."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.arm_push_after_check = QCheckBox("Arm push after slam (in full Open Door)")
+        self.arm_push_after_check.setToolTip(
+            "Leave OFF until the slam reliably unlatches — prevents driving the "
+            "arm into a still-latched door."
+        )
+        self.arm_push_after_check.toggled.connect(
+            lambda v: self._apply_param("arm_push_after_slam", bool(v))
+        )
+        layout.addWidget(self.arm_push_after_check)
+
+        hold_row = QHBoxLayout()
+        hold_row.addWidget(QLabel("Arm push hold (s)"))
+        self.arm_push_hold = QDoubleSpinBox()
+        self.arm_push_hold.setRange(0.0, 5.0)
+        self.arm_push_hold.setSingleStep(0.1)
+        self.arm_push_hold.setDecimals(1)
+        self.arm_push_hold.setValue(0.5)
+        self.arm_push_hold.valueChanged.connect(
+            lambda v: self._apply_param("arm_push_hold_sec", float(v))
+        )
+        hold_row.addWidget(self.arm_push_hold)
+        layout.addLayout(hold_row)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save → Arm Push pose")
+        save_btn.setToolTip("Capture the current arm sliders as door_arm_push_pose")
+        save_btn.clicked.connect(self._save_arm_push_pose)
+        btn_row.addWidget(save_btn)
+        run_btn = QPushButton("Run ARM-PUSH")
+        run_btn.setToolTip("Swing the arm to the arm-push pose. Base does not move.")
+        run_btn.clicked.connect(lambda: self._run_step("run_arm_push", "ARM-PUSH"))
+        self._step_buttons.append(run_btn)
+        btn_row.addWidget(run_btn)
+        layout.addLayout(btn_row)
+
+        save_yaml_btn = QPushButton("Save arm push to YAML")
+        save_yaml_btn.setToolTip("Persist current poses + tuning so they survive a restart")
+        save_yaml_btn.clicked.connect(self._save_poses_yaml)
+        layout.addWidget(save_yaml_btn)
+
+        return card
+
     def _build_push_card(self) -> QWidget:
         card = QFrame()
         card.setObjectName("Card")
@@ -362,7 +455,7 @@ class DoorPage(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(6)
 
-        heading = QLabel("Forward push (after poses)")
+        heading = QLabel("3 · Base drive (push door open)")
         heading.setStyleSheet("font-weight: 600;")
         layout.addWidget(heading)
 
@@ -408,31 +501,22 @@ class DoorPage(QWidget):
         dur_row.addWidget(self.push_dur)
         layout.addLayout(dur_row)
 
-        # Debug each half of the open/push motion independently so a misbehaving
-        # step can't ram a still-latched door. PRESS plays the arm poses only;
-        # PUSH drives the base forward holding pose 3. Neither needs the camera.
-        step_hint = QLabel("Debug steps (no camera / no nav needed):")
-        step_hint.setObjectName("Muted")
-        step_hint.setWordWrap(True)
-        layout.addWidget(step_hint)
-
-        step_row = QHBoxLayout()
-        self.press_btn = QPushButton("Run PRESS (arm)")
-        self.press_btn.setToolTip("Play door_pose 1→2→3 on the arm. Base does not move.")
-        self.press_btn.clicked.connect(
-            lambda: self._run_step("run_press", "PRESS")
-        )
-        self.push_btn = QPushButton("Run PUSH (drive)")
-        self.push_btn.setToolTip(
+        # Base forward drive, triggerable on its own (no camera / no nav needed)
+        # so it can be debugged apart from the arm motions. Run the arm slam (and
+        # arm push, if used) first so the door is already unlatched.
+        run_btn = QPushButton("Run DRIVE (base)")
+        run_btn.setToolTip(
             "Drive the base forward for push_duration_sec, holding pose 3. "
-            "Run PRESS first so the handle is already pressed."
+            "Run SLAM first so the handle is already pressed."
         )
-        self.push_btn.clicked.connect(
-            lambda: self._run_step("run_push", "PUSH")
-        )
-        step_row.addWidget(self.press_btn)
-        step_row.addWidget(self.push_btn)
-        layout.addLayout(step_row)
+        run_btn.clicked.connect(lambda: self._run_step("run_push", "DRIVE"))
+        self._step_buttons.append(run_btn)
+        layout.addWidget(run_btn)
+
+        save_yaml_btn = QPushButton("Save base drive to YAML")
+        save_yaml_btn.setToolTip("Persist current poses + tuning so they survive a restart")
+        save_yaml_btn.clicked.connect(self._save_poses_yaml)
+        layout.addWidget(save_yaml_btn)
 
         return card
 
@@ -542,8 +626,8 @@ class DoorPage(QWidget):
         self._step_worker = None
 
     def _set_step_buttons_enabled(self, enabled: bool) -> None:
-        self.press_btn.setEnabled(enabled)
-        self.push_btn.setEnabled(enabled)
+        for btn in self._step_buttons:
+            btn.setEnabled(enabled)
 
     def _on_status(self, data: dict) -> None:
         available = bool(data.get("available", False))

@@ -14,11 +14,19 @@ Publishes:
 FSM:
   ALIGN     rotate-in-place until |x_norm| < align_pixel_tol for N ticks
   APPROACH  drive forward with mild centering until depth_m <= ready_distance_m
-  PRESS     play door_pose_1 → door_pose_2 → door_pose_3 in order (e.g. ready →
-            raise straight up → push straight down), each held pose_hold_sec
-  PUSH      base drives forward for push_duration_sec to open the door
+  PRESS     SLAM: play door_pose_1 → door_pose_2 → door_pose_3 in order (e.g.
+            ready → raise straight up → slam straight down), each held
+            pose_hold_sec. Unlatches the handle.
+  ARM_PUSH  arm swings to door_arm_push_pose_deg to shove the door open with the
+            arm, held arm_push_hold_sec. Skipped unless arm_push_after_slam.
+  PUSH      base drives forward for push_duration_sec to open the door. Skipped
+            unless drive_forward_after_poses.
   COMPLETE  stop base, retract to door_home_pose_deg, succeed
   ABORT     stop base, retract to door_home_pose_deg, abort
+
+The three motions — arm slam (PRESS), arm push (ARM_PUSH), and base drive (PUSH)
+— are independently tunable, savable, and triggerable (run_press / run_arm_push
+/ run_push debug services) so a half-working step can never ram a latched door.
 
 Base commands are published to /motion/cmd (Twist); motion_arbiter handles the
 acceleration limiter and the /cmd_vel publish. The arbiter's override_timeout
@@ -62,6 +70,8 @@ from .red_bar_detector import (
 _PERSIST_PARAMS = [
     "ready_distance_m",
     "pose_hold_sec",
+    "arm_push_after_slam",
+    "arm_push_hold_sec",
     "drive_forward_after_poses",
     "hold_pose_during_push",
     "push_hold_repub_sec",
@@ -71,6 +81,7 @@ _PERSIST_PARAMS = [
     "door_pose_1_deg",
     "door_pose_2_deg",
     "door_pose_3_deg",
+    "door_arm_push_pose_deg",
     "red_hue_lo1",
     "red_hue_hi1",
     "red_hue_lo2",
@@ -88,8 +99,9 @@ class State(Enum):
     IDLE = "idle"
     ALIGN = "align"
     APPROACH = "approach"
-    PRESS = "press"
-    PUSH = "push"
+    PRESS = "press"        # arm slam-down (unlatch the handle)
+    ARM_PUSH = "arm_push"  # arm shoves the door open
+    PUSH = "push"          # base drives forward
     COMPLETE = "complete"
     ABORT = "abort"
 
@@ -147,8 +159,13 @@ class OpenDoorServer(Node):
         self.declare_parameter("approach_center_kp", 0.4)
         self.declare_parameter("approach_max_wz", 0.25)
 
-        # ── PRESS (arm sequence) / PUSH (drive forward) ──────────────────
-        self.declare_parameter("pose_hold_sec", 0.3)   # dwell between sequence poses
+        # ── PRESS (arm slam) / ARM_PUSH (arm shove) / PUSH (drive) ───────
+        self.declare_parameter("pose_hold_sec", 0.3)   # dwell between slam poses
+        # Arm push: swing the arm to door_arm_push_pose_deg to shove the door
+        # open after the slam unlatches it. Off by default so a mis-tuned push
+        # pose can't drive the arm into a still-latched door.
+        self.declare_parameter("arm_push_after_slam", False)
+        self.declare_parameter("arm_push_hold_sec", 0.5)
         # Safety: defaults False so the base never rams a still-latched door.
         # Enable it from the UI only once pose 3 reliably opens/unlatches.
         self.declare_parameter("drive_forward_after_poses", False)
@@ -166,6 +183,10 @@ class OpenDoorServer(Node):
         self.declare_parameter("door_pose_1_deg", [167.0, 80.0, 170.6])
         self.declare_parameter("door_pose_2_deg", [167.0, 100.0, 170.6])
         self.declare_parameter("door_pose_3_deg", [167.0, 50.0, 170.6])
+        # Single target pose the arm swings to during ARM_PUSH (shove the door
+        # open with the arm). Defaults to the slammed-down pose so an unset value
+        # is a no-op rather than a wild swing — tune it live from the UI.
+        self.declare_parameter("door_arm_push_pose_deg", [167.0, 50.0, 170.6])
         self.declare_parameter("door_home_pose_deg", [167.0, 75.0, 170.6])
 
         self._cb_group = ReentrantCallbackGroup()
@@ -225,6 +246,9 @@ class OpenDoorServer(Node):
         self._run_press_srv = self.create_service(
             Trigger, "~/run_press", self._on_run_press, callback_group=self._cb_group
         )
+        self._run_arm_push_srv = self.create_service(
+            Trigger, "~/run_arm_push", self._on_run_arm_push, callback_group=self._cb_group
+        )
         self._run_push_srv = self.create_service(
             Trigger, "~/run_push", self._on_run_push, callback_group=self._cb_group
         )
@@ -234,7 +258,7 @@ class OpenDoorServer(Node):
 
         self.get_logger().info(
             "Ready: /open_door (red-bar detector); debug services: "
-            "~/run_press ~/run_push ~/go_home"
+            "~/run_press ~/run_arm_push ~/run_push ~/go_home"
         )
 
     # ── Persistence (YAML save / load) ─────────────────────────────────────
@@ -304,6 +328,27 @@ class OpenDoorServer(Node):
         finally:
             self._motion_lock.release()
         self.get_logger().info(f"run_press: {response.message}")
+        return response
+
+    def _on_run_arm_push(self, _request, response):
+        """Swing the arm to door_arm_push_pose_deg once; the base never moves."""
+        if not self._motion_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "busy: another door motion is running"
+            return response
+        try:
+            self._fsm_state = State.ARM_PUSH.value
+            self._run_arm_push_sequence()
+            self._fsm_state = State.IDLE.value
+            response.success = True
+            response.message = "arm push done: arm at door_arm_push_pose; base did not move"
+        except Exception as exc:  # noqa: BLE001
+            self._publish_twist(0.0, 0.0)
+            response.success = False
+            response.message = f"arm push failed: {exc}"
+        finally:
+            self._motion_lock.release()
+        self.get_logger().info(f"run_arm_push: {response.message}")
         return response
 
     def _on_run_push(self, _request, response):
@@ -433,6 +478,21 @@ class OpenDoorServer(Node):
             if hold > 0.0:
                 time.sleep(hold)
 
+    def _run_arm_push_sequence(self, feedback=None) -> None:
+        """Swing the arm to door_arm_push_pose_deg to shove the door open.
+
+        Arm-only: the base is explicitly stopped and never commanded here. This
+        is the "push the door open with the arm" step, distinct from the base
+        forward drive (_run_push).
+        """
+        self._publish_twist(0.0, 0.0)
+        if feedback is not None:
+            feedback(State.ARM_PUSH.value, 0.65, "arm pushing door open")
+        self.arm.send_degrees("door_arm_push", self._pose("door_arm_push_pose_deg"))
+        hold = float(self.get_parameter("arm_push_hold_sec").value)
+        if hold > 0.0:
+            time.sleep(hold)
+
     def _run_push(self, should_continue=None, feedback=None) -> None:
         """Drive the base forward for push_duration_sec, re-asserting pose 3.
 
@@ -560,24 +620,48 @@ class OpenDoorServer(Node):
                         wz = max(-max_wz, min(max_wz, -kp * det.x_norm))
                         self._publish_twist(speed, wz)
 
-            # ── PRESS: play the three sequence poses in order ────────────
+            # ── PRESS: slam-down — play the three sequence poses in order ─
             elif state == State.PRESS:
                 self._run_press_sequence(
                     feedback=lambda s, p, d: self._publish_feedback(goal_handle, s, p, d)
                 )
-                # Skip the forward push unless explicitly enabled, so a pose-3
-                # that didn't open the door can't get rammed forward.
-                if not bool(self.get_parameter("drive_forward_after_poses").value):
+                # Arm push first if enabled, then the base drive — each gated
+                # independently so a slam that didn't unlatch can't get shoved.
+                if bool(self.get_parameter("arm_push_after_slam").value):
                     self._publish_feedback(
-                        goal_handle, State.COMPLETE.value, 0.9,
-                        "poses done; forward push disabled",
+                        goal_handle, State.ARM_PUSH.value, 0.6, "slam done; arm pushing door"
                     )
-                    state, state_entered = State.COMPLETE, time.monotonic()
+                    state, state_entered = State.ARM_PUSH, time.monotonic()
+                    continue
+                if bool(self.get_parameter("drive_forward_after_poses").value):
+                    self._publish_feedback(
+                        goal_handle, State.PUSH.value, 0.7, "slam done; holding handle + pushing"
+                    )
+                    state, state_entered = State.PUSH, time.monotonic()
                     continue
                 self._publish_feedback(
-                    goal_handle, State.PUSH.value, 0.7, "poses done; holding handle + pushing"
+                    goal_handle, State.COMPLETE.value, 0.9,
+                    "slam done; arm push + forward drive disabled",
                 )
-                state, state_entered = State.PUSH, time.monotonic()
+                state, state_entered = State.COMPLETE, time.monotonic()
+                continue
+
+            # ── ARM_PUSH: shove the door open with the arm ───────────────
+            elif state == State.ARM_PUSH:
+                self._run_arm_push_sequence(
+                    feedback=lambda s, p, d: self._publish_feedback(goal_handle, s, p, d)
+                )
+                if bool(self.get_parameter("drive_forward_after_poses").value):
+                    self._publish_feedback(
+                        goal_handle, State.PUSH.value, 0.75, "arm push done; holding handle + driving"
+                    )
+                    state, state_entered = State.PUSH, time.monotonic()
+                    continue
+                self._publish_feedback(
+                    goal_handle, State.COMPLETE.value, 0.9,
+                    "arm push done; forward drive disabled",
+                )
+                state, state_entered = State.COMPLETE, time.monotonic()
                 continue
 
             # ── PUSH: ease base forward while re-asserting pose 3 ────────
