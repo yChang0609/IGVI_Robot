@@ -75,6 +75,7 @@ class SearchRetrieveServer(RetrieveBase):
             return result
 
         # 6. Return to caller-specified home pose
+        self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
         self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
         home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning", 0.9)
@@ -93,6 +94,7 @@ class SearchRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
+        self.clear_costmaps()  # clear marks left by the bear during carry
         result.success = True
         result.message = "Successfully retrieved object and returned"
         goal_handle.succeed()

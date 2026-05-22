@@ -85,7 +85,7 @@ global_costmap:
           min_obstacle_height: 0.05   # ignore the floor
           max_obstacle_height: 1.5
           obstacle_max_range: 3.0     # trust Kinect depth out to ~3 m
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.18    # ignore held object (~0.24m grab dist); tune if needed
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
         rear_scan:

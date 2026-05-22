@@ -9,6 +9,7 @@ import tf2_ros
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
@@ -72,6 +73,14 @@ class RetrieveBase(Node):
             callback_group=self.callback_group,
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        self._clear_global_client = self.create_client(
+            ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
+            callback_group=self.callback_group,
+        )
+        self._clear_local_client = self.create_client(
+            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap",
+            callback_group=self.callback_group,
+        )
         self.nav_client = ActionClient(
             self, NavigateToPose, "navigate_to_pose",
             callback_group=self.callback_group,
@@ -570,6 +579,15 @@ class RetrieveBase(Node):
         if not r.object_grasped:
             return False, f"grab failed: {r.message}"
         return True, r.message
+
+    def clear_costmaps(self):
+        """Fire-and-forget clear of both costmaps. Called after grasp and after release
+        so the held/placed object doesn't block Nav2 planning."""
+        req = ClearEntireCostmap.Request()
+        self._clear_global_client.call_async(req)
+        self._clear_local_client.call_async(req)
+        time.sleep(0.3)  # let Nav2 process before the next navigate call
+        self.get_logger().info("costmaps cleared")
 
     def release_arm(self, goal_handle):
         self.arm.publish_named("release_object", "place_pose_deg")

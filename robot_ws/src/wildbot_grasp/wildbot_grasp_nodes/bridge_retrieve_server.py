@@ -107,6 +107,7 @@ class BridgeRetrieveServer(RetrieveBase):
             return result
 
         # 4. Return home
+        self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning_home", 0.88)
         if not ok:
             result.success = False
@@ -123,6 +124,7 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
+        self.clear_costmaps()  # clear marks left by the bear during carry
         result.success = True
         result.message = (
             f"Bridge mission complete: reached bridge center, acquired {target_class}, "
