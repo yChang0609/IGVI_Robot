@@ -95,7 +95,7 @@ class BearGraspTaskNode(Node):
         self.declare_parameter("cmd_vel_topic", "/motion/cmd")
         self.declare_parameter("state_topic", "/bear_grasp/state")
         self.declare_parameter("grab_action_name", "grab_object")
-        self.declare_parameter("target_labels", ["bear", "teddy bear", "xiong", "熊"])
+        self.declare_parameter("target_labels", ["bear", "teddy bear", "xiong", "熊","xiong_qiao"])
         self.declare_parameter("min_confidence", 0.35)
         self.declare_parameter("target_max_distance_m", 0.24)
         # Once the target enters the grasp band, depth noise must exceed this

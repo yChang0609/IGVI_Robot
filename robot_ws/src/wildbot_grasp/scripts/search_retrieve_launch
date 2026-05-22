@@ -14,10 +14,11 @@ append_param() {
 ros_args=(--ros-args)
 append_param ros_args RETRIEVE_IMAGE_CENTER_X       image_center_x
 append_param ros_args RETRIEVE_VISUAL_SERVO_KP      visual_servo_kp
-append_param ros_args RETRIEVE_VISUAL_SERVO_TOLERANCE_PX visual_servo_tolerance_px
 append_param ros_args RETRIEVE_STANDOFF_DISTANCE    standoff_distance
 append_param ros_args RETRIEVE_APPROACH_DISTANCE_M  approach_target_distance_m
 append_param ros_args RETRIEVE_APPROACH_SPEED       approach_linear_speed
 append_param ros_args RETRIEVE_APPROACH_TIMEOUT_SEC approach_timeout_sec
+append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
+append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
 
 exec ros2 run wildbot_grasp search_retrieve_server "${ros_args[@]}"

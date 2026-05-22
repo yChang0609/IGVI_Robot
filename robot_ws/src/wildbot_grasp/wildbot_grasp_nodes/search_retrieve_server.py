@@ -15,7 +15,6 @@ class SearchRetrieveServer(RetrieveBase):
             "search_retrieve_server",
             standoff_distance=0.45,
             visual_servo_kp=0.005,
-            visual_servo_timeout=15.0,
         )
         self.action_server = ActionServer(
             self,
@@ -66,18 +65,9 @@ class SearchRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 4. Visual approach: drive toward bear until at grab distance
-        self.publish_feedback(goal_handle, "approaching", 0.6, f"Visually approaching {target_name}")
-        ok, message = self.visual_approach(goal_handle, target_name)
-        if not ok:
-            result.success = False
-            result.message = message
-            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-            return result
-
-        # 5. Grasp via GrabObjectServer
-        self.publish_feedback(goal_handle, "grabbing", 0.7, f"Grabbing {target_name}")
-        ok, message = self.call_grab_object(goal_handle, target_name)
+        # 4. Grasp state: YOLO centering + approach + grab (shared with bridge_retrieve)
+        self.publish_feedback(goal_handle, "approaching", 0.6, f"Approaching and grabbing {target_name}")
+        ok, message = self.approach_and_grab(goal_handle, target_name)
         if not ok:
             result.success = False
             result.message = message

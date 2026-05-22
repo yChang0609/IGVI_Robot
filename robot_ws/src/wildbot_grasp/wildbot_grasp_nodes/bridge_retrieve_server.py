@@ -15,10 +15,8 @@ class BridgeRetrieveServer(RetrieveBase):
             "bridge_retrieve_server",
             standoff_distance=0.22,
             visual_servo_kp=0.002,
-            visual_servo_timeout=12.0,
         )
         self.declare_parameter("target_class", "xiong_qiao")
-        self.declare_parameter("search_memory_timeout", 8.0)
 
         self.action_server = ActionServer(
             self,
@@ -53,7 +51,7 @@ class BridgeRetrieveServer(RetrieveBase):
             return result
         home_pose = self.make_pose(*home_pose_tuple)
 
-        # 1. Navigate to bridge center
+        # 1. Navigate to bridge center (gets the robot near the bear/wall)
         bridge_pose = self.make_pose(goal.bridge_pose_x, goal.bridge_pose_y, goal.bridge_pose_yaw)
         ok, message = self.navigate_to_pose(goal_handle, bridge_pose, "to_bridge_center", 0.15)
         if not ok:
@@ -62,53 +60,38 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 2. Find target in semantic memory
-        self.publish_feedback(goal_handle, "searching_target", 0.35, f"Looking for {target_class}")
-        target = self.find_target_from_memory(
-            target_class, float(self.get_parameter("search_memory_timeout").value)
+        # 2. Locate the target. If a remembered point of this class sits near the
+        # bridge, just turn to face it; otherwise scan-rotate until the bear shows
+        # up in YOLO (CW 45deg -> CCW 90deg -> keep rotating).
+        bridge_point = (goal.bridge_pose_x, goal.bridge_pose_y)
+        mem = self.find_memory_near(
+            target_class, bridge_point, float(self.get_parameter("bridge_memory_radius_m").value)
         )
-        if target is None:
-            result.success = False
-            result.message = f"Target class {target_class} not found in semantic memory"
-            goal_handle.abort()
-            return result
-
-        # 3. Choose and navigate to approach pose
-        approach_pose, approach_detail = self.choose_approach_pose(target["position"])
-        if approach_pose is None:
-            result.success = False
-            result.message = approach_detail
-            goal_handle.abort()
-            return result
-
-        ok, message = self.navigate_to_pose(goal_handle, approach_pose, "approaching_target", 0.50)
+        if mem is not None:
+            pos = mem["position"]
+            self.publish_feedback(goal_handle, "facing_target", 0.45,
+                                  f"Memory point near bridge; facing {target_class}")
+            ok, message = self.face_point(goal_handle, (pos["x"], pos["y"]))
+        else:
+            self.publish_feedback(goal_handle, "scanning", 0.45,
+                                  f"No memory near bridge; scanning for {target_class}")
+            ok, message = self.scan_for_target(goal_handle, target_class)
         if not ok:
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 4. Visual alignment
-        self.publish_feedback(goal_handle, "aligning", 0.62, "Centering target with YOLO bbox")
-        _, align_detail = self.visual_align(goal_handle, target_class)
-        self.publish_feedback(goal_handle, "aligning", 0.68, align_detail)
-
-        if goal_handle.is_cancel_requested:
-            result.success = False
-            result.message = "mission canceled"
-            goal_handle.canceled()
-            return result
-
-        # 5. Grasp via GrabObjectServer
-        self.publish_feedback(goal_handle, "grasping", 0.72, f"Closing gripper on {target_class}")
-        ok, message = self.call_grab_object(goal_handle, target_class)
+        # 3. Grasp state: YOLO centering + approach + grab (shared with search_retrieve)
+        self.publish_feedback(goal_handle, "grasping", 0.62, f"Approaching and grabbing {target_class}")
+        ok, message = self.approach_and_grab(goal_handle, target_class)
         if not ok:
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 6. Return home
+        # 4. Return home
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning_home", 0.88)
         if not ok:
             result.success = False
@@ -116,7 +99,7 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 7. Release
+        # 5. Release
         self.publish_feedback(goal_handle, "releasing", 0.97, "Releasing object at start pose")
         ok, message = self.release_arm(goal_handle)
         if not ok:

@@ -2,6 +2,46 @@ from __future__ import annotations
 
 import os
 import sys
+from ctypes import CDLL
+
+
+def _linux_qt_platform_hint() -> str:
+    platform = os.environ.get("QT_QPA_PLATFORM", "").strip()
+    if platform:
+        return platform.split(":", 1)[0].lower()
+    return "xcb"
+
+
+def _ensure_linux_qt_runtime() -> None:
+    if not sys.platform.startswith("linux"):
+        return
+
+    platform = _linux_qt_platform_hint()
+    if platform in {"xcb", "wayland"}:
+        display_var = "WAYLAND_DISPLAY" if platform == "wayland" else "DISPLAY"
+        if not os.environ.get(display_var):
+            print(
+                f"igvi-ui: Qt platform {platform!r} needs ${display_var}, but it is not set.\n"
+                "Run the UI from a graphical desktop session, enable X11/Wayland forwarding, "
+                "or set QT_QPA_PLATFORM=offscreen only for non-interactive smoke tests.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if platform == "xcb":
+        try:
+            CDLL("libxcb-cursor.so.0")
+        except OSError:
+            print(
+                "igvi-ui: Qt xcb support needs libxcb-cursor.so.0.\n"
+                "Install it with:\n"
+                "  sudo apt update && sudo apt install -y libxcb-cursor0",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+_ensure_linux_qt_runtime()
 
 # Ensure Qt can find its platform plugins (needed on macOS with uv/venv)
 if sys.platform == "darwin" and "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:

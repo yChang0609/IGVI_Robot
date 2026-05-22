@@ -29,14 +29,11 @@ class RetrieveBase(Node):
         *,
         standoff_distance: float = 0.22,
         visual_servo_kp: float = 0.002,
-        visual_servo_timeout: float = 12.0,
     ):
         super().__init__(node_name)
 
         self.declare_parameter("standoff_distance", standoff_distance)
         self.declare_parameter("visual_servo_kp", visual_servo_kp)
-        self.declare_parameter("visual_servo_timeout", visual_servo_timeout)
-        self.declare_parameter("visual_servo_tolerance_px", 15.0)
         self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
         self.declare_parameter("arrival_tolerance", 0.10)
@@ -44,6 +41,11 @@ class RetrieveBase(Node):
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_timeout_sec", 20.0)
+        # Bridge: locate target near the bridge waypoint / scan-rotate to find it.
+        self.declare_parameter("bridge_memory_radius_m", 0.6)
+        self.declare_parameter("scan_angular_speed", 0.4)
+        self.declare_parameter("scan_step_timeout_sec", 15.0)
+        self.declare_parameter("scan_total_timeout_sec", 40.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -314,48 +316,6 @@ class RetrieveBase(Node):
         return best_pose, f"selected approach path length {best_len:.2f}m"
 
     # ------------------------------------------------------------------
-    # Visual alignment
-    # ------------------------------------------------------------------
-
-    def visual_align(self, goal_handle, target_class: str):
-        center_x = float(self.get_parameter("image_center_x").value)
-        tolerance = float(self.get_parameter("visual_servo_tolerance_px").value)
-        kp = float(self.get_parameter("visual_servo_kp").value)
-        timeout = float(self.get_parameter("visual_servo_timeout").value)
-        deadline = time.monotonic() + timeout
-
-        while rclpy.ok() and time.monotonic() < deadline:
-            if goal_handle.is_cancel_requested:
-                self.cmd_vel_pub.publish(Twist())
-                return False, "mission canceled"
-
-            det_center = None
-            with self.detections_lock:
-                detections = list(self.latest_detections)
-            for det in detections:
-                if det.get("class_name") == target_class:
-                    det_center = det.get("bbox", {}).get("center_x")
-                    break
-
-            if det_center is None:
-                self.cmd_vel_pub.publish(Twist())
-                time.sleep(0.1)
-                continue
-
-            error = center_x - float(det_center)
-            if abs(error) <= tolerance:
-                self.cmd_vel_pub.publish(Twist())
-                return True, f"target centered; error={error:.1f}px"
-
-            twist = Twist()
-            twist.angular.z = max(-0.3, min(0.3, error * kp))
-            self.cmd_vel_pub.publish(twist)
-            time.sleep(0.1)
-
-        self.cmd_vel_pub.publish(Twist())
-        return False, "visual alignment timed out; continuing"
-
-    # ------------------------------------------------------------------
     # Visual approach: drive toward target until at grab distance
     # ------------------------------------------------------------------
 
@@ -414,8 +374,131 @@ class RetrieveBase(Node):
         return False, f"visual approach timed out after {timeout:.0f}s"
 
     # ------------------------------------------------------------------
+    # Target localization: detections lookup, memory lookup, rotate/scan
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ang_norm(angle: float) -> float:
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+    def detection_for_class(self, target_class: str, require_depth: bool = False):
+        """Return the first live detection matching target_class, else None."""
+        with self.detections_lock:
+            detections = list(self.latest_detections)
+        for det in detections:
+            label = str(det.get("class_name") or det.get("class_id") or "")
+            if label.lower() != str(target_class).lower():
+                continue
+            if require_depth and not det.get("depth_valid"):
+                continue
+            return det
+        return None
+
+    def find_memory_near(self, target_class: str, point, radius_m: float):
+        """Return the closest remembered object of target_class within radius of point."""
+        best = None
+        best_dist = float(radius_m)
+        with self.memory_lock:
+            for obj in self.latest_memory.values():
+                if obj.get("class_name") != target_class:
+                    continue
+                pos = obj.get("position")
+                if not pos:
+                    continue
+                dist = math.hypot(pos["x"] - point[0], pos["y"] - point[1])
+                if dist <= best_dist:
+                    best_dist = dist
+                    best = obj
+        return best
+
+    def rotate_relative(self, goal_handle, delta_deg: float, target_class: str = None,
+                        angular_speed: float = None, timeout_sec: float = None):
+        """Rotate in place by delta_deg (CCW positive, CW negative).
+
+        If target_class is given, stop and return seen=True the moment that class
+        appears in detections. Returns (ok, message, seen).
+        """
+        speed = (float(self.get_parameter("scan_angular_speed").value)
+                 if angular_speed is None else angular_speed)
+        timeout = (float(self.get_parameter("scan_step_timeout_sec").value)
+                   if timeout_sec is None else timeout_sec)
+        pose = self.get_robot_pose()
+        if pose is None:
+            return False, "could not read robot pose", False
+
+        target_yaw = self._ang_norm(pose[2] + math.radians(delta_deg))
+        direction = 1.0 if delta_deg >= 0 else -1.0
+        deadline = time.monotonic() + timeout
+        twist = Twist()
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled", False
+            if target_class is not None and self.detection_for_class(target_class) is not None:
+                self.cmd_vel_pub.publish(Twist())
+                return True, "target detected during rotation", True
+            cur = self.get_robot_pose()
+            if cur is None:
+                time.sleep(0.05)
+                continue
+            if abs(self._ang_norm(target_yaw - cur[2])) < math.radians(4.0):
+                break
+            twist.angular.z = direction * abs(speed)
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return True, "rotation complete", False
+
+    def face_point(self, goal_handle, point):
+        """Rotate in place to face an absolute (x, y) point (e.g. the bear's memory point)."""
+        pose = self.get_robot_pose()
+        if pose is None:
+            return False, "could not read robot pose"
+        desired = math.atan2(point[1] - pose[1], point[0] - pose[0])
+        delta_deg = math.degrees(self._ang_norm(desired - pose[2]))
+        ok, _, _ = self.rotate_relative(goal_handle, delta_deg)
+        return ok, f"faced memory point (turned {delta_deg:.0f} deg)"
+
+    def scan_for_target(self, goal_handle, target_class: str):
+        """Scan-rotate to find the target: CW 45deg, then CCW 90deg, then keep
+        rotating until the target is seen or the total scan timeout elapses."""
+        if self.detection_for_class(target_class) is not None:
+            return True, "target already visible"
+
+        _, _, seen = self.rotate_relative(goal_handle, -45.0, target_class=target_class)
+        if seen:
+            return True, "target found after 45deg CW"
+        if goal_handle.is_cancel_requested:
+            return False, "mission canceled"
+
+        _, _, seen = self.rotate_relative(goal_handle, 90.0, target_class=target_class)
+        if seen:
+            return True, "target found after 90deg CCW"
+        if goal_handle.is_cancel_requested:
+            return False, "mission canceled"
+
+        total_deadline = time.monotonic() + float(self.get_parameter("scan_total_timeout_sec").value)
+        while rclpy.ok() and time.monotonic() < total_deadline:
+            if goal_handle.is_cancel_requested:
+                return False, "mission canceled"
+            _, _, seen = self.rotate_relative(goal_handle, 90.0, target_class=target_class)
+            if seen:
+                return True, "target found during continued rotation"
+        return False, "target not found after full scan"
+
+    # ------------------------------------------------------------------
     # Grasp and release
     # ------------------------------------------------------------------
+
+    def approach_and_grab(self, goal_handle, target_class: str):
+        """Shared grasp state: YOLO visual approach (center + drive to grab
+        distance) then call the grab_object action server."""
+        ok, message = self.visual_approach(goal_handle, target_class)
+        if not ok:
+            return False, message
+        return self.call_grab_object(goal_handle, target_class)
 
     def call_grab_object(self, goal_handle, target_class: str):
         if not self.grab_client.wait_for_server(timeout_sec=5.0):
