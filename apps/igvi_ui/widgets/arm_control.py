@@ -29,6 +29,10 @@ GRIPPER_RETRACT_DELAY_MS = 500
 DEFAULT_ARM1 = 210.0
 DEFAULT_ARM2 = 0.0
 DEFAULT_GRIPPER = 240.0
+# Default starting target (mid-range, gripper open)
+DEFAULT_ARM1 = 190.0
+DEFAULT_ARM2 = 0.0
+DEFAULT_GRIPPER = GRIPPER_MAX
 
 # Continuous step rate (deg/sec) while a key is held
 ARM_RATE_DEG_PER_SEC = 25.0

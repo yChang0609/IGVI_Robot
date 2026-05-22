@@ -170,78 +170,22 @@ class DetectorNode(Node):
         else:
             self.annotated_publisher = None
 
-        # Continuous Dynamic Subscription variables
-        self.current_subscribed_topic_type = None
-        self.image_sub = None
-        self.depth_sub = None
-        self.ts = None
-        self.subscription = None
-
-        # Background timer for continuous dynamic topic routing
-        self.create_timer(1.0, self.check_topics_and_subscribe)
-
-    def check_topics_and_subscribe(self):
-        filtered_topic = "/rgb/image_filtered"
-        try:
-            num_publishers = self.count_publishers(filtered_topic)
-            has_filtered = num_publishers > 0
-        except Exception:
-            has_filtered = False
-
-        target_type = "filtered" if has_filtered else "raw"
-
-        if self.current_subscribed_topic_type != target_type:
-            self._do_subscribe(target_type)
-
-    def _do_subscribe(self, target_type):
-        # 1. Destroy existing subscriptions
-        if self.subscription is not None:
-            self.destroy_subscription(self.subscription)
-            self.subscription = None
-
-        if self.image_sub is not None:
-            try:
-                self.destroy_subscription(self.image_sub.sub)
-            except Exception:
-                pass
-            self.image_sub = None
-
-        if self.depth_sub is not None:
-            try:
-                self.destroy_subscription(self.depth_sub.sub)
-            except Exception:
-                pass
-            self.depth_sub = None
-        self.ts = None
-
-        # 2. Determine topic names
-        if target_type == "filtered":
-            image_topic = "/rgb/image_filtered"
-            depth_topic = "/depth_to_rgb/image_filtered"
-        else:
-            image_topic = self.get_parameter("image_topic").value
-            depth_topic = self.get_parameter("depth_topic").value
-
-        # 3. Create new subscriptions
+        # Standard raw-only subscriptions (YOLO always uses raw feeds to ensure precise grasping works)
+        image_topic = self.get_parameter("image_topic").value
         if self.enable_depth:
+            depth_topic = self.get_parameter("depth_topic").value
             self.image_sub = message_filters.Subscriber(self, Image, image_topic)
             self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
             self.ts = message_filters.ApproximateTimeSynchronizer(
                 [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
             )
             self.ts.registerCallback(self.sync_callback)
-            self.get_logger().info(
-                f"YOLO detector dynamically switched to synchronized {target_type} topics: {image_topic} & {depth_topic}"
-            )
+            self.get_logger().info(f"Subscribed to synchronized raw topics: {image_topic} & {depth_topic}")
         else:
             self.subscription = self.create_subscription(
                 Image, image_topic, self.image_callback, 10
             )
-            self.get_logger().info(
-                f"YOLO detector dynamically switched to {target_type} image topic: {image_topic}"
-            )
-
-        self.current_subscribed_topic_type = target_type
+            self.get_logger().info(f"Subscribed to raw image topic: {image_topic}")
 
     def _prepare_migraphx_cache(self, ep):
         if ep != "migraphx":
