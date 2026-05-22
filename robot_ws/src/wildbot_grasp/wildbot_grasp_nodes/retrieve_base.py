@@ -37,7 +37,7 @@ class RetrieveBase(Node):
         self.declare_parameter("visual_servo_kp", visual_servo_kp)
         self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
-        self.declare_parameter("arrival_tolerance", 0.10)
+        self.declare_parameter("arrival_tolerance", 0.25)
         self.declare_parameter("arrival_timeout", 45.0)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
@@ -348,6 +348,9 @@ class RetrieveBase(Node):
         timeout = float(self.get_parameter("approach_timeout_sec").value)
         deadline = time.monotonic() + timeout
         reached_grab_range = False
+        # When depth is unavailable but target is centered, track how long we've
+        # been blindly approaching so we can trigger grab after a fixed interval.
+        no_depth_centered_t0 = None
 
         def clamp_ang(value):
             return max(-0.3, min(0.3, value))
@@ -385,16 +388,31 @@ class RetrieveBase(Node):
                     self.cmd_vel_pub.publish(Twist())
                     return True, "depth lost at close range; grabbing (latched)"
                 if bbox_cx is not None:
-                    # Still see the bear — keep centering in place, don't drive blind.
+                    error_px = center_x - bbox_cx
+                    centered = abs(error_px) <= tolerance
                     twist = Twist()
-                    twist.angular.z = clamp_ang((center_x - bbox_cx) * kp)
+                    if centered:
+                        # Target is centered but depth unavailable (e.g. below
+                        # camera min range or poor IR reflectance). Creep forward;
+                        # after 3 s of sustained blind approach, assume grab range.
+                        if no_depth_centered_t0 is None:
+                            no_depth_centered_t0 = time.monotonic()
+                        if time.monotonic() - no_depth_centered_t0 >= 3.0:
+                            self.cmd_vel_pub.publish(Twist())
+                            return True, "centered 3s without depth; attempting grab"
+                        twist.linear.x = linear_speed
+                    else:
+                        no_depth_centered_t0 = None
+                        twist.angular.z = clamp_ang(error_px * kp)
                     self.cmd_vel_pub.publish(twist)
                     time.sleep(0.05)
                     continue
+                no_depth_centered_t0 = None
                 self.cmd_vel_pub.publish(Twist())
                 time.sleep(0.1)
                 continue
 
+            no_depth_centered_t0 = None  # depth valid; reset blind-approach timer
             depth = float(best["depth_m"])
             error_px = center_x - bbox_cx
             centered = abs(error_px) <= tolerance
