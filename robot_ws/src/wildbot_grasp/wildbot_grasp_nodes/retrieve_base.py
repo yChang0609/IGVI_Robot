@@ -44,6 +44,8 @@ class RetrieveBase(Node):
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_timeout_sec", 20.0)
+        self.declare_parameter("semantic_memory_control_topic", "/semantic_memory/control")
+        self.declare_parameter("semantic_memory_resume_delay_sec", 1.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -66,6 +68,11 @@ class RetrieveBase(Node):
         self.create_subscription(
             String, "/detections_json", self.detections_callback, 10,
             callback_group=self.callback_group,
+        )
+        self.semantic_memory_control_pub = self.create_publisher(
+            String,
+            self.get_parameter("semantic_memory_control_topic").value,
+            10,
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
         self.nav_client = ActionClient(
@@ -244,6 +251,76 @@ class RetrieveBase(Node):
                     return self.latest_memory[target_id]
             time.sleep(0.1)
         return None
+
+    def publish_semantic_memory_control(
+        self,
+        command: str,
+        *,
+        mode: str | None = None,
+        reason: str | None = None,
+        target_id: str | None = None,
+        target_class: str | None = None,
+    ):
+        payload = {"command": command}
+        if mode is not None:
+            payload["mode"] = mode
+        if reason is not None:
+            payload["reason"] = reason
+        if target_id:
+            payload["target_id"] = str(target_id)
+        if target_class:
+            payload["target_class"] = str(target_class)
+
+        msg = String()
+        msg.data = json.dumps(payload)
+        if self.semantic_memory_control_pub.get_subscription_count() == 0:
+            self.get_logger().warning(
+                "semantic memory control has no subscribers; command may be missed"
+            )
+        self.semantic_memory_control_pub.publish(msg)
+        self.get_logger().info(f"semantic memory control: {msg.data}")
+
+    def suspend_semantic_memory(self, mode: str, *, target_id: str = "", target_class: str = ""):
+        self.publish_semantic_memory_control(
+            "suspend",
+            mode=mode,
+            reason=mode,
+            target_id=target_id,
+            target_class=target_class,
+        )
+
+    def mark_semantic_memory_carried(self, target_id: str = "", target_class: str = ""):
+        if target_id:
+            with self.memory_lock:
+                self.latest_memory.pop(target_id, None)
+        self.publish_semantic_memory_control(
+            "carry",
+            mode="carrying",
+            reason="grasp_success",
+            target_id=target_id,
+            target_class=target_class,
+        )
+
+    def resume_semantic_memory(
+        self,
+        *,
+        mode: str = "idle",
+        reason: str = "resume",
+        delay_sec: float | None = None,
+        target_id: str = "",
+        target_class: str = "",
+    ):
+        if delay_sec is None:
+            delay_sec = float(self.get_parameter("semantic_memory_resume_delay_sec").value)
+        if delay_sec > 0:
+            time.sleep(delay_sec)
+        self.publish_semantic_memory_control(
+            "resume",
+            mode=mode,
+            reason=reason,
+            target_id=target_id,
+            target_class=target_class,
+        )
 
     # ------------------------------------------------------------------
     # Approach planning
@@ -456,4 +533,10 @@ class RetrieveBase(Node):
             if goal_handle.is_cancel_requested:
                 return False, "mission canceled"
             time.sleep(0.05)
-        return True, "object released"
+        self.arm.publish_named("return_home_after_release", "home_pose_deg")
+        deadline = time.monotonic() + self.arm.motion_wait_sec()
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                return False, "mission canceled"
+            time.sleep(0.05)
+        return True, "object released and arm returned home"

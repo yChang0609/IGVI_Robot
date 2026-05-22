@@ -101,12 +101,21 @@ class BridgeRetrieveServer(RetrieveBase):
 
         # 5. Grasp via GrabObjectServer
         self.publish_feedback(goal_handle, "grasping", 0.72, f"Closing gripper on {target_class}")
+        target_id = str(target.get("id", ""))
+        self.suspend_semantic_memory("grasping", target_id=target_id, target_class=target_class)
         ok, message = self.call_grab_object(goal_handle, target_class)
         if not ok:
+            self.resume_semantic_memory(
+                reason="grasp_failed",
+                delay_sec=0.0,
+                target_id=target_id,
+                target_class=target_class,
+            )
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
+        self.mark_semantic_memory_carried(target_id, target_class)
 
         # 6. Return home
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning_home", 0.88)
@@ -124,6 +133,11 @@ class BridgeRetrieveServer(RetrieveBase):
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
+        self.resume_semantic_memory(
+            reason="released_home",
+            target_id=target_id,
+            target_class=target_class,
+        )
 
         result.success = True
         result.message = (

@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import threading
 import time
 import uuid
 
@@ -39,6 +40,7 @@ class SemanticMemoryNode(Node):
         self.declare_parameter('depth_unit_scale', 0.001)
         self.declare_parameter('detection_topic', '/detections_json')
         self.declare_parameter('camera_info_topic', '/rgb/camera_info')
+        self.declare_parameter('control_topic', '/semantic_memory/control')
 
         self.target_frame = self.get_parameter('target_frame').value
         self.merge_radius = float(self.get_parameter('merge_radius_m').value)
@@ -59,7 +61,12 @@ class SemanticMemoryNode(Node):
 
         # { object_id: {class_name, x, y, z, last_seen, hits, score, last_depth_m} }
         self.memory = {}
-        self.memory_lock = __import__('threading').Lock()
+        self.memory_lock = threading.Lock()
+        self.control_lock = threading.Lock()
+        self.write_enabled = True
+        self.memory_mode = 'idle'
+        self.carried_target_id = None
+        self.carried_class = None
 
         self.callback_group = ReentrantCallbackGroup()
 
@@ -88,6 +95,13 @@ class SemanticMemoryNode(Node):
 
         self.create_subscription(Empty, '/semantic_memory/clear', self._on_clear, 10,
                                  callback_group=self.callback_group)
+        self.create_subscription(
+            String,
+            self.get_parameter('control_topic').value,
+            self._on_control,
+            10,
+            callback_group=self.callback_group,
+        )
 
         self.create_timer(1.0, self.cleanup_memory)
         self.create_timer(0.1, self.publish_memory)
@@ -106,6 +120,97 @@ class SemanticMemoryNode(Node):
             self.memory.clear()
         self.get_logger().info(f"semantic memory cleared ({count} objects)")
 
+    def _on_control(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning(f"ignored invalid semantic memory control JSON: {msg.data!r}")
+            return
+
+        if not isinstance(data, dict):
+            self.get_logger().warning("ignored semantic memory control payload that is not an object")
+            return
+
+        command = str(data.get('command', '')).strip().lower()
+        target_id = str(data.get('target_id') or '').strip()
+        target_class = str(data.get('target_class') or '').strip()
+        reason = str(data.get('reason') or command or 'control')
+
+        if command == 'suspend':
+            mode = str(data.get('mode') or reason or 'suspended')
+            self._set_write_enabled(False, mode)
+            return
+
+        if command == 'carry':
+            mode = str(data.get('mode') or 'carrying')
+            removed = self._remove_memory_object(target_id, reason='carried') if target_id else False
+            with self.control_lock:
+                self.write_enabled = False
+                self.memory_mode = mode
+                self.carried_target_id = target_id or None
+                self.carried_class = target_class or None
+            detail = f" target_id={target_id}" if target_id else ""
+            if target_class:
+                detail += f" class={target_class}"
+            self.get_logger().info(
+                f"semantic memory carrying state enabled; removed={removed}.{detail}"
+            )
+            return
+
+        if command == 'resume':
+            mode = str(data.get('mode') or 'idle')
+            with self.control_lock:
+                self.write_enabled = True
+                self.memory_mode = mode
+                self.carried_target_id = None
+                self.carried_class = None
+            self.get_logger().info("semantic memory writes resumed")
+            return
+
+        if command == 'remove':
+            removed = self._remove_memory_object(target_id, reason=reason)
+            self.get_logger().info(f"semantic memory remove command target_id={target_id} removed={removed}")
+            return
+
+        if 'write_enabled' in data:
+            enabled = bool(data.get('write_enabled'))
+            mode = str(data.get('mode') or ('idle' if enabled else 'suspended'))
+            self._set_write_enabled(enabled, mode)
+            return
+
+        self.get_logger().warning(f"ignored unknown semantic memory control command: {command!r}")
+
+    def _set_write_enabled(self, enabled: bool, mode: str):
+        with self.control_lock:
+            changed = self.write_enabled != enabled or self.memory_mode != mode
+            self.write_enabled = bool(enabled)
+            self.memory_mode = mode
+        if changed:
+            state = 'enabled' if enabled else 'disabled'
+            self.get_logger().info(f"semantic memory writes {state}; mode={mode}")
+
+    def _write_enabled(self) -> bool:
+        with self.control_lock:
+            return bool(self.write_enabled)
+
+    def _control_snapshot(self) -> dict:
+        with self.control_lock:
+            return {
+                'write_enabled': bool(self.write_enabled),
+                'mode': self.memory_mode,
+                'carried_target_id': self.carried_target_id,
+                'carried_class': self.carried_class,
+            }
+
+    def _remove_memory_object(self, target_id: str, reason: str = 'remove') -> bool:
+        if not target_id:
+            return False
+        with self.memory_lock:
+            removed = self.memory.pop(target_id, None) is not None
+        if removed:
+            self.get_logger().info(f"semantic memory removed {target_id} ({reason})")
+        return removed
+
     def camera_info_callback(self, msg: CameraInfo):
         if not self.camera_info_received:
             self.cam_model.fromCameraInfo(msg)
@@ -118,6 +223,9 @@ class SemanticMemoryNode(Node):
         self.latest_depth_stamp = msg.header.stamp
 
     def detection_callback(self, msg: String):
+        if not self._write_enabled():
+            return
+
         if not self.camera_info_received:
             return
 
@@ -211,6 +319,9 @@ class SemanticMemoryNode(Node):
                 }
 
     def cleanup_memory(self):
+        if not self._write_enabled():
+            return
+
         if (self.latest_depth_img is None or self.camera_frame_id is None
                 or not self.camera_info_received or self.latest_depth_stamp is None):
             return
@@ -274,6 +385,7 @@ class SemanticMemoryNode(Node):
 
     def publish_memory(self):
         memory_list = []
+        status = self._control_snapshot()
 
         with self.memory_lock:
             for obj_id, obj_data in self.memory.items():
@@ -286,7 +398,14 @@ class SemanticMemoryNode(Node):
                     })
 
         msg = String()
-        msg.data = json.dumps({"target_frame": self.target_frame, "objects": memory_list})
+        msg.data = json.dumps({
+            "target_frame": self.target_frame,
+            "objects": memory_list,
+            "write_enabled": status["write_enabled"],
+            "mode": status["mode"],
+            "carried_target_id": status["carried_target_id"],
+            "carried_class": status["carried_class"],
+        })
         self.memory_pub.publish(msg)
 
         marker_array = MarkerArray()

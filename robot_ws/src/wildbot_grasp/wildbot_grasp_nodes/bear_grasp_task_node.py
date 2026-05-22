@@ -58,6 +58,8 @@ class BearGraspTaskNode(Node):
         self.in_grasp_range = False
         self.last_state_publish = 0.0
         self.last_detection_log = 0.0
+        self.memory_suspended_for_grasp = False
+        self.carrying_object = False
 
         detection_topic = str(self.get_parameter("detection_topic").value)
         cmd_topic = str(self.get_parameter("cmd_vel_topic").value)
@@ -65,6 +67,11 @@ class BearGraspTaskNode(Node):
         self.create_subscription(String, detection_topic, self._on_detections, 10, callback_group=self.callback_group)
         self.cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
         self.state_pub = self.create_publisher(String, state_topic, 10)
+        self.semantic_memory_control_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("semantic_memory_control_topic").value),
+            10,
+        )
         self.grab_client = ActionClient(
             self,
             GrabObject,
@@ -117,6 +124,7 @@ class BearGraspTaskNode(Node):
         self.declare_parameter("backup_duration_sec", 0.8)
         self.declare_parameter("retry_pause_sec", 0.4)
         self.declare_parameter("max_task_retries", 0)
+        self.declare_parameter("semantic_memory_control_topic", "/semantic_memory/control")
 
     def _on_start(self, _request, response):
         self.active = True
@@ -320,6 +328,13 @@ class BearGraspTaskNode(Node):
             self.goal_in_flight = False
             self._set_state(TaskState.WAITING_FOR_BEAR, "waiting for /grab_object action server")
             return
+        self._publish_semantic_memory_control(
+            "suspend",
+            mode="grasping",
+            reason="bear_task_grasping",
+            target_class=detection.label,
+        )
+        self.memory_suspended_for_grasp = True
         goal = GrabObject.Goal()
         goal.object_label = detection.label
         goal.distance_m = float(detection.distance_m or 0.0)
@@ -332,6 +347,7 @@ class BearGraspTaskNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.goal_in_flight = False
+            self._resume_semantic_memory_after_failed_grasp()
             self._retry_or_fail("grab goal rejected")
             return
         result_future = goal_handle.get_result_async()
@@ -346,9 +362,53 @@ class BearGraspTaskNode(Node):
         result = future.result().result
         if result.success and result.object_grasped:
             self._publish_stop()
+            target_class = self.latest_detection.label if self.latest_detection else ""
+            self._publish_semantic_memory_control(
+                "carry",
+                mode="carrying",
+                reason="bear_task_grasp_success",
+                target_class=target_class,
+            )
+            self.memory_suspended_for_grasp = False
+            self.carrying_object = True
             self._set_state(TaskState.SUCCEEDED, result.message)
             return
+        self._resume_semantic_memory_after_failed_grasp()
         self._retry_or_fail(result.message)
+
+    def _resume_semantic_memory_after_failed_grasp(self):
+        if not self.memory_suspended_for_grasp:
+            return
+        self.memory_suspended_for_grasp = False
+        self._publish_semantic_memory_control(
+            "resume",
+            mode="idle",
+            reason="bear_task_grasp_failed",
+        )
+
+    def _publish_semantic_memory_control(
+        self,
+        command: str,
+        *,
+        mode: str = "",
+        reason: str = "",
+        target_class: str = "",
+    ):
+        payload = {"command": command}
+        if mode:
+            payload["mode"] = mode
+        if reason:
+            payload["reason"] = reason
+        if target_class:
+            payload["target_class"] = target_class
+        msg = String()
+        msg.data = json.dumps(payload)
+        if self.semantic_memory_control_pub.get_subscription_count() == 0:
+            self.get_logger().warning(
+                "semantic memory control has no subscribers; command may be missed"
+            )
+        self.semantic_memory_control_pub.publish(msg)
+        self.get_logger().info(f"semantic memory control: {msg.data}")
 
     def _retry_or_fail(self, reason: str):
         max_retries = int(self.get_parameter("max_task_retries").value)
