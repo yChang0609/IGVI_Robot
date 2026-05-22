@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient, HostClientError
+from igvi_ui.widgets.door_mission_control import DoorMissionControl
 from igvi_ui.widgets.image_view import ImageView
 
 
@@ -181,12 +182,19 @@ class DoorPage(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(12)
 
-        # Three independently tunable + savable + runnable door motions:
-        #   1) arm slam-down (unlatch)   2) arm push (shove open)   3) base drive
+        # Top: the integrated single-task control (drive to waypoint → run
+        # open_door). Self-contained widget; lift it into any other page by
+        # importing igvi_ui.widgets.door_mission_control.DoorMissionControl.
+        self.mission_control = DoorMissionControl(self.client)
+        self.mission_control.log_message.connect(self.log_message)
+        layout.addWidget(self.mission_control)
+
+        # Below: the per-stage tuning cards.
+        # Two independently tunable + savable + runnable door motions:
+        #   1) arm slam-down (unlatch)   2) base drive (holds pose 3 while pushing)
         self._step_buttons: list[QPushButton] = []
         layout.addWidget(self._build_action_card())
         layout.addWidget(self._build_arm_card())
-        layout.addWidget(self._build_arm_push_card())
         layout.addWidget(self._build_push_card())
         layout.addWidget(self._build_tuning_card())
         layout.addWidget(self._build_legend_card())
@@ -253,8 +261,9 @@ class DoorPage(QWidget):
         layout.addWidget(heading)
 
         hint = QLabel(
-            "Dial the arm with the sliders, then capture it into a slam pose or "
-            "the arm-push pose below. Sliders are shared by both arm motions."
+            "Dial the arm with the sliders, then capture each step with "
+            "Save → Pose 1/2/3. Pose 3 is the slammed-down pose the base push "
+            "holds while driving."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -352,20 +361,6 @@ class DoorPage(QWidget):
         else:
             self.log_message.emit(f"Pose {n}: {result.get('message', 'rejected')}")
 
-    def _save_arm_push_pose(self) -> None:
-        pose = self._current_arm_deg()
-        try:
-            result = self.client.set_params(SERVER_NODE, {"door_arm_push_pose_deg": pose})
-        except HostClientError as exc:
-            self.log_message.emit(f"Save Arm Push failed: {exc}")
-            return
-        if result.get("ok", False):
-            pretty = ", ".join(f"{v:.1f}" for v in pose)
-            self.pose_status.setText(f"Arm Push pose = [{pretty}]")
-            self.log_message.emit(f"Saved Arm Push pose = [{pretty}]")
-        else:
-            self.log_message.emit(f"Arm Push: {result.get('message', 'rejected')}")
-
     def _save_poses_yaml(self) -> None:
         try:
             result = self.client.open_door_save_poses()
@@ -387,67 +382,6 @@ class DoorPage(QWidget):
         except HostClientError as exc:
             self.log_message.emit(f"Go home failed: {exc}")
 
-    def _build_arm_push_card(self) -> QWidget:
-        card = QFrame()
-        card.setObjectName("Card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(6)
-
-        heading = QLabel("2 · Arm push (shove door open with arm)")
-        heading.setStyleSheet("font-weight: 600;")
-        layout.addWidget(heading)
-
-        hint = QLabel(
-            "Dial the arm-push target with the sliders above, then capture it. "
-            "ARM_PUSH runs after the slam to shove the door open with the arm."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        self.arm_push_after_check = QCheckBox("Arm push after slam (in full Open Door)")
-        self.arm_push_after_check.setToolTip(
-            "Leave OFF until the slam reliably unlatches — prevents driving the "
-            "arm into a still-latched door."
-        )
-        self.arm_push_after_check.toggled.connect(
-            lambda v: self._apply_param("arm_push_after_slam", bool(v))
-        )
-        layout.addWidget(self.arm_push_after_check)
-
-        hold_row = QHBoxLayout()
-        hold_row.addWidget(QLabel("Arm push hold (s)"))
-        self.arm_push_hold = QDoubleSpinBox()
-        self.arm_push_hold.setRange(0.0, 5.0)
-        self.arm_push_hold.setSingleStep(0.1)
-        self.arm_push_hold.setDecimals(1)
-        self.arm_push_hold.setValue(0.5)
-        self.arm_push_hold.valueChanged.connect(
-            lambda v: self._apply_param("arm_push_hold_sec", float(v))
-        )
-        hold_row.addWidget(self.arm_push_hold)
-        layout.addLayout(hold_row)
-
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton("Save → Arm Push pose")
-        save_btn.setToolTip("Capture the current arm sliders as door_arm_push_pose")
-        save_btn.clicked.connect(self._save_arm_push_pose)
-        btn_row.addWidget(save_btn)
-        run_btn = QPushButton("Run ARM-PUSH")
-        run_btn.setToolTip("Swing the arm to the arm-push pose. Base does not move.")
-        run_btn.clicked.connect(lambda: self._run_step("run_arm_push", "ARM-PUSH"))
-        self._step_buttons.append(run_btn)
-        btn_row.addWidget(run_btn)
-        layout.addLayout(btn_row)
-
-        save_yaml_btn = QPushButton("Save arm push to YAML")
-        save_yaml_btn.setToolTip("Persist current poses + tuning so they survive a restart")
-        save_yaml_btn.clicked.connect(self._save_poses_yaml)
-        layout.addWidget(save_yaml_btn)
-
-        return card
-
     def _build_push_card(self) -> QWidget:
         card = QFrame()
         card.setObjectName("Card")
@@ -455,7 +389,7 @@ class DoorPage(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(6)
 
-        heading = QLabel("3 · Base drive (push door open)")
+        heading = QLabel("2 · Base drive (push door open)")
         heading.setStyleSheet("font-weight: 600;")
         layout.addWidget(heading)
 
@@ -671,4 +605,5 @@ class DoorPage(QWidget):
         if self._step_worker is not None:
             stop_thread(self._step_worker)
             self._step_worker = None
+        self.mission_control.shutdown()
         self.image_view.shutdown()

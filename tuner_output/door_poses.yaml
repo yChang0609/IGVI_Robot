@@ -1,0 +1,43 @@
+# open_door_server poses/params — saved from the UI.
+# Loaded automatically on startup; usable as --params-file too.
+open_door_server:
+  ros__parameters:
+    ready_distance_m: 0.23999999463558197
+    pose_hold_sec: 0.3
+    arm_push_after_slam: true
+    arm_push_hold_sec: 2.0
+    drive_forward_after_poses: true
+    hold_pose_during_push: true
+    push_hold_repub_sec: 0.4
+    push_duration_sec: 2.0
+    push_speed: 0.15
+    door_home_pose_deg:
+    - 163.0
+    - 14.0
+    - 240.0
+    door_pose_1_deg:
+    - 90.0
+    - 42.0
+    - 240.0
+    door_pose_2_deg:
+    - 67.0
+    - 84.0
+    - 168.0
+    door_pose_3_deg:
+    - 71.0
+    - 181.0
+    - 168.0
+    door_arm_push_pose_deg:
+    - 41.0
+    - 159.0
+    - 168.0
+    red_hue_lo1: 0
+    red_hue_hi1: 10
+    red_hue_lo2: 170
+    red_hue_hi2: 179
+    red_sat_min: 120
+    red_val_min: 70
+    min_red_area_px: 800
+    aim_offset_px: 0
+    depth_inset_px: 8
+    depth_window_px: 5

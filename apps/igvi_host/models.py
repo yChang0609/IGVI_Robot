@@ -120,6 +120,26 @@ class OpenDoorStatusResponse(BaseModel):
     progress: float = 0.0
 
 
+class DoorMissionStartRequest(BaseModel):
+    # Integrated nav → open_door task: drive to the named waypoint, then run
+    # the open_door action. Defaults match the standard door_approach setup.
+    waypoint: str = "door_approach"
+    ready_distance_m: float = 0.0
+
+
+class DoorMissionStatusResponse(BaseModel):
+    ok: bool = True
+    active: bool = False
+    # idle | navigating | opening | succeeded | failed | canceled
+    phase: str = "idle"
+    waypoint: str = ""
+    ready_distance_m: float = 0.0
+    message: str = ""
+    # Nested snapshots so a UI can render everything from one polled GET.
+    nav: dict[str, Any] = Field(default_factory=dict)
+    open_door: dict[str, Any] = Field(default_factory=dict)
+
+
 class ComposeProgressResponse(BaseModel):
     action: str | None = None
     busy: bool = False

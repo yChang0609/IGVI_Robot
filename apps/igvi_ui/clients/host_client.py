@@ -176,6 +176,27 @@ class HostClient:
     def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
         return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
 
+    # ── Door mission: integrated nav → open_door (single task) ──────────────
+    # The surface a UI uses to fire the whole door task at once. `start`
+    # dispatches nav to the named waypoint (default "door_approach"); when nav
+    # succeeds the bridge automatically kicks off open_door. Poll `status` for
+    # phase = idle | navigating | opening | succeeded | failed | canceled.
+
+    def door_mission_start(
+        self, waypoint: str = "door_approach", ready_distance_m: float = 0.0
+    ) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/door_mission/start",
+            {"waypoint": waypoint, "ready_distance_m": ready_distance_m},
+            timeout=6.0,
+        )
+
+    def door_mission_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/door_mission/cancel", {}, timeout=4.0)
+
+    def door_mission_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/door_mission/status", timeout=timeout)
+
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
 

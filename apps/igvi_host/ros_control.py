@@ -11,6 +11,8 @@ from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
     CmdVelRequest,
+    DoorMissionStartRequest,
+    DoorMissionStatusResponse,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
     NavGoalRequest,
@@ -389,4 +391,53 @@ class RobotBridgeClient:
             stage=str(data.get("stage", "")),
             message=str(data.get("message", "")),
             progress=float(data.get("progress", 0.0)),
+        )
+
+    # ── Door mission: chained nav → open_door, single task surface ──────────
+
+    async def door_mission_start(self, request: DoorMissionStartRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/door_mission/start",
+            {"waypoint": request.waypoint, "ready_distance_m": request.ready_distance_m},
+            5.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/door_mission/cancel", {}, 3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_status(self) -> DoorMissionStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/door_mission/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return DoorMissionStatusResponse(
+                ok=False, active=False, phase="unavailable",
+                message=f"bridge unavailable: {exc}",
+            )
+        return DoorMissionStatusResponse(
+            ok=True,
+            active=bool(data.get("active", False)),
+            phase=str(data.get("phase", "idle")),
+            waypoint=str(data.get("waypoint", "")),
+            ready_distance_m=float(data.get("ready_distance_m", 0.0)),
+            message=str(data.get("message", "")),
+            nav=dict(data.get("nav") or {}),
+            open_door=dict(data.get("open_door") or {}),
         )
