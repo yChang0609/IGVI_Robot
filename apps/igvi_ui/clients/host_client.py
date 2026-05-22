@@ -163,6 +163,16 @@ class HostClient:
     def open_door_cancel(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/open_door/cancel", {})
 
+    def open_door_save_poses(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/save_poses", {}, timeout=6.0)
+
+    def open_door_step(self, step: str) -> dict[str, Any]:
+        # run_press / run_push / go_home block server-side; allow the push its
+        # full duration plus headroom before the HTTP call gives up.
+        return self.request(
+            "POST", f"/api/ros/open_door/step/{step}", {}, timeout=40.0
+        )
+
     def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
         return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
 

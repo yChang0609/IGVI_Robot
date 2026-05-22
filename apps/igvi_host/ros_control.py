@@ -348,6 +348,28 @@ class RobotBridgeClient:
             message=str(result.get("message", "")),
         )
 
+    async def open_door_save_poses(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/save_poses", {}, 5.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_save_poses")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_step(self, step: str) -> RosActionResponse:
+        # run_press / run_push / go_home block server-side (push drives the base
+        # for push_duration_sec); give the bridge call generous headroom.
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/step", {"step": step}, 35.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", f"open_door_{step}")),
+            message=str(result.get("message", "")),
+        )
+
     async def open_door_status(self) -> OpenDoorStatusResponse:
         def _fetch() -> dict[str, Any]:
             url = self.settings.bridge_url.rstrip("/") + "/api/open_door/status"

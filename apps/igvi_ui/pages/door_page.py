@@ -107,6 +107,29 @@ class _StatusPoller(QThread):
                 waited += 100
 
 
+class _StepWorker(QThread):
+    """One-shot worker for a debug door step (run_press/run_push/go_home).
+
+    These calls block server-side (the push drives the base for push_duration_sec),
+    so running them off the UI thread keeps the window responsive.
+    """
+
+    finished_step = Signal(bool, str)  # ok, message
+
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            result = self._fn()
+            self.finished_step.emit(
+                bool(result.get("ok", False)), str(result.get("message", ""))
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.finished_step.emit(False, str(exc))
+
+
 class DoorPage(QWidget):
     log_message = Signal(str)
 
@@ -114,6 +137,7 @@ class DoorPage(QWidget):
         super().__init__()
         self.client = client
         self._poller: _StatusPoller | None = None
+        self._step_worker: _StepWorker | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -159,6 +183,7 @@ class DoorPage(QWidget):
 
         layout.addWidget(self._build_action_card())
         layout.addWidget(self._build_arm_card())
+        layout.addWidget(self._build_push_card())
         layout.addWidget(self._build_tuning_card())
         layout.addWidget(self._build_legend_card())
         layout.addStretch(1)
@@ -248,10 +273,16 @@ class DoorPage(QWidget):
         home_btn = QPushButton("Go Home pose")
         home_btn.clicked.connect(self._go_home)
         bottom_row.addWidget(home_btn)
+        save_yaml_btn = QPushButton("Save poses to YAML")
+        save_yaml_btn.setToolTip("Persist current poses + tuning so they survive a restart")
+        save_yaml_btn.clicked.connect(self._save_poses_yaml)
+        bottom_row.addWidget(save_yaml_btn)
+        layout.addLayout(bottom_row)
+
         self.pose_status = QLabel("")
         self.pose_status.setObjectName("Muted")
-        bottom_row.addWidget(self.pose_status, 1)
-        layout.addLayout(bottom_row)
+        self.pose_status.setWordWrap(True)
+        layout.addWidget(self.pose_status)
 
         return card
 
@@ -303,6 +334,16 @@ class DoorPage(QWidget):
         else:
             self.log_message.emit(f"Pose {n}: {result.get('message', 'rejected')}")
 
+    def _save_poses_yaml(self) -> None:
+        try:
+            result = self.client.open_door_save_poses()
+        except HostClientError as exc:
+            self.log_message.emit(f"Save to YAML failed: {exc}")
+            return
+        msg = str(result.get("message", ""))
+        self.pose_status.setText(msg)
+        self.log_message.emit(msg if result.get("ok") else f"Save to YAML: {msg}")
+
     def _go_home(self) -> None:
         if not self.jog_check.isChecked():
             self.log_message.emit("Enable 'Live jog' first to move the arm home.")
@@ -313,6 +354,87 @@ class DoorPage(QWidget):
             self.client.arm_trajectory(positions_rad, time_from_start=1.0)
         except HostClientError as exc:
             self.log_message.emit(f"Go home failed: {exc}")
+
+    def _build_push_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        heading = QLabel("Forward push (after poses)")
+        heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(heading)
+
+        self.drive_check = QCheckBox("Drive forward after poses")
+        self.drive_check.setToolTip(
+            "Leave OFF until pose 3 reliably opens the door — prevents ramming a latched door."
+        )
+        self.drive_check.toggled.connect(
+            lambda v: self._apply_param("drive_forward_after_poses", bool(v))
+        )
+        layout.addWidget(self.drive_check)
+
+        self.hold_check = QCheckBox("Hold handle down while pushing")
+        self.hold_check.setChecked(True)
+        self.hold_check.toggled.connect(
+            lambda v: self._apply_param("hold_pose_during_push", bool(v))
+        )
+        layout.addWidget(self.hold_check)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Push speed (m/s)"))
+        self.push_speed = QDoubleSpinBox()
+        self.push_speed.setRange(0.0, 0.30)
+        self.push_speed.setSingleStep(0.01)
+        self.push_speed.setDecimals(2)
+        self.push_speed.setValue(0.08)
+        self.push_speed.valueChanged.connect(
+            lambda v: self._apply_param("push_speed", float(v))
+        )
+        speed_row.addWidget(self.push_speed)
+        layout.addLayout(speed_row)
+
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Push duration (s)"))
+        self.push_dur = QDoubleSpinBox()
+        self.push_dur.setRange(0.0, 6.0)
+        self.push_dur.setSingleStep(0.5)
+        self.push_dur.setDecimals(1)
+        self.push_dur.setValue(3.0)
+        self.push_dur.valueChanged.connect(
+            lambda v: self._apply_param("push_duration_sec", float(v))
+        )
+        dur_row.addWidget(self.push_dur)
+        layout.addLayout(dur_row)
+
+        # Debug each half of the open/push motion independently so a misbehaving
+        # step can't ram a still-latched door. PRESS plays the arm poses only;
+        # PUSH drives the base forward holding pose 3. Neither needs the camera.
+        step_hint = QLabel("Debug steps (no camera / no nav needed):")
+        step_hint.setObjectName("Muted")
+        step_hint.setWordWrap(True)
+        layout.addWidget(step_hint)
+
+        step_row = QHBoxLayout()
+        self.press_btn = QPushButton("Run PRESS (arm)")
+        self.press_btn.setToolTip("Play door_pose 1→2→3 on the arm. Base does not move.")
+        self.press_btn.clicked.connect(
+            lambda: self._run_step("run_press", "PRESS")
+        )
+        self.push_btn = QPushButton("Run PUSH (drive)")
+        self.push_btn.setToolTip(
+            "Drive the base forward for push_duration_sec, holding pose 3. "
+            "Run PRESS first so the handle is already pressed."
+        )
+        self.push_btn.clicked.connect(
+            lambda: self._run_step("run_push", "PUSH")
+        )
+        step_row.addWidget(self.press_btn)
+        step_row.addWidget(self.push_btn)
+        layout.addLayout(step_row)
+
+        return card
 
     def _build_tuning_card(self) -> QWidget:
         card = QFrame()
@@ -368,9 +490,11 @@ class DoorPage(QWidget):
 
     # ── Actions ────────────────────────────────────────────────────────────
 
-    def _apply_param(self, param: str, value: int) -> None:
+    def _apply_param(self, param: str, value) -> None:
+        # value keeps its Python type (int/float/bool); the bridge infers the
+        # ROS parameter type from it.
         try:
-            result = self.client.set_params(SERVER_NODE, {param: int(value)})
+            result = self.client.set_params(SERVER_NODE, {param: value})
         except HostClientError as exc:
             self.log_message.emit(f"Param set failed: {exc}")
             return
@@ -394,6 +518,32 @@ class DoorPage(QWidget):
             self.log_message.emit(f"Cancel failed: {exc}")
             return
         self.log_message.emit(str(result.get("message", "cancel requested")))
+
+    def _run_step(self, step: str, label: str) -> None:
+        if self._step_worker is not None and self._step_worker.isRunning():
+            self.log_message.emit("A door step is already running; wait for it to finish.")
+            return
+        self._set_step_buttons_enabled(False)
+        self.log_message.emit(f"{label}: running…")
+        worker = _StepWorker(lambda: self.client.open_door_step(step))
+        worker.finished_step.connect(
+            lambda ok, msg, lbl=label: self._on_step_done(ok, msg, lbl)
+        )
+        worker.finished.connect(self._clear_step_worker)
+        self._step_worker = worker
+        worker.start()
+
+    def _on_step_done(self, ok: bool, msg: str, label: str) -> None:
+        self._set_step_buttons_enabled(True)
+        self.pose_status.setText(msg)
+        self.log_message.emit(msg if ok else f"{label} failed: {msg}")
+
+    def _clear_step_worker(self) -> None:
+        self._step_worker = None
+
+    def _set_step_buttons_enabled(self, enabled: bool) -> None:
+        self.press_btn.setEnabled(enabled)
+        self.push_btn.setEnabled(enabled)
 
     def _on_status(self, data: dict) -> None:
         available = bool(data.get("available", False))
@@ -434,4 +584,7 @@ class DoorPage(QWidget):
         """Stop every background thread. Idempotent; called from hideEvent and
         MainWindow.closeEvent so neither leaves a thread running at teardown."""
         self._stop_poller()
+        if self._step_worker is not None:
+            stop_thread(self._step_worker)
+            self._step_worker = None
         self.image_view.shutdown()

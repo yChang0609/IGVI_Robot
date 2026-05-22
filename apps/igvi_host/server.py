@@ -419,6 +419,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_open_door_cancel() -> RosActionResponse:
         return await run_ros(lambda client: client.open_door_cancel())
 
+    @app.post("/api/ros/open_door/save_poses", response_model=RosActionResponse)
+    async def ros_open_door_save_poses() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_save_poses())
+
+    @app.post("/api/ros/open_door/step/{step}", response_model=RosActionResponse)
+    async def ros_open_door_step(step: str) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_step(step))
+
     @app.get("/api/ros/open_door/status", response_model=OpenDoorStatusResponse)
     async def ros_open_door_status() -> OpenDoorStatusResponse:
         return await RobotBridgeClient(current_settings()).open_door_status()

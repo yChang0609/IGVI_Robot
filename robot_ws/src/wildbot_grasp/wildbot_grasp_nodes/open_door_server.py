@@ -27,6 +27,7 @@ is 0.6 s, so the FSM publishes every tick (10 Hz default).
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -35,6 +36,7 @@ from typing import Optional
 
 import numpy as np
 import rclpy
+import yaml
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -43,6 +45,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Image
+from std_srvs.srv import Trigger
 
 from wildbot_grasp.action import OpenDoor
 
@@ -52,6 +55,33 @@ from .red_bar_detector import (
     annotate as annotate_red_bar,
     detect as detect_red_bar,
 )
+
+
+# Parameters persisted to / restored from the poses YAML. Everything an
+# operator tunes live in the UI, so a saved file fully reproduces a setup.
+_PERSIST_PARAMS = [
+    "ready_distance_m",
+    "pose_hold_sec",
+    "drive_forward_after_poses",
+    "hold_pose_during_push",
+    "push_hold_repub_sec",
+    "push_duration_sec",
+    "push_speed",
+    "door_home_pose_deg",
+    "door_pose_1_deg",
+    "door_pose_2_deg",
+    "door_pose_3_deg",
+    "red_hue_lo1",
+    "red_hue_hi1",
+    "red_hue_lo2",
+    "red_hue_hi2",
+    "red_sat_min",
+    "red_val_min",
+    "min_red_area_px",
+    "aim_offset_px",
+    "depth_inset_px",
+    "depth_window_px",
+]
 
 
 class State(Enum):
@@ -86,6 +116,9 @@ class OpenDoorServer(Node):
         self.declare_parameter("debug_enabled", True)
         self.declare_parameter("debug_topic", "/open_door/debug_image")
 
+        # ── Persistence ──────────────────────────────────────────────────
+        self.declare_parameter("poses_file", "/tuner_output/door_poses.yaml")
+
         # ── Red bar detection (HSV) ──────────────────────────────────────
         self.declare_parameter("red_hue_lo1", 0)
         self.declare_parameter("red_hue_hi1", 10)
@@ -116,6 +149,13 @@ class OpenDoorServer(Node):
 
         # ── PRESS (arm sequence) / PUSH (drive forward) ──────────────────
         self.declare_parameter("pose_hold_sec", 0.3)   # dwell between sequence poses
+        # Safety: defaults False so the base never rams a still-latched door.
+        # Enable it from the UI only once pose 3 reliably opens/unlatches.
+        self.declare_parameter("drive_forward_after_poses", False)
+        # Re-assert pose 3 while pushing so the handle stays held down (defeats
+        # the safeguard's relax) and the latch can't re-engage mid-push.
+        self.declare_parameter("hold_pose_during_push", True)
+        self.declare_parameter("push_hold_repub_sec", 0.4)
         self.declare_parameter("push_duration_sec", 3.0)
         self.declare_parameter("push_speed", 0.08)
 
@@ -130,6 +170,9 @@ class OpenDoorServer(Node):
 
         self._cb_group = ReentrantCallbackGroup()
         self._lock = Lock()
+        # Serializes base/arm motion across the action and the debug services so
+        # a manual run_press/run_push can't fight an in-flight open_door goal.
+        self._motion_lock = Lock()
         self._latest: Optional[Snapshot] = None
         self._depth_img: Optional[np.ndarray] = None
         self._bridge = CvBridge()
@@ -166,7 +209,144 @@ class OpenDoorServer(Node):
             goal_callback=lambda _r: GoalResponse.ACCEPT,
             cancel_callback=lambda _h: CancelResponse.ACCEPT,
         )
-        self.get_logger().info("Ready: /open_door (red-bar detector)")
+
+        # Restore tuned poses/params from a previous save, then expose a service
+        # the UI calls to write the current values back out.
+        self._load_poses_file()
+        self._save_srv = self.create_service(
+            Trigger, "~/save_poses", self._on_save_poses, callback_group=self._cb_group
+        )
+
+        # Debug entry points: run the arm press and the forward push as separate,
+        # independently-triggerable steps so a half-working sequence can't ram the
+        # door. Each grabs _motion_lock and refuses to overlap the action or
+        # another debug call. Call with e.g.:
+        #   ros2 service call /open_door_server/run_press std_srvs/srv/Trigger
+        self._run_press_srv = self.create_service(
+            Trigger, "~/run_press", self._on_run_press, callback_group=self._cb_group
+        )
+        self._run_push_srv = self.create_service(
+            Trigger, "~/run_push", self._on_run_push, callback_group=self._cb_group
+        )
+        self._go_home_srv = self.create_service(
+            Trigger, "~/go_home", self._on_go_home, callback_group=self._cb_group
+        )
+
+        self.get_logger().info(
+            "Ready: /open_door (red-bar detector); debug services: "
+            "~/run_press ~/run_push ~/go_home"
+        )
+
+    # ── Persistence (YAML save / load) ─────────────────────────────────────
+
+    def _poses_path(self) -> str:
+        return str(self.get_parameter("poses_file").value)
+
+    def _load_poses_file(self) -> None:
+        path = self._poses_path()
+        if not path or not os.path.isfile(path):
+            self.get_logger().info(f"No saved poses at {path}; using defaults.")
+            return
+        try:
+            with open(path) as fh:
+                doc = yaml.safe_load(fh) or {}
+            params = (doc.get("open_door_server", {}) or {}).get("ros__parameters", {}) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            self.get_logger().warning(f"Could not read {path}: {exc}")
+            return
+        to_set = []
+        for name in _PERSIST_PARAMS:
+            if name in params and params[name] is not None:
+                to_set.append(Parameter(name, value=params[name]))
+        if to_set:
+            self.set_parameters(to_set)
+            self.get_logger().info(f"Restored {len(to_set)} param(s) from {path}")
+
+    def _save_poses_file(self) -> tuple[bool, str]:
+        path = self._poses_path()
+        ros_params = {name: self.get_parameter(name).value for name in _PERSIST_PARAMS}
+        doc = {"open_door_server": {"ros__parameters": ros_params}}
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as fh:
+                fh.write("# open_door_server poses/params — saved from the UI.\n")
+                fh.write("# Loaded automatically on startup; usable as --params-file too.\n")
+                yaml.safe_dump(doc, fh, default_flow_style=False, sort_keys=False)
+        except OSError as exc:
+            return False, f"write failed: {exc}"
+        return True, f"saved {len(ros_params)} param(s) to {path}"
+
+    def _on_save_poses(self, _request, response):
+        ok, message = self._save_poses_file()
+        response.success = ok
+        response.message = message
+        self.get_logger().info(message)
+        return response
+
+    # ── Debug services: run each door step independently ───────────────────
+
+    def _on_run_press(self, _request, response):
+        """Play the arm pose sequence once; the base never moves."""
+        if not self._motion_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "busy: another door motion is running"
+            return response
+        try:
+            self._fsm_state = State.PRESS.value
+            self._run_press_sequence()
+            self._fsm_state = State.IDLE.value
+            response.success = True
+            response.message = "press done: arm pose 1→2→3; base did not move"
+        except Exception as exc:  # noqa: BLE001
+            self._publish_twist(0.0, 0.0)
+            response.success = False
+            response.message = f"press failed: {exc}"
+        finally:
+            self._motion_lock.release()
+        self.get_logger().info(f"run_press: {response.message}")
+        return response
+
+    def _on_run_push(self, _request, response):
+        """Drive the base forward for push_duration_sec, holding pose 3."""
+        if not self._motion_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "busy: another door motion is running"
+            return response
+        try:
+            dur = float(self.get_parameter("push_duration_sec").value)
+            self._fsm_state = State.PUSH.value
+            self._run_push()
+            self._fsm_state = State.IDLE.value
+            response.success = True
+            response.message = f"push done: forward {dur:.1f}s holding pose 3"
+        except Exception as exc:  # noqa: BLE001
+            self._publish_twist(0.0, 0.0)
+            response.success = False
+            response.message = f"push failed: {exc}"
+        finally:
+            self._motion_lock.release()
+        self.get_logger().info(f"run_push: {response.message}")
+        return response
+
+    def _on_go_home(self, _request, response):
+        """Stop the base and retract the arm to door_home_pose_deg."""
+        if not self._motion_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "busy: another door motion is running"
+            return response
+        try:
+            self._publish_twist(0.0, 0.0)
+            self.arm.send_degrees("door_home", self._pose("door_home_pose_deg"))
+            self._fsm_state = State.IDLE.value
+            response.success = True
+            response.message = "returned to door_home_pose"
+        except Exception as exc:  # noqa: BLE001
+            response.success = False
+            response.message = f"go_home failed: {exc}"
+        finally:
+            self._motion_lock.release()
+        self.get_logger().info(f"go_home: {response.message}")
+        return response
 
     # ── Detection ingest ──────────────────────────────────────────────────
 
@@ -236,10 +416,73 @@ class OpenDoorServer(Node):
             return None
         return d
 
+    # ── Reusable motion primitives (shared by action + debug services) ─────
+
+    def _run_press_sequence(self, feedback=None) -> None:
+        """Play door_pose_1 → 2 → 3 in order, holding each pose_hold_sec.
+
+        Arm-only: the base is explicitly stopped and never commanded here. This
+        is the "arm press the handle down" half of the old PRESS→PUSH motion.
+        """
+        self._publish_twist(0.0, 0.0)
+        hold = float(self.get_parameter("pose_hold_sec").value)
+        for i in (1, 2, 3):
+            if feedback is not None:
+                feedback(State.PRESS.value, 0.5 + 0.05 * i, f"arm pose {i}/3")
+            self.arm.send_degrees(f"door_pose_{i}", self._pose(f"door_pose_{i}_deg"))
+            if hold > 0.0:
+                time.sleep(hold)
+
+    def _run_push(self, should_continue=None, feedback=None) -> None:
+        """Drive the base forward for push_duration_sec, re-asserting pose 3.
+
+        The "push the door open" half. When hold_pose_during_push is set,
+        door_pose_3 is re-published every push_hold_repub_sec so the handle stays
+        pressed (the safeguard otherwise relaxes and the latch re-engages). The
+        base is always stopped on exit. should_continue() lets a caller (the
+        action) bail early, e.g. on cancel.
+        """
+        if feedback is not None:
+            feedback(State.PUSH.value, 0.7, "pushing forward (holding pose 3)")
+        period = 1.0 / float(self.get_parameter("control_rate_hz").value)
+        push_speed = float(self.get_parameter("push_speed").value)
+        duration = float(self.get_parameter("push_duration_sec").value)
+        hold_pose = bool(self.get_parameter("hold_pose_during_push").value)
+        repub = float(self.get_parameter("push_hold_repub_sec").value)
+        push_started = time.monotonic()
+        last_hold_pub = 0.0
+        try:
+            while rclpy.ok():
+                if should_continue is not None and not should_continue():
+                    break
+                now = time.monotonic()
+                self._publish_twist(push_speed, 0.0)
+                if hold_pose and (now - last_hold_pub) >= repub:
+                    self.arm.publish_degrees("door_pose_3_hold", self._pose("door_pose_3_deg"))
+                    last_hold_pub = now
+                if (now - push_started) >= duration:
+                    break
+                time.sleep(period)
+        finally:
+            self._publish_twist(0.0, 0.0)
+
     # ── Action execute ────────────────────────────────────────────────────
 
     def _execute(self, goal_handle):
         result = OpenDoor.Result()
+        # One motion at a time: refuse the goal if a debug service holds the lock.
+        if not self._motion_lock.acquire(blocking=False):
+            goal_handle.abort()
+            result.success = False
+            result.message = "busy: a debug motion (run_press/run_push) is running"
+            return result
+        try:
+            return self._run_open_door(goal_handle, result)
+        finally:
+            self._publish_twist(0.0, 0.0)
+            self._motion_lock.release()
+
+    def _run_open_door(self, goal_handle, result):
         goal = goal_handle.request
 
         if goal.ready_distance_m and float(goal.ready_distance_m) > 0.0:
@@ -251,7 +494,6 @@ class OpenDoorServer(Node):
         state = State.ALIGN
         state_entered = time.monotonic()
         align_stable = 0
-        push_started = 0.0
 
         self._publish_feedback(goal_handle, State.ALIGN.value, 0.05, "starting alignment")
 
@@ -320,31 +562,38 @@ class OpenDoorServer(Node):
 
             # ── PRESS: play the three sequence poses in order ────────────
             elif state == State.PRESS:
-                self._publish_twist(0.0, 0.0)
-                hold = float(self.get_parameter("pose_hold_sec").value)
-                for i in (1, 2, 3):
-                    self._publish_feedback(
-                        goal_handle, State.PRESS.value, 0.5 + 0.05 * i, f"arm pose {i}/3"
-                    )
-                    self.arm.send_degrees(f"door_pose_{i}", self._pose(f"door_pose_{i}_deg"))
-                    if hold > 0.0:
-                        time.sleep(hold)
-                self._publish_feedback(
-                    goal_handle, State.PUSH.value, 0.7, "poses done; pushing door"
+                self._run_press_sequence(
+                    feedback=lambda s, p, d: self._publish_feedback(goal_handle, s, p, d)
                 )
-                push_started = time.monotonic()
+                # Skip the forward push unless explicitly enabled, so a pose-3
+                # that didn't open the door can't get rammed forward.
+                if not bool(self.get_parameter("drive_forward_after_poses").value):
+                    self._publish_feedback(
+                        goal_handle, State.COMPLETE.value, 0.9,
+                        "poses done; forward push disabled",
+                    )
+                    state, state_entered = State.COMPLETE, time.monotonic()
+                    continue
+                self._publish_feedback(
+                    goal_handle, State.PUSH.value, 0.7, "poses done; holding handle + pushing"
+                )
                 state, state_entered = State.PUSH, time.monotonic()
                 continue
 
-            # ── PUSH ─────────────────────────────────────────────────────
+            # ── PUSH: ease base forward while re-asserting pose 3 ────────
             elif state == State.PUSH:
-                self._publish_twist(float(self.get_parameter("push_speed").value), 0.0)
-                if (time.monotonic() - push_started) >= float(
-                    self.get_parameter("push_duration_sec").value
-                ):
-                    self._publish_twist(0.0, 0.0)
-                    self._publish_feedback(goal_handle, State.COMPLETE.value, 0.95, "push duration met")
-                    state, state_entered = State.COMPLETE, time.monotonic()
+                self._run_push(
+                    should_continue=lambda: rclpy.ok() and not goal_handle.is_cancel_requested,
+                    feedback=lambda s, p, d: self._publish_feedback(goal_handle, s, p, d),
+                )
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "canceled"
+                    return result
+                self._publish_feedback(goal_handle, State.COMPLETE.value, 0.95, "push duration met")
+                state, state_entered = State.COMPLETE, time.monotonic()
+                continue
 
             # ── COMPLETE ─────────────────────────────────────────────────
             elif state == State.COMPLETE:

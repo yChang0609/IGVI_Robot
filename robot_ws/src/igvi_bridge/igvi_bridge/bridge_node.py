@@ -29,6 +29,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
+from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 try:
@@ -622,6 +623,71 @@ class BridgeNode(Node):
                 str(getattr(result, "message", "")) or f"status={status}",
             )
 
+    def save_open_door_poses(self) -> tuple[bool, str]:
+        """Call open_door_server's ~/save_poses Trigger to persist tuned params."""
+        service_name = "/open_door_server/save_poses"
+        client = self.create_client(Trigger, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=2.0):
+                return False, f"{service_name} not available — is open_door_server running?"
+            done = threading.Event()
+            outcome: dict[str, Any] = {"ok": False, "message": "save_poses timed out"}
+            future = client.call_async(Trigger.Request())
+
+            def _finished(_future: Any) -> None:
+                try:
+                    resp = _future.result()
+                    outcome["ok"] = bool(resp.success)
+                    outcome["message"] = str(resp.message)
+                except Exception as exc:  # noqa: BLE001
+                    outcome["message"] = f"save_poses failed: {exc}"
+                finally:
+                    done.set()
+
+            future.add_done_callback(_finished)
+            done.wait(timeout=4.0)
+            return bool(outcome["ok"]), str(outcome["message"])
+        finally:
+            self.destroy_client(client)
+
+    def call_open_door_step(self, step: str) -> tuple[bool, str]:
+        """Call one of open_door_server's debug Trigger services individually.
+
+        Lets the UI fire the arm press, the forward push, or the retract-home as
+        separate steps (run_press / run_push / go_home) to debug without running
+        the full ALIGN→APPROACH→PRESS→PUSH action.
+        """
+        allowed = {"run_press", "run_push", "go_home"}
+        if step not in allowed:
+            return False, f"unknown open_door step '{step}'"
+        service_name = f"/open_door_server/{step}"
+        client = self.create_client(Trigger, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=2.0):
+                return False, f"{service_name} not available — is open_door_server running?"
+            done = threading.Event()
+            outcome: dict[str, Any] = {"ok": False, "message": f"{step} timed out"}
+            future = client.call_async(Trigger.Request())
+
+            def _finished(_future: Any) -> None:
+                try:
+                    resp = _future.result()
+                    outcome["ok"] = bool(resp.success)
+                    outcome["message"] = str(resp.message)
+                except Exception as exc:  # noqa: BLE001
+                    outcome["message"] = f"{step} failed: {exc}"
+                finally:
+                    done.set()
+
+            future.add_done_callback(_finished)
+            # run_push drives the base for push_duration_sec and run_press plays
+            # three arm poses with dwells — both block server-side, so allow ample
+            # headroom over the ~3 s push default.
+            done.wait(timeout=30.0)
+            return bool(outcome["ok"]), str(outcome["message"])
+        finally:
+            self.destroy_client(client)
+
     def _set_open_door_state(
         self,
         state: str,
@@ -1145,6 +1211,13 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/open_door/cancel":
                 ok, msg = node.cancel_open_door_goal()
                 self._json({"ok": ok, "action": "open_door_cancel", "message": msg})
+            elif path == "/api/open_door/save_poses":
+                ok, msg = node.save_open_door_poses()
+                self._json({"ok": ok, "action": "open_door_save_poses", "message": msg})
+            elif path == "/api/open_door/step":
+                step = str(body.get("step", ""))
+                ok, msg = node.call_open_door_step(step)
+                self._json({"ok": ok, "action": f"open_door_{step}", "message": msg})
             else:
                 self.send_response(404)
                 self.end_headers()
