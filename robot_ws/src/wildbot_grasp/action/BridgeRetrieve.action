@@ -1,11 +1,18 @@
 # Bridge retrieval mission.
 # Navigate to a bridge-center waypoint, acquire the target class on the bridge,
-# carry it back to the robot's starting pose, then release it.
+# carry it back to the configured home pose (or the mission start pose if no
+# home is given), then release it.
 
 string target_class
 float64 bridge_pose_x
 float64 bridge_pose_y
 float64 bridge_pose_yaw
+# Return target. When home_pose_valid is false the server falls back to the
+# robot's pose at mission start (legacy behaviour).
+bool home_pose_valid
+float64 home_pose_x
+float64 home_pose_y
+float64 home_pose_yaw
 ---
 bool success
 string message

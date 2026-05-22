@@ -45,7 +45,7 @@ local_costmap:
       rolling_window: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.25      # how far from obstacles to avoid — reduce for bridge
+        inflation_radius: 0.35      # how far from obstacles to avoid — reduce for bridge
 
 global_costmap:
   global_costmap:
@@ -57,11 +57,46 @@ global_costmap:
       transform_tolerance: 1.0
       map_subscribe_transient_local: true
       map_topic: /map
-      plugins: ["static_layer", "inflation_layer"]
+      plugins: ["static_layer", "voxel_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
         map_topic: /map
+      # Live/dynamic obstacles. Kinect points2 covers the FRONT (lidar only sees
+      # the rear). Both sources mark obstacles into the costmap and ray-trace to
+      # clear them as they move — they never touch RTAB-Map's static /map.
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: true
+        publish_voxel_map: false
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        unknown_threshold: 15
+        mark_threshold: 0
+        max_obstacle_height: 1.5
+        combination_method: 1
+        observation_sources: kinect_cloud rear_scan
+        kinect_cloud:
+          topic: /points2
+          data_type: "PointCloud2"
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.05   # ignore the floor
+          max_obstacle_height: 1.5
+          obstacle_max_range: 3.0     # trust Kinect depth out to ~3 m
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+        rear_scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 4.5
+          raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.25
+        inflation_radius: 0.35

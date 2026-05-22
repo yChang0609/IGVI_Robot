@@ -772,12 +772,27 @@ class BridgeNode(Node):
         goal_msg.bridge_pose_x = float(bridge_x)
         goal_msg.bridge_pose_y = float(bridge_y)
         goal_msg.bridge_pose_yaw = float(bridge_yaw)
+        # Return to the saved "home" waypoint if one exists, so the robot carries
+        # the bear back to a deliberate spot instead of wherever it started the
+        # mission (which may already be on the bridge).
+        with self._waypoints_lock:
+            home_wp = self._waypoints.get("home")
+            home_wp = dict(home_wp) if home_wp else None
+        if home_wp is not None:
+            goal_msg.home_pose_valid = True
+            goal_msg.home_pose_x = float(home_wp["x"])
+            goal_msg.home_pose_y = float(home_wp["y"])
+            goal_msg.home_pose_yaw = float(home_wp.get("yaw", 0.0))
         with self._bridge_mission_lock:
             self._bridge_mission_goal = {
                 "target_class": target_class,
                 "bridge_pose_x": bridge_x,
                 "bridge_pose_y": bridge_y,
                 "bridge_pose_yaw": bridge_yaw,
+                "home_pose": (
+                    {"x": home_wp["x"], "y": home_wp["y"], "yaw": home_wp.get("yaw", 0.0)}
+                    if home_wp is not None else None
+                ),
             }
             self._bridge_mission_feedback = {}
         self._update_bridge_mission_state("sending", "goal dispatched")

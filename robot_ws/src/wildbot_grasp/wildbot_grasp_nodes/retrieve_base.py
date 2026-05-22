@@ -41,6 +41,8 @@ class RetrieveBase(Node):
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_timeout_sec", 20.0)
+        # Grab only once the bbox is centered within this many px of image_center_x.
+        self.declare_parameter("approach_center_tolerance_px", 25.0)
         # Bridge: locate target near the bridge waypoint / scan-rotate to find it.
         self.declare_parameter("bridge_memory_radius_m", 0.6)
         self.declare_parameter("scan_angular_speed", 0.4)
@@ -320,14 +322,26 @@ class RetrieveBase(Node):
     # ------------------------------------------------------------------
 
     def visual_approach(self, goal_handle, target_class: str):
-        """Slowly drive forward while centering on the target until
-        the detection depth reaches approach_target_distance_m."""
+        """Drive toward the target while centering on the YOLO bbox, then grab
+        once it is BOTH within grab distance AND centered left/right.
+
+        Mirrors the bear-task approach with two robustness fixes:
+        - centering gate: do not grab until the bbox is centered within
+          approach_center_tolerance_px (stops the off-centre / grab-air failures);
+        - depth-dropout latch: depth often drops at very close range — once we
+          have reached grab distance, stay latched and grab instead of stalling.
+        """
         target_dist = float(self.get_parameter("approach_target_distance_m").value)
         linear_speed = float(self.get_parameter("approach_linear_speed").value)
         kp = float(self.get_parameter("visual_servo_kp").value)
         center_x = float(self.get_parameter("image_center_x").value)
+        tolerance = float(self.get_parameter("approach_center_tolerance_px").value)
         timeout = float(self.get_parameter("approach_timeout_sec").value)
         deadline = time.monotonic() + timeout
+        reached_grab_range = False
+
+        def clamp_ang(value):
+            return max(-0.3, min(0.3, value))
 
         while rclpy.ok() and time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
@@ -338,10 +352,14 @@ class RetrieveBase(Node):
                 detections = list(self.latest_detections)
 
             best = None
+            bbox_cx = None
             for det in detections:
                 label = str(det.get("class_name") or det.get("class_id") or "")
                 if label.lower() != target_class.lower():
                     continue
+                cx = det.get("bbox", {}).get("center_x")
+                if bbox_cx is None and cx is not None:
+                    bbox_cx = float(cx)   # remember the bbox even without valid depth
                 if not det.get("depth_valid"):
                     continue
                 depth = det.get("depth_m")
@@ -349,24 +367,45 @@ class RetrieveBase(Node):
                     continue
                 if best is None or depth < best.get("depth_m", float("inf")):
                     best = det
+                    if cx is not None:
+                        bbox_cx = float(cx)
 
             if best is None:
-                # Target not visible — stop and wait
+                # No usable depth this cycle.
+                if reached_grab_range:
+                    self.cmd_vel_pub.publish(Twist())
+                    return True, "depth lost at close range; grabbing (latched)"
+                if bbox_cx is not None:
+                    # Still see the bear — keep centering in place, don't drive blind.
+                    twist = Twist()
+                    twist.angular.z = clamp_ang((center_x - bbox_cx) * kp)
+                    self.cmd_vel_pub.publish(twist)
+                    time.sleep(0.05)
+                    continue
                 self.cmd_vel_pub.publish(Twist())
                 time.sleep(0.1)
                 continue
 
             depth = float(best["depth_m"])
-            if depth <= target_dist:
-                self.cmd_vel_pub.publish(Twist())
-                return True, f"reached target at {depth:.2f}m"
+            error_px = center_x - bbox_cx
+            centered = abs(error_px) <= tolerance
 
-            # Still approaching: center + drive forward
-            det_cx = best.get("bbox", {}).get("center_x", center_x)
-            angular = max(-0.3, min(0.3, (center_x - float(det_cx)) * kp))
+            if depth <= target_dist:
+                reached_grab_range = True
+                if centered:
+                    self.cmd_vel_pub.publish(Twist())
+                    return True, f"in range ({depth:.2f}m) and centered ({error_px:+.0f}px); grabbing"
+                # In range but off-centre: rotate to centre first, no forward motion.
+                twist = Twist()
+                twist.angular.z = clamp_ang(error_px * kp)
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(0.05)
+                continue
+
+            # Not in range yet: center + drive forward.
             twist = Twist()
             twist.linear.x = linear_speed
-            twist.angular.z = angular
+            twist.angular.z = clamp_ang(error_px * kp)
             self.cmd_vel_pub.publish(twist)
             time.sleep(0.05)
 
