@@ -94,11 +94,12 @@ class HostClient:
         service: str | None = None,
         services: list[str] | None = None,
         profile: str | None = None,
+        no_cache: bool = False,
     ) -> dict[str, Any]:
         return self.request(
             "POST",
             f"/api/compose/actions/{action}",
-            {"service": service, "services": services, "profile": profile},
+            {"service": service, "services": services, "profile": profile, "no_cache": no_cache},
             timeout=self.compose_timeout,
         )
 

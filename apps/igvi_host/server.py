@@ -311,7 +311,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/compose/actions/build", response_model=ComposeActionResponse)
     def build(request: ComposeActionRequest) -> ComposeActionResponse:
         services = target_services(request)
-        return compose_or_http(lambda: compose_project().build(services=services, no_cache=False))
+        return compose_or_http(lambda: compose_project().build(services=services, no_cache=request.no_cache))
 
     @app.post("/api/compose/actions/rebuild", response_model=ComposeActionResponse)
     def rebuild(request: ComposeActionRequest) -> ComposeActionResponse:

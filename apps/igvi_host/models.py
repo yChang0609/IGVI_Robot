@@ -45,6 +45,7 @@ class ComposeActionRequest(BaseModel):
     services: list[str] | None = None
     profile: str | None = None
     dev_mode: bool | None = None
+    no_cache: bool = False
 
 
 class ComposeActionResponse(BaseModel):

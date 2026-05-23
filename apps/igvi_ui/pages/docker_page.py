@@ -85,12 +85,14 @@ class ComposeActionWorker(QThread):
         action: str,
         services: list[str] | None = None,
         profile: str | None = None,
+        no_cache: bool = False,
     ):
         super().__init__()
         self.client = client
         self.action = action
         self.services = services
         self.profile = profile
+        self.no_cache = no_cache
 
     def run(self) -> None:
         try:
@@ -103,6 +105,7 @@ class ComposeActionWorker(QThread):
                     self.action,
                     services=self.services,
                     profile=self.profile,
+                    no_cache=self.no_cache,
                 )
         except HostClientError as exc:
             self.failed.emit(self.action, str(exc))
@@ -186,18 +189,27 @@ class DockerPage(QWidget):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
 
+    @staticmethod
+    def _toolbar_sep() -> QFrame:
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(2)
+        sep.setStyleSheet("color: #333a44;")
+        return sep
+
     def _build_toolbar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("PanelHeader")
         row = QHBoxLayout(bar)
         row.setContentsMargins(12, 8, 12, 8)
-        row.setSpacing(8)
+        row.setSpacing(4)
 
         title = QLabel("Docker Compose")
         title.setObjectName("PanelTitle")
         row.addWidget(title)
         row.addStretch(1)
 
+        # Group: Start | Start+Build
         self.start_button = QPushButton("Start")
         self.start_button.setObjectName("Primary")
         self.start_button.clicked.connect(lambda: self._run_action("start"))
@@ -208,10 +220,9 @@ class DockerPage(QWidget):
         self.build_start_button.clicked.connect(lambda: self._run_action("build_start"))
         row.addWidget(self.build_start_button)
 
-        self.restart_button = QPushButton("Restart")
-        self.restart_button.clicked.connect(lambda: self._run_action("restart"))
-        row.addWidget(self.restart_button)
+        row.addWidget(self._toolbar_sep())
 
+        # Group: Stop | Stop+Rm
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("Danger")
         self.stop_button.clicked.connect(lambda: self._run_action("stop"))
@@ -222,8 +233,16 @@ class DockerPage(QWidget):
         self.stop_rm_button.clicked.connect(lambda: self._run_action("remove"))
         row.addWidget(self.stop_rm_button)
 
-        row.addSpacing(12)
+        row.addWidget(self._toolbar_sep())
 
+        # Restart
+        self.restart_button = QPushButton("Restart")
+        self.restart_button.clicked.connect(lambda: self._run_action("restart"))
+        row.addWidget(self.restart_button)
+
+        row.addWidget(self._toolbar_sep())
+
+        # Group: Build | Rebuild | Cache
         self.build_button = QPushButton("Build")
         self.build_button.clicked.connect(lambda: self._run_action("build"))
         row.addWidget(self.build_button)
@@ -233,6 +252,13 @@ class DockerPage(QWidget):
         self.rebuild_button.clicked.connect(lambda: self._run_action("rebuild"))
         row.addWidget(self.rebuild_button)
 
+        self.cache_check = QCheckBox("Cache")
+        self.cache_check.setChecked(True)
+        row.addWidget(self.cache_check)
+
+        row.addWidget(self._toolbar_sep())
+
+        # Group: Stop All | Rm All
         self.stop_all_button = QPushButton("Stop All")
         self.stop_all_button.setObjectName("Danger")
         self.stop_all_button.clicked.connect(self._run_stop_all)
@@ -243,6 +269,9 @@ class DockerPage(QWidget):
         self.remove_all_button.clicked.connect(self._run_remove_all)
         row.addWidget(self.remove_all_button)
 
+        row.addWidget(self._toolbar_sep())
+
+        # Refresh
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
@@ -375,6 +404,11 @@ class DockerPage(QWidget):
 
         self.tree.expandAll()
         self.summary.setText(f"{running} running · {total} total")
+
+        _NOT_CREATED = {"not_created", "", "docker_unavailable"}
+        created = sum(1 for s in self.services if str(s.get("status", "")) not in _NOT_CREATED)
+        self.stop_all_button.setEnabled(running > 0)
+        self.remove_all_button.setEnabled(created > 0)
 
     def _create_group(self, profile_key: str, display_name: str, services: list[dict]) -> QTreeWidgetItem:
         running_count = sum(1 for s in services if str(s.get("status", "")) in _RUNNING)
@@ -671,6 +705,7 @@ class DockerPage(QWidget):
         self._start_worker("remove_all")
 
     def _start_worker(self, action: str, services: list[str] | None = None, profile: str | None = None) -> None:
+        no_cache = not self.cache_check.isChecked() if action in {"build", "build_start"} else False
         target = ", ".join(services) if services else profile or "all services"
         self.log_message.emit(f"{action} started for {target}")
         self.summary.setText(f"{action} running for {target}...")
@@ -679,7 +714,7 @@ class DockerPage(QWidget):
             self._pending_actions[name] = action
         if pending_targets:
             self._render_services()
-        worker = ComposeActionWorker(self.client, action, services=services, profile=profile)
+        worker = ComposeActionWorker(self.client, action, services=services, profile=profile, no_cache=no_cache)
         worker.completed.connect(lambda a, r, names=list(pending_targets): self._action_completed(a, r, names))
         worker.failed.connect(lambda a, m, names=list(pending_targets): self._action_failed(a, m, names))
         worker.finished.connect(lambda worker=worker: self._worker_finished(worker))
