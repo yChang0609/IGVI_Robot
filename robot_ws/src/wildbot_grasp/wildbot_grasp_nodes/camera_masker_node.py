@@ -12,7 +12,7 @@ class CameraMaskerNode(Node):
         # Parameters
         self.declare_parameter('home_pose_deg', [190.0, 0.0, 240.0])
         self.declare_parameter('joint_tolerance_deg', 10.0)
-        self.declare_parameter('mask_height_pct', 0.70) # Bottom 45% of the image
+        self.declare_parameter('mask_height_pct', 0.50) # Bottom 45% of the image
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('rgb_input_topic', '/rgb/image_raw')
         self.declare_parameter('depth_input_topic', '/depth_to_rgb/image_raw')
