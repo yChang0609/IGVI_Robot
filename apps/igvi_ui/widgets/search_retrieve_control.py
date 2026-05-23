@@ -156,16 +156,22 @@ class SearchRetrieveControl(QWidget):
             return
             
         hx, hy, hyaw = self._home_pose
+        
+        # Disable button immediately to prevent double-clicks while the request is processing
+        self.start_btn.setEnabled(False)
+        self.status_label.setText("Starting...")
+        
         try:
             res = self.client.search_retrieve_start(self._target_id, hx, hy, hyaw)
             if res.get("ok"):
-                self.start_btn.setEnabled(False)
                 self.cancel_btn.setEnabled(True)
                 self.status_label.setText("Task started...")
                 self._status_timer.start()
             else:
+                self.start_btn.setEnabled(True)
                 QMessageBox.warning(self, "Error", res.get("message", "Failed to start"))
         except HostClientError as e:
+            self.start_btn.setEnabled(True)
             QMessageBox.warning(self, "Error", str(e))
 
     def _cancel_task(self) -> None:

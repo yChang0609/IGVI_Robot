@@ -754,6 +754,10 @@ class BridgeNode(Node):
         self.get_logger().info(f"Search state: {state} — {message}")
 
     def send_search_goal(self, target_id: str, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        with self._search_lock:
+            if self._search_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: already in state '{self._search_state}'"
+                
         if not self._search_client.server_is_ready():
             if not self._search_client.wait_for_server(timeout_sec=2.0):
                 self._update_search_state("unavailable", "Search server offline")
@@ -859,6 +863,10 @@ class BridgeNode(Node):
         bridge_y: float,
         bridge_yaw: float,
     ) -> tuple[bool, str]:
+        with self._bridge_mission_lock:
+            if self._bridge_mission_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: already in state '{self._bridge_mission_state}'"
+                
         if not self._bridge_mission_client.server_is_ready():
             if not self._bridge_mission_client.wait_for_server(timeout_sec=2.0):
                 self._update_bridge_mission_state("unavailable", "Bridge retrieve server offline")

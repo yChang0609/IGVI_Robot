@@ -379,6 +379,7 @@ class RetrieveBase(Node):
         # When depth is unavailable but target is centered, track how long we've
         # been blindly approaching so we can trigger grab after a fixed interval.
         no_depth_centered_t0 = None
+        no_detection_t0 = None
 
         def clamp_ang(value):
             return max(-0.3, min(0.3, value))
@@ -435,12 +436,21 @@ class RetrieveBase(Node):
                         twist.angular.z = clamp_ang(error_px * kp)
                     self.cmd_vel_pub.publish(twist)
                     time.sleep(0.05)
+                    no_detection_t0 = None
                     continue
+                
+                if no_detection_t0 is None:
+                    no_detection_t0 = time.monotonic()
+                elif time.monotonic() - no_detection_t0 >= 3.0:
+                    self.cmd_vel_pub.publish(Twist())
+                    return False, "visual approach failed: target not seen for 3s"
+
                 no_depth_centered_t0 = None
                 self.cmd_vel_pub.publish(Twist())
                 time.sleep(0.1)
                 continue
 
+            no_detection_t0 = None
             no_depth_centered_t0 = None  # depth valid; reset blind-approach timer
             depth = float(best["depth_m"])
             error_px = center_x - bbox_cx

@@ -20,6 +20,9 @@ class BridgeRetrieveServer(RetrieveBase):
         )
         self.declare_parameter("target_class", "xiong_qiao")
 
+        self._goal_lock = threading.Lock()
+        self._active_goal = False
+
         self.action_server = ActionServer(
             self,
             BridgeRetrieve,
@@ -32,6 +35,12 @@ class BridgeRetrieveServer(RetrieveBase):
         self.get_logger().info("Ready: /bridge_retrieve")
 
     def goal_callback(self, goal_request):
+        with self._goal_lock:
+            if self._active_goal:
+                self.get_logger().warn("Rejecting goal: another mission is already active")
+                return GoalResponse.REJECT
+            self._active_goal = True
+
         target = goal_request.target_class or self.get_parameter("target_class").value
         self.get_logger().info(
             f"Bridge retrieve goal target={target} bridge=({goal_request.bridge_pose_x:.2f}, "
