@@ -137,6 +137,12 @@ class HostClient:
     def ros_pose(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/pose")
 
+    def ros_plan(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/plan")
+
+    def ros_approach_pose(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/approach_pose")
+
     def image_topics(self) -> list[str]:
         data = self.request("GET", "/api/ros/image/topics", timeout=3.0)
         return list((data or {}).get("topics", []))

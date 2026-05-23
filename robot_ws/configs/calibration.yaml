@@ -17,7 +17,7 @@ kinect:
   brightness: 128
   color_resolution: 720P
   contrast: 5
-  depth_mode: NFOV_UNBINNED
+  depth_mode: NFOV_2X2BINNED
   exposure_time_absolute: -1
   fps: 15
   gain: -1

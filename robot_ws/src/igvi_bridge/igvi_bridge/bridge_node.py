@@ -23,7 +23,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
@@ -69,6 +69,8 @@ class BridgeNode(Node):
         self._costmap: dict[str, Any] | None = None
         self._pose: dict[str, float] = {"x": 0.0, "y": 0.0, "yaw": 0.0}
         self._pose_source = "none"
+        self._plan: dict[str, Any] | None = None
+        self._approach_pose: dict[str, Any] | None = None
 
         self._image_lock = threading.Lock()
         self._image_topic: str | None = None
@@ -148,6 +150,8 @@ class BridgeNode(Node):
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS)
+        self.create_subscription(Path, "/plan", self._on_plan, 10)
+        self.create_subscription(PoseStamped, "/approach_pose", self._on_approach_pose, 10)
         
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -224,6 +228,19 @@ class BridgeNode(Node):
                 "origin_y": float(msg.info.origin.position.y),
                 "data": list(msg.data),
             }
+
+    def _on_plan(self, msg: Path) -> None:
+        poses = [{"x": p.pose.position.x, "y": p.pose.position.y} for p in msg.poses]
+        with self._lock:
+            self._plan = {"poses": poses}
+
+    def _on_approach_pose(self, msg: PoseStamped) -> None:
+        with self._lock:
+            self._approach_pose = _pose_from_q(
+                msg.pose.position.x,
+                msg.pose.position.y,
+                msg.pose.orientation,
+            )
 
     def _update_pose_from_tf(self) -> None:
         try:
@@ -317,6 +334,14 @@ class BridgeNode(Node):
     def snapshot_costmap(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._costmap) if self._costmap else None
+
+    def snapshot_plan(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._plan) if self._plan else None
+
+    def snapshot_approach_pose(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._approach_pose) if self._approach_pose else None
 
     def snapshot_pose(self) -> dict[str, float]:
         with self._lock:
@@ -1230,6 +1255,12 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(data if data is not None else {})
             elif path == "/api/costmap":
                 data = node.snapshot_costmap()
+                self._json(data if data is not None else {})
+            elif path == "/api/plan":
+                data = node.snapshot_plan()
+                self._json(data if data is not None else {})
+            elif path == "/api/approach_pose":
+                data = node.snapshot_approach_pose()
                 self._json(data if data is not None else {})
             elif path == "/api/pose":
                 self._json(node.snapshot_pose())

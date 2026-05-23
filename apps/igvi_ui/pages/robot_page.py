@@ -40,6 +40,8 @@ class _RosPoller(QThread):
     costmap_received = Signal(dict)
     pose_received = Signal(dict)
     semantic_memory_received = Signal(dict)
+    plan_received = Signal(dict)
+    approach_pose_received = Signal(dict)
 
     def __init__(self, client: HostClient) -> None:
         super().__init__()
@@ -74,6 +76,18 @@ class _RosPoller(QThread):
                 try:
                     data = self.client.semantic_memory()
                     self.semantic_memory_received.emit(data)
+                except Exception:
+                    pass
+                try:
+                    data = self.client.ros_plan()
+                    if data:
+                        self.plan_received.emit(data)
+                except Exception:
+                    pass
+                try:
+                    data = self.client.ros_approach_pose()
+                    if data:
+                        self.approach_pose_received.emit(data)
                 except Exception:
                     pass
 
@@ -329,6 +343,8 @@ class RobotPage(QWidget):
             self._poller.costmap_received.connect(self.map_2d.update_costmap)
             self._poller.pose_received.connect(self._on_pose)
             self._poller.semantic_memory_received.connect(self.search_retrieve_control.update_semantic_memory)
+            self._poller.plan_received.connect(self.map_2d.update_plan)
+            self._poller.approach_pose_received.connect(self.map_2d.update_approach_pose)
             self._poller.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802

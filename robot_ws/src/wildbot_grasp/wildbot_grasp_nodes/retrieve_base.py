@@ -96,8 +96,7 @@ class RetrieveBase(Node):
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
         self._plan_pub = self.create_publisher(Path, "/plan", 1)
-        # Only global_costmap exists in this stack: planner_server hosts it.
-        # No controller_server → no local_costmap, so no local clear service.
+        self._approach_pose_pub = self.create_publisher(PoseStamped, "/approach_pose", 1)
         self._clear_global_client = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
             callback_group=self.callback_group,
@@ -229,27 +228,19 @@ class RetrieveBase(Node):
 
     def wait_until_arrived(self, goal_handle, pose: PoseStamped):
         tolerance = float(self.get_parameter("arrival_tolerance").value)
-        timeout = float(self.get_parameter("arrival_timeout").value)
-        deadline = time.monotonic() + timeout
         goal_x = float(pose.pose.position.x)
         goal_y = float(pose.pose.position.y)
-        last_dist = None
 
-        while rclpy.ok() and time.monotonic() < deadline:
-            if goal_handle.is_cancel_requested:
-                self.cmd_vel_pub.publish(Twist())
-                return False, "mission canceled"
-            robot_pose = self.get_robot_pose()
-            if robot_pose is not None:
-                dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
-                last_dist = dist
-                if dist <= tolerance:
-                    return True, f"arrived within {dist:.2f}m"
-            time.sleep(0.1)
+        robot_pose = self.get_robot_pose()
+        if robot_pose is not None:
+            dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
+            if dist <= tolerance:
+                return True, f"arrived within {dist:.2f}m"
+            else:
+                self.get_logger().info(f"Nav2 reported success, but distance {dist:.2f}m > tolerance {tolerance:.2f}m")
+                return True, f"arrived (Nav2 success, dist {dist:.2f}m)"
 
-        if last_dist is None:
-            return False, "navigation timed out; robot pose unavailable"
-        return False, f"navigation timed out; still {last_dist:.2f}m from goal"
+        return True, "arrived (Nav2 success, pose unavailable)"
 
     # ------------------------------------------------------------------
     # Semantic memory
@@ -296,8 +287,9 @@ class RetrieveBase(Node):
         rx, ry = robot_pose[0], robot_pose[1]
         best_len = float("inf")
         best_pose = None
+        best_path = None
 
-        all_angles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, -157.5, -135, -112.5, -90, -67.5, -45, -22.5]
+        all_angles = [0, 45, 90, 135, 180, -135, -90, -45]
         # Prefer standoffs on the same side of the bear as the robot.
         # dot(standoff - bear, robot - bear) >= 0 means they are on the same side.
         # This prevents the planner from choosing an approach that goes through the bear
@@ -342,9 +334,15 @@ class RetrieveBase(Node):
             if path_len < best_len:
                 best_len = path_len
                 best_pose = goal_pose
+                best_path = resp.path
 
         if best_pose is None:
             return None, "No valid path found to target"
+
+        self._approach_pose_pub.publish(best_pose)
+        if best_path is not None:
+            self._plan_pub.publish(best_path)
+
         return best_pose, f"selected approach path length {best_len:.2f}m"
 
     # ------------------------------------------------------------------

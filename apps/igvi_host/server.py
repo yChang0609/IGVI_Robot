@@ -434,6 +434,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())
 
+    @app.get("/api/ros/plan")
+    async def ros_plan() -> dict:
+        return await run_ros(lambda client: client.get_plan())
+
+    @app.get("/api/ros/approach_pose")
+    async def ros_approach_pose() -> dict:
+        return await run_ros(lambda client: client.get_approach_pose())
+
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:
         client = RobotBridgeClient(current_settings())

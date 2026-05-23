@@ -197,6 +197,28 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def get_plan(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_plan)
+
+    def _fetch_plan(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/plan"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_approach_pose(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_approach_pose)
+
+    def _fetch_approach_pose(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/approach_pose"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_pose(self) -> RobotPoseResponse:
         return await asyncio.to_thread(self._fetch_pose)
 

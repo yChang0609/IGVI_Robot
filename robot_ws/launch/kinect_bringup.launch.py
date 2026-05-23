@@ -31,7 +31,7 @@ def generate_launch_description():
             'fps': int(kinect.get('fps', 15)),
             'imu_rate_target': int(kinect.get('imu_rate_target', 200)),
             'point_cloud': True,
-            'rgb_point_cloud': True,
+            'rgb_point_cloud': False,
             'exposure_time_absolute': int(kinect.get('exposure_time_absolute', -1)),
             'gain': int(kinect.get('gain', -1)),
             'white_balance': int(kinect.get('white_balance', -1)),

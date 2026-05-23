@@ -30,9 +30,14 @@ planner_server:
     use_sim_time: false
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.3                # how close to goal counts as "arrived" (meters)
-      use_astar: false
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.1                # how close to goal counts as "arrived" (meters)
+      downsample_costmap: false
+      allow_unknown: true
+      max_iterations: 1000000
+      max_planning_time: 3.0
+      cost_travel_multiplier: 1.0   # Lower multiplier encourages taking shorter paths closer to obstacles
+      use_final_approach_orientation: false
 
 local_costmap:
   local_costmap:
@@ -45,6 +50,7 @@ local_costmap:
       rolling_window: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
         inflation_radius: 0.35      # how far from obstacles to avoid — reduce for bridge
 
 global_costmap:
@@ -78,7 +84,7 @@ global_costmap:
         z_resolution: 0.05
         z_voxels: 16
         unknown_threshold: 15
-        mark_threshold: 0
+        mark_threshold: 1
         max_obstacle_height: 1.5
         combination_method: 1
         observation_sources: kinect_cloud rear_scan
@@ -87,10 +93,10 @@ global_costmap:
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05   # ignore the floor
+          min_obstacle_height: 0.15   # ignore the floor
           max_obstacle_height: 1.5
           obstacle_max_range: 3.0     # trust Kinect depth out to ~3 m
-          obstacle_min_range: 0.18    # ignore held object (~0.24m grab dist); tune if needed
+          obstacle_min_range: 0.35    # ignore held object (~0.24m grab dist); tune if needed
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
         rear_scan:
@@ -104,4 +110,5 @@ global_costmap:
           raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
         inflation_radius: 0.35

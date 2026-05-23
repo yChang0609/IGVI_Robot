@@ -25,6 +25,8 @@ class Map2DView(QWidget):
         self._costmap_data: dict[str, Any] | None = None
         self._costmap_image: QImage | None = None
         self._pose: dict[str, float] | None = None
+        self._plan: dict[str, Any] | None = None
+        self._approach_pose: dict[str, float] | None = None
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
         self._home_pose: tuple[float, float, float] | None = None
         self._waypoints: dict[str, dict[str, float]] = {}
@@ -81,6 +83,14 @@ class Map2DView(QWidget):
     def update_semantic_objects(self, objects: list[dict[str, Any]], selected_id: str = "") -> None:
         self._semantic_objects = list(objects or [])
         self._selected_target_id = selected_id
+        self.update()
+
+    def update_plan(self, data: dict[str, Any]) -> None:
+        self._plan = data
+        self.update()
+
+    def update_approach_pose(self, pose: dict[str, float]) -> None:
+        self._approach_pose = pose
         self.update()
 
     def set_pick_mode(self, enabled: bool) -> None:
@@ -163,6 +173,29 @@ class Map2DView(QWidget):
                 painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
                 painter.setPen(QColor("#d8b4fe"))
                 painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Home")
+
+        if self._plan and self._plan.get("poses"):
+            painter.setPen(QPen(QColor("#14b8a6"), 3)) # Teal line
+            poses = self._plan["poses"]
+            for i in range(len(poses) - 1):
+                pt1 = self._world_to_widget(poses[i]["x"], poses[i]["y"], map_rect)
+                pt2 = self._world_to_widget(poses[i+1]["x"], poses[i+1]["y"], map_rect)
+                if pt1 and pt2:
+                    painter.drawLine(pt1, pt2)
+
+        if self._approach_pose:
+            ax, ay, ayaw = self._approach_pose.get("x", 0.0), self._approach_pose.get("y", 0.0), self._approach_pose.get("yaw", 0.0)
+            pt = self._world_to_widget(ax, ay, map_rect)
+            if pt:
+                painter.setPen(QPen(QColor("#ec4899"), 2)) # Pink for approach pose
+                painter.setBrush(QColor("#f472b6"))
+                painter.drawEllipse(pt, 8, 8)
+                dx = math.cos(ayaw) * 22
+                dy = -math.sin(ayaw) * 22
+                painter.setPen(QPen(QColor("#ec4899"), 2))
+                painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
+                painter.setPen(QColor("#fbcfe8"))
+                painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Approach")
 
         for name, wp in self._waypoints.items():
             pt = self._world_to_widget(wp.get("x", 0.0), wp.get("y", 0.0), map_rect)
