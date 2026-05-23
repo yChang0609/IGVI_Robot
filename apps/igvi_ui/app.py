@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.client = client
         self.setWindowTitle(f"IGVI Robot Control Center  —  {client.base_url}")
-        self.resize(1480, 900)
+        self.setMinimumWidth(900)
         self._build_ui()
 
         self.health_timer = QTimer(self)
@@ -154,7 +154,8 @@ class MainWindow(QMainWindow):
         self.estop_btn = QPushButton("■ EMERGENCY STOP")
         self.estop_btn.setObjectName("Danger")
         self.estop_btn.setCheckable(True)
-        self.estop_btn.setMinimumHeight(30)
+        self.estop_btn.setFixedHeight(30)
+        self.estop_btn.setFixedWidth(180)
         self.estop_btn.setToolTip("Stop the base and arm immediately. Click again to release.")
         self.estop_btn.clicked.connect(self._toggle_estop)
         topbar_layout.addWidget(self.sensor_group)
@@ -230,7 +231,7 @@ class MainWindow(QMainWindow):
         self.estop_btn.blockSignals(True)
         self.estop_btn.setChecked(engaged)
         self.estop_btn.blockSignals(False)
-        self.estop_btn.setText("⚠ E-STOP ENGAGED — click to release" if engaged else "■ EMERGENCY STOP")
+        self.estop_btn.setText("⚠ E-STOP ENGAGED" if engaged else "■ EMERGENCY STOP")
 
     def _toggle_estop(self) -> None:
         desired = self.estop_btn.isChecked()
@@ -310,17 +311,9 @@ def main() -> None:
 
     base_url = os.environ.get("IGVI_HOST_URL", "http://127.0.0.1:8770")
     window = MainWindow(HostClient(base_url=base_url))
-    # Size window to 88% of available screen, centred.
-    win_w = max(1100, round(avail.width() * 0.88))
-    win_h = max(700, round(avail.height() * 0.88))
-    window.resize(win_w, win_h)
-    window.move(
-        avail.x() + (avail.width() - win_w) // 2,
-        avail.y() + (avail.height() - win_h) // 2,
-    )
     # Safety net for paths that bypass closeEvent (app.quit(), signals).
     app.aboutToQuit.connect(window.shutdown)
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
 
 
