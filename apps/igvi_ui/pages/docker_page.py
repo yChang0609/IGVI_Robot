@@ -301,11 +301,13 @@ class DockerPage(QWidget):
         header = self.tree.header()
         header.setMinimumSectionSize(60)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 110)
+        self.tree.setColumnWidth(2, 80)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._open_context_menu)
@@ -363,6 +365,16 @@ class DockerPage(QWidget):
         return grouped
 
     def _render_services(self) -> None:
+        scrollbar = self.tree.verticalScrollBar()
+        saved_scroll = scrollbar.value()
+
+        collapsed = {
+            key for key, item in self._group_items.items()
+            if not item.isExpanded()
+        }
+        selected_names = set(self._selected_services())
+        col_widths = [self.tree.columnWidth(i) for i in range(len(self.COLUMNS))]
+
         self.tree.clear()
         self._group_items.clear()
         grouped = self._services_by_profile()
@@ -403,7 +415,31 @@ class DockerPage(QWidget):
                     running += 1
 
         self.tree.expandAll()
+        for key, item in self._group_items.items():
+            if key in collapsed:
+                item.setExpanded(False)
+
+        # Restore column widths so header doesn't jump on each refresh.
+        for i, w in enumerate(col_widths):
+            if w > 0 and i < len(self.COLUMNS) - 2:  # skip Stretch cols (3, 4)
+                self.tree.setColumnWidth(i, w)
+
+        # Restore selection without triggering log reload.
+        if selected_names:
+            self.tree.blockSignals(True)
+            for top_i in range(self.tree.topLevelItemCount()):
+                group = self.tree.topLevelItem(top_i)
+                for child_i in range(group.childCount()):
+                    child = group.child(child_i)
+                    name = str(child.data(0, Qt.ItemDataRole.UserRole) or "")
+                    if name in selected_names:
+                        child.setSelected(True)
+            self.tree.blockSignals(False)
+
         self.summary.setText(f"{running} running · {total} total")
+
+        if saved_scroll > 0:
+            QTimer.singleShot(0, lambda v=saved_scroll: self.tree.verticalScrollBar().setValue(v))
 
         _NOT_CREATED = {"not_created", "", "docker_unavailable"}
         created = sum(1 for s in self.services if str(s.get("status", "")) not in _NOT_CREATED)

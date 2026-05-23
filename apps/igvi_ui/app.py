@@ -66,7 +66,7 @@ from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.pages.docker_page import DockerPage
 from igvi_ui.pages.robot_page import RobotPage
 from igvi_ui.pages.settings_page import SettingsPage
-from igvi_ui.theme import STYLE_SHEET
+from igvi_ui.theme import build_style_sheet
 from igvi_ui.widgets.sensor_group import SensorGroup
 from igvi_ui.widgets.status_badge import StatusBadge
 
@@ -301,9 +301,23 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLE_SHEET)
+
+    screen = app.primaryScreen()
+    avail = screen.availableGeometry()
+    # Scale font from 11px (narrow) to 16px (wide) relative to 1600px reference width.
+    base_px = max(11, min(16, round(avail.width() / 123)))
+    app.setStyleSheet(build_style_sheet(base_px))
+
     base_url = os.environ.get("IGVI_HOST_URL", "http://127.0.0.1:8770")
     window = MainWindow(HostClient(base_url=base_url))
+    # Size window to 88% of available screen, centred.
+    win_w = max(1100, round(avail.width() * 0.88))
+    win_h = max(700, round(avail.height() * 0.88))
+    window.resize(win_w, win_h)
+    window.move(
+        avail.x() + (avail.width() - win_w) // 2,
+        avail.y() + (avail.height() - win_h) // 2,
+    )
     # Safety net for paths that bypass closeEvent (app.quit(), signals).
     app.aboutToQuit.connect(window.shutdown)
     window.show()
