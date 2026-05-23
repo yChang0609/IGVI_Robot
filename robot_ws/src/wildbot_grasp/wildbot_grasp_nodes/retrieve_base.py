@@ -297,7 +297,7 @@ class RetrieveBase(Node):
         best_len = float("inf")
         best_pose = None
 
-        all_angles = [0, 45, 90, 135, 180, -135, -90, -45]
+        all_angles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, -157.5, -135, -112.5, -90, -67.5, -45, -22.5]
         # Prefer standoffs on the same side of the bear as the robot.
         # dot(standoff - bear, robot - bear) >= 0 means they are on the same side.
         # This prevents the planner from choosing an approach that goes through the bear

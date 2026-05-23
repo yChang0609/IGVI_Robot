@@ -735,10 +735,11 @@
     <child link="laser"/>
   </joint>
 
+  <!--
   <link name="camera_pivot_link"/>
   
   <joint name="camera_pivot_joint" type="fixed">
-    <origin xyz="0.034 0 -0.04" rpy="0 0.38397 0"/> <!-- degree * 3.14159/180 -->
+    <origin xyz="0.034 0 -0.04" rpy="0 0.38397 0"/>
     <parent link="laser"/>
     <child link="camera_pivot_link"/>
     </joint>
@@ -750,6 +751,7 @@
     <parent link="camera_pivot_link"/>
     <child link="camera_link"/>
   </joint>
+  -->
 
   <ros2_control name="kros_car_system" type="system">
     <hardware>

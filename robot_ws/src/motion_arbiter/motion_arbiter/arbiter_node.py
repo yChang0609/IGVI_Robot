@@ -71,8 +71,9 @@ class MotionArbiter(Node):
         self.declare_parameter("max_linear_velocity", 0.3)
         self.declare_parameter("max_angular_velocity", 1.2)
         self.declare_parameter("accel_linear", 0.6)
-        self.declare_parameter("accel_angular", 1.8)
+        self.declare_parameter("accel_angular", 4.0)
         self.declare_parameter("kp_angular", 1.4)
+        # self.declare_parameter("kp_wz_feedback", 0.15)
         self.declare_parameter("slow_heading_threshold", math.pi / 4)
         self.declare_parameter("slow_linear_velocity", 0.08)
         self.declare_parameter("output_topic", "/cmd_vel")
@@ -90,6 +91,7 @@ class MotionArbiter(Node):
         self._last_motion_time = None
         self._path_frame_id: str = "map"
         self._current_vel: tuple[float, float] = (0.0, 0.0)
+        # self._current_wz_measured: float = 0.0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
@@ -185,6 +187,7 @@ class MotionArbiter(Node):
             path_frame_id = self._path_frame_id
             motion_target = self._motion_target
             last_motion = self._last_motion_time
+            # wz_measured = self._current_wz_measured
 
         # E-stop: hard-zero the output (no ramp) and publish until released.
         if estop:
@@ -246,6 +249,12 @@ class MotionArbiter(Node):
         else:
             desired_vx, desired_wz = 0.0, 0.0
 
+        # Apply IMU-based closed-loop feedback for yaw rate
+        # if state in (State.PATH_TRACKING, State.OVERRIDE, State.MANUAL):
+        #     kp_feedback = float(self.get_parameter("kp_wz_feedback").value)
+        #     wz_error = desired_wz - wz_measured
+        #     desired_wz = desired_wz + (kp_feedback * wz_error)
+
         # Velocity smoother (acceleration-limited P toward desired)
         max_lin = float(self.get_parameter("max_linear_velocity").value)
         max_ang = float(self.get_parameter("max_angular_velocity").value)
@@ -298,17 +307,11 @@ class MotionArbiter(Node):
         if is_at_goal:
             yaw_tol = float(self.get_parameter("yaw_tolerance").value)
             heading_error = _wrap_angle(gyaw - yaw)
-            if abs(heading_error) < yaw_tol and dist_to_goal < goal_tol:
+            if abs(heading_error) < yaw_tol:
                 return None
             else:
                 wz = float(self.get_parameter("kp_angular").value) * heading_error
-                # Correct longitudinal drift during alignment
-                dx, dy = gx - x, gy - y
-                forward_err = dx * math.cos(yaw) + dy * math.sin(yaw)
-                kp_lin = float(self.get_parameter("kp_linear_align").value)
-                vx = kp_lin * forward_err
-                max_v = float(self.get_parameter("slow_linear_velocity").value)
-                vx = max(-max_v, min(max_v, vx))
+                vx = 0.0
                 return vx, wz, path_index, State.ALIGNING
 
         # Advance closest-point index (no rewinding)
@@ -334,7 +337,8 @@ class MotionArbiter(Node):
 
         slow_thr = float(self.get_parameter("slow_heading_threshold").value)
         if abs(heading_error) > slow_thr:
-            vx = float(self.get_parameter("slow_linear_velocity").value)
+            # Rotate in place if heading error is too large to prevent driving sideways into walls
+            vx = 0.0
         else:
             vx = float(self.get_parameter("max_linear_velocity").value)
         wz = float(self.get_parameter("kp_angular").value) * heading_error
