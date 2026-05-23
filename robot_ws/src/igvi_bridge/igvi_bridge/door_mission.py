@@ -18,7 +18,7 @@ class DoorMissionCoordinator:
         self,
         *,
         get_waypoint: Callable[[str], Waypoint | None],
-        send_nav_goal: Callable[[float, float, float], tuple[bool, str]],
+        send_nav_goal: Callable[[float, float, float], tuple[bool, str, Any]],
         cancel_nav_goal: Callable[[], tuple[bool, str]],
         snapshot_nav: Callable[[], dict[str, Any]],
         send_open_door_goal: Callable[[float], tuple[bool, str]],
@@ -39,6 +39,7 @@ class DoorMissionCoordinator:
             "phase": "idle",  # idle|navigating|opening|succeeded|failed|canceled
             "waypoint": "",
             "ready_distance_m": 0.0,
+            "nav_goal_token": None,
             "message": "",
         }
 
@@ -61,18 +62,22 @@ class DoorMissionCoordinator:
                 phase="navigating",
                 waypoint=wp_name,
                 ready_distance_m=float(ready_distance_m),
+                nav_goal_token=None,
                 message=f"navigating to '{wp_name}'",
             )
 
-        ok, msg = self._send_nav_goal(wp["x"], wp["y"], wp["yaw"])
+        ok, msg, nav_goal_token = self._send_nav_goal(wp["x"], wp["y"], wp["yaw"])
         if not ok:
             with self._lock:
                 self._state.update(
                     active=False,
                     phase="failed",
+                    nav_goal_token=None,
                     message=f"nav dispatch failed: {msg}",
                 )
             return False, f"door mission failed to start nav: {msg}"
+        with self._lock:
+            self._state["nav_goal_token"] = nav_goal_token
         return True, f"door mission started: navigating to '{wp_name}'"
 
     def cancel(self) -> tuple[bool, str]:
@@ -92,6 +97,7 @@ class DoorMissionCoordinator:
             self._state.update(
                 active=False,
                 phase="canceled",
+                nav_goal_token=None,
                 message=f"canceled in phase '{phase}': {msg}",
             )
         return True, f"door mission canceled in phase '{phase}'"
@@ -99,13 +105,16 @@ class DoorMissionCoordinator:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             mission = dict(self._state)
+        mission.pop("nav_goal_token", None)
         mission["nav"] = self._snapshot_nav()
         mission["open_door"] = self._snapshot_open_door()
         return mission
 
-    def on_nav_result(self, nav_state: str, nav_message: str) -> None:
+    def on_nav_result(self, nav_goal_token: Any, nav_state: str, nav_message: str) -> None:
         with self._lock:
             if not self._state["active"] or self._state["phase"] != "navigating":
+                return
+            if self._state.get("nav_goal_token") != nav_goal_token:
                 return
             ready = float(self._state["ready_distance_m"])
             wp = self._state["waypoint"]
@@ -117,6 +126,7 @@ class DoorMissionCoordinator:
                     self._state.update(
                         active=False,
                         phase="failed",
+                        nav_goal_token=None,
                         message=f"reached '{wp}' but open_door failed to start: {send_msg}",
                     )
                 return
@@ -130,6 +140,7 @@ class DoorMissionCoordinator:
                 self._state.update(
                     active=False,
                     phase="canceled",
+                    nav_goal_token=None,
                     message=f"nav canceled before reaching '{wp}'",
                 )
         else:
@@ -137,6 +148,7 @@ class DoorMissionCoordinator:
                 self._state.update(
                     active=False,
                     phase="failed",
+                    nav_goal_token=None,
                     message=f"nav {nav_state} before reaching '{wp}': {nav_message}",
                 )
 
@@ -157,4 +169,4 @@ class DoorMissionCoordinator:
             message = f"open_door {door_state} at '{wp}': {door_message}"
 
         with self._lock:
-            self._state.update(active=False, phase=phase, message=message)
+            self._state.update(active=False, phase=phase, nav_goal_token=None, message=message)

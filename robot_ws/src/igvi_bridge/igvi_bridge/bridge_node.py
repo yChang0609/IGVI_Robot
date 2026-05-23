@@ -115,6 +115,7 @@ class BridgeNode(Node):
         self._nav_goal_handle = None
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
+        self._nav_goal_token = 0
 
         self._open_door = OpenDoorProxy(
             self,
@@ -125,7 +126,7 @@ class BridgeNode(Node):
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
         self._door_mission = DoorMissionCoordinator(
             get_waypoint=self._get_waypoint,
-            send_nav_goal=self.send_nav_goal,
+            send_nav_goal=self._send_door_mission_nav_goal,
             cancel_nav_goal=self.cancel_nav_goal,
             snapshot_nav=self.snapshot_nav,
             send_open_door_goal=self.send_open_door_goal,
@@ -661,11 +662,22 @@ class BridgeNode(Node):
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
     def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        ok, msg, _token = self._dispatch_nav_goal(x, y, yaw)
+        return ok, msg
+
+    def _send_door_mission_nav_goal(
+        self, x: float, y: float, yaw: float
+    ) -> tuple[bool, str, int | None]:
+        return self._dispatch_nav_goal(x, y, yaw)
+
+    def _dispatch_nav_goal(
+        self, x: float, y: float, yaw: float
+    ) -> tuple[bool, str, int | None]:
         if not self._nav_client.server_is_ready():
             if not self._nav_client.wait_for_server(timeout_sec=3.5):
                 hint = self._nav_diagnostic_hint()
                 self._update_nav_state("unavailable", hint)
-                return False, hint
+                return False, hint, None
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = "map"
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
@@ -675,12 +687,14 @@ class BridgeNode(Node):
         goal_msg.pose.pose.orientation.z = math.sin(half)
         goal_msg.pose.pose.orientation.w = math.cos(half)
         with self._nav_lock:
+            self._nav_goal_token += 1
+            goal_token = self._nav_goal_token
             self._nav_goal = {"x": float(x), "y": float(y), "yaw": float(yaw)}
             self._nav_feedback = {}
         self._update_nav_state("sending", "goal dispatched")
         future = self._nav_client.send_goal_async(goal_msg, feedback_callback=self._on_nav_feedback)
-        future.add_done_callback(self._on_nav_response)
-        return True, "goal dispatched"
+        future.add_done_callback(lambda done, token=goal_token: self._on_nav_response(done, token))
+        return True, "goal dispatched", goal_token
 
     def cancel_nav_goal(self) -> tuple[bool, str]:
         with self._nav_lock:
@@ -783,26 +797,37 @@ class BridgeNode(Node):
                 self._nav_state = "navigating"
                 self._nav_message = "executing"
 
-    def _on_nav_response(self, future: Any) -> None:
+    def _on_nav_response(self, future: Any, goal_token: int) -> None:
         try:
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("failed", f"send error: {exc}")
             return
         if not goal_handle.accepted:
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("rejected", "goal rejected by server")
             return
         with self._nav_lock:
+            if goal_token != self._nav_goal_token:
+                return
             self._nav_goal_handle = goal_handle
             self._nav_state = "accepted"
             self._nav_message = "goal accepted"
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_nav_result)
+        result_future.add_done_callback(lambda done, token=goal_token: self._on_nav_result(done, token))
 
-    def _on_nav_result(self, future: Any) -> None:
+    def _on_nav_result(self, future: Any, goal_token: int) -> None:
         try:
             wrapped = future.result()
         except Exception as exc:  # noqa: BLE001
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("failed", f"result error: {exc}")
             with self._nav_lock:
                 self._nav_goal_handle = None
@@ -814,10 +839,12 @@ class BridgeNode(Node):
         }
         state, message = status_map.get(wrapped.status, ("failed", f"status {wrapped.status}"))
         with self._nav_lock:
+            if goal_token != self._nav_goal_token:
+                return
             self._nav_state = state
             self._nav_message = message
             self._nav_goal_handle = None
-        self._door_mission.on_nav_result(state, message)
+        self._door_mission.on_nav_result(goal_token, state, message)
 
     def _on_nav_cancel_response(self, future: Any) -> None:
         try:
