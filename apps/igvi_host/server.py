@@ -34,6 +34,8 @@ from .models import (
     ComposeProgressResponse,
     ContainerStatus,
     DevModeRequest,
+    EstopRequest,
+    EstopStatusResponse,
     HealthResponse,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
@@ -386,6 +388,31 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/ros/stop", response_model=RosActionResponse)
     async def ros_stop() -> RosActionResponse:
         return await run_ros(lambda client: client.stop())
+
+    @app.post("/api/ros/estop", response_model=EstopStatusResponse)
+    async def ros_estop(request: EstopRequest) -> EstopStatusResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            result = await client.set_estop(request.engaged)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return EstopStatusResponse(
+            ok=bool(result.get("ok", True)),
+            engaged=bool(result.get("engaged", request.engaged)),
+            message=str(result.get("message", "")),
+        )
+
+    @app.get("/api/ros/estop", response_model=EstopStatusResponse)
+    async def ros_estop_status() -> EstopStatusResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            result = await client.get_estop()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return EstopStatusResponse(
+            ok=bool(result.get("ok", True)),
+            engaged=bool(result.get("engaged", False)),
+        )
 
     @app.post("/api/ros/goal_pose", response_model=RosActionResponse)
     async def goal_pose(request: Pose2DRequest) -> RosActionResponse:

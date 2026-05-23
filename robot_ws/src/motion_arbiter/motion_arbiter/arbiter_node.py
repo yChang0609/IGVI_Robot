@@ -37,7 +37,16 @@ from tf2_ros import TransformException
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, String
+
+# Latched QoS matching the bridge's /estop publisher so we receive the current
+# state immediately on subscribe, even if the arbiter starts after the bridge.
+_ESTOP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class State(Enum):
@@ -46,6 +55,7 @@ class State(Enum):
     ALIGNING = "aligning"
     OVERRIDE = "override"
     MANUAL = "manual"
+    ESTOP = "estop"
 
 
 class MotionArbiter(Node):
@@ -73,6 +83,7 @@ class MotionArbiter(Node):
         # ── State ─────────────────────────────────────────────────────────
         self._lock = threading.Lock()
         self._state: State = State.IDLE
+        self._estop: bool = False
         self._path: list[tuple[float, float, float]] = []
         self._path_index: int = 0
         self._motion_target: tuple[float, float] = (0.0, 0.0)
@@ -83,6 +94,7 @@ class MotionArbiter(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
+        self.create_subscription(Bool, "/estop", self._on_estop, _ESTOP_QOS)
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -108,7 +120,12 @@ class MotionArbiter(Node):
                 for p in msg.poses
             ]
             self._path_index = 0
-            if self._state == State.OVERRIDE:
+            if self._estop:
+                self._state = State.ESTOP
+                self.get_logger().info(
+                    f"Path received ({len(self._path)} pts) — held, E-STOP engaged"
+                )
+            elif self._state == State.OVERRIDE:
                 self.get_logger().info(
                     f"Path updated ({len(self._path)} pts) — held until override clears"
                 )
@@ -121,22 +138,49 @@ class MotionArbiter(Node):
             self._motion_target = (float(msg.linear.x), float(msg.angular.z))
             self._last_motion_time = self.get_clock().now()
             is_zero = abs(msg.linear.x) < 1e-3 and abs(msg.angular.z) < 1e-3
-            if is_zero:
+            if self._estop:
+                self._state = State.ESTOP
+            elif is_zero:
                 self._state = State.PATH_TRACKING if self._path else State.IDLE
             else:
                 self._state = State.OVERRIDE if self._path else State.MANUAL
+
+    def _on_estop(self, msg: Bool) -> None:
+        engaged = bool(msg.data)
+        with self._lock:
+            self._estop = engaged
+            if engaged:
+                self._state = State.ESTOP
+                self._motion_target = (0.0, 0.0)
+            else:
+                self._state = State.PATH_TRACKING if self._path else State.IDLE
+        self.get_logger().warn("E-STOP ENGAGED" if engaged else "E-STOP RELEASED")
 
     # ── Control loop ──────────────────────────────────────────────────────
 
     def _tick(self) -> None:
         now = self.get_clock().now()
         with self._lock:
+            estop = self._estop
             state = self._state
             path = list(self._path)
             path_index = self._path_index
             path_frame_id = self._path_frame_id
             motion_target = self._motion_target
             last_motion = self._last_motion_time
+
+        # E-stop: hard-zero the output (no ramp) and publish until released.
+        if estop:
+            self._current_vel = (0.0, 0.0)
+            cmd = TwistStamped()
+            cmd.header.stamp = now.to_msg()
+            cmd.twist.linear.x = 0.0
+            cmd.twist.angular.z = 0.0
+            self._cmd_pub.publish(cmd)
+            state_msg = String()
+            state_msg.data = State.ESTOP.value
+            self._state_pub.publish(state_msg)
+            return
 
         # Override timeout: clear stale manual cmd
         if state in (State.OVERRIDE, State.MANUAL) and last_motion is not None:

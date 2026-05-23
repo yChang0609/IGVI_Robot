@@ -11,7 +11,7 @@ x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 services:
   igvi_bridge:
     <<: *base_service
-    profiles: ["bridge"]
+    profiles: ["communication"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.bridge

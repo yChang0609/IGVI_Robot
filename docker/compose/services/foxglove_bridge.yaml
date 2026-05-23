@@ -9,7 +9,7 @@ x-base-service: &base_service
 services:
   foxglove_bridge:
     <<: *base_service
-    profiles: ["monitoring"]
+    profiles: ["communication"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.foxglove

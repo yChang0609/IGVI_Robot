@@ -105,6 +105,12 @@ class HostClient:
     def ros_stop(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/stop", {})
 
+    def estop_set(self, engaged: bool) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/estop", {"engaged": engaged})
+
+    def estop_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/estop")
+
     def cmd_vel(self, linear_x: float, angular_z: float) -> dict[str, Any]:
         return self.request(
             "POST",

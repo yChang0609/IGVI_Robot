@@ -25,10 +25,10 @@ GRIPPER_MIN_SAFE, GRIPPER_MAX = 168.0, 240.0  # < 168° will burn the motor
 GRIPPER_RETRACT_DEG = 2.0
 GRIPPER_RETRACT_DELAY_MS = 500
 
-# Default starting target (mid-range, gripper open)
-DEFAULT_ARM1 = 120.0
-DEFAULT_ARM2 = 120.0
-DEFAULT_GRIPPER = GRIPPER_MAX
+# Default starting target / Home pose (arm_1 up, arm_2 folded, gripper open)
+DEFAULT_ARM1 = 210.0
+DEFAULT_ARM2 = 0.0
+DEFAULT_GRIPPER = 240.0
 
 # Continuous step rate (deg/sec) while a key is held
 ARM_RATE_DEG_PER_SEC = 25.0

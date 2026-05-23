@@ -68,6 +68,20 @@ class RobotBridgeClient:
             message=str(result.get("message", "robot stopped")),
         )
 
+    async def set_estop(self, engaged: bool) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/estop", {"engaged": bool(engaged)})
+
+    async def get_estop(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_estop)
+
+    def _fetch_estop(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/estop"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def publish_goal_pose(self, request: Pose2DRequest) -> RosActionResponse:
         await asyncio.to_thread(
             self._bridge_post, "/api/goal_pose",

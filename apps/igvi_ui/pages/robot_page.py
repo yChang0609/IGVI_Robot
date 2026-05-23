@@ -307,9 +307,9 @@ class RobotPage(QWidget):
         self.bridge_retrieve_control = BridgeRetrieveControl(self.client, self.map_2d)
         
         self.control_tabs.addTab(self.drive_control, "Drive")
+        self.control_tabs.addTab(self.arm_control, "Arm")
         self.control_tabs.addTab(self.nav_control, "Navigation")
         self.control_tabs.addTab(self.waypoint_control, "Waypoints")
-        self.control_tabs.addTab(self.arm_control, "Arm")
         self.control_tabs.addTab(self.search_retrieve_control, "Search & Retrieve")
         self.control_tabs.addTab(self.bridge_retrieve_control, "Bridge Mission")
         control_layout.addWidget(self.control_tabs, 1)

@@ -29,7 +29,7 @@ from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
-from std_msgs.msg import Empty, Float64MultiArray, String
+from std_msgs.msg import Bool, Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -39,6 +39,14 @@ except ImportError:  # pragma: no cover
     PILImage = None  # type: ignore
 
 _MAP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+# Latched so motion_arbiter / arm_safeguard receive the current E-stop state
+# as soon as they subscribe, even if they start after the bridge.
+_ESTOP_QOS = QoSProfile(
     depth=1,
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -132,6 +140,11 @@ class BridgeNode(Node):
         self.create_subscription(
             Odometry, "/odom_lidar", self._on_lidar_freshness, 10,
         )
+        # Camera health: RTAB-Map RGBD visual odometry. Fresh /odom_visual means
+        # the camera + visual front-end are producing usable output.
+        self.create_subscription(
+            Odometry, "/odom_visual", self._on_camera_freshness, 10,
+        )
 
         self.create_subscription(OccupancyGrid, "/map", self._on_map, _MAP_QOS)
         self.create_subscription(OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS)
@@ -157,6 +170,14 @@ class BridgeNode(Node):
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_safeguard/target_trajectory", 10)
         self._imu_calibration_start_pub = self.create_publisher(Empty, "/imu/calibration/start", 10)
+
+        # Latched emergency-stop state. motion_arbiter zeros the base and
+        # arm_safeguard freezes the arm while this is True. The bridge owns the
+        # authoritative state; UI toggles it and polls it back.
+        self._estop_lock = threading.Lock()
+        self._estop_engaged = False
+        self._estop_pub = self.create_publisher(Bool, "/estop", _ESTOP_QOS)
+        self._publish_estop(False)
         self._local_costmap_clear_client = self.create_client(
             ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
         )
@@ -303,11 +324,15 @@ class BridgeNode(Node):
 
     def snapshot_health(self) -> dict[str, Any]:
         with self._lock:
-            return {
+            health = {
                 "ok": True,
                 "map": self._map is not None,
                 "pose_source": self._pose_source,
             }
+        # Sensor freshness drives the grouped sensor badge in the UI top bar,
+        # which polls /api/health via the host's ui-bridge health check.
+        health["fusion_sources"] = self.snapshot_fusion_sources()
+        return health
 
     def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
         # Manual override flows through motion_arbiter: publish a Twist on
@@ -358,6 +383,31 @@ class BridgeNode(Node):
         if canceled:
             return True, "emergency stop sent; cancel requested for " + ", ".join(canceled)
         return True, "emergency stop sent"
+
+    def _publish_estop(self, engaged: bool) -> None:
+        msg = Bool()
+        msg.data = bool(engaged)
+        self._estop_pub.publish(msg)
+
+    def _apply_estop(self, engaged: bool) -> str:
+        self._publish_estop(engaged)
+        if engaged:
+            # Latched /estop keeps the base zeroed and arm frozen; also cancel
+            # any running missions so they don't resume fighting on release.
+            self.emergency_stop()
+            return "emergency stop engaged"
+        return "emergency stop released"
+
+    def set_estop(self, engaged: bool) -> tuple[bool, bool, str]:
+        engaged = bool(engaged)
+        with self._estop_lock:
+            self._estop_engaged = engaged
+        msg = self._apply_estop(engaged)
+        return True, engaged, msg
+
+    def snapshot_estop(self) -> dict[str, Any]:
+        with self._estop_lock:
+            return {"ok": True, "engaged": self._estop_engaged}
 
     def snapshot_motion_state(self) -> str:
         return self._motion_state
@@ -951,16 +1001,21 @@ class BridgeNode(Node):
         with self._fusion_lock:
             self._fusion_last_seen["lidar"] = time.monotonic()
 
+    def _on_camera_freshness(self, _msg: Odometry) -> None:
+        with self._fusion_lock:
+            self._fusion_last_seen["camera"] = time.monotonic()
+
     def snapshot_fusion_sources(self) -> dict[str, bool]:
-        """Returns {source: True/False} for each EKF input, fresh = last
-        message within 2 s. Drives the UI badge."""
+        """Returns {source: True/False} for each sensor, fresh = last message
+        within 2 s. Drives the grouped sensor badge in the UI status bar."""
         now = time.monotonic()
         fresh = 2.0
         with self._fusion_lock:
             return {
-                "wheel": (now - self._fusion_last_seen.get("wheel", 0.0)) < fresh,
-                "imu":   (now - self._fusion_last_seen.get("imu",   0.0)) < fresh,
-                "lidar": (now - self._fusion_last_seen.get("lidar", 0.0)) < fresh,
+                "wheel":  (now - self._fusion_last_seen.get("wheel",  0.0)) < fresh,
+                "imu":    (now - self._fusion_last_seen.get("imu",    0.0)) < fresh,
+                "lidar":  (now - self._fusion_last_seen.get("lidar",  0.0)) < fresh,
+                "camera": (now - self._fusion_last_seen.get("camera", 0.0)) < fresh,
             }
 
     def _visible_action_names(self) -> list[str]:
@@ -1192,6 +1247,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
                 self._json({"state": node.snapshot_motion_state()})
+            elif path == "/api/estop":
+                self._json(node.snapshot_estop())
             elif path == "/api/arm/temperatures":
                 self._json(node.snapshot_arm_temperatures())
             elif path == "/api/imu/calibration":
@@ -1233,6 +1290,9 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/stop":
                 ok, msg = node.emergency_stop()
                 self._json({"ok": ok, "action": "stop", "message": msg})
+            elif path == "/api/estop":
+                ok, engaged, msg = node.set_estop(bool(body.get("engaged", True)))
+                self._json({"ok": ok, "action": "estop", "engaged": engaged, "message": msg})
             elif path == "/api/goal_pose":
                 node.publish_goal_pose(
                     float(body.get("x", 0.0)), float(body.get("y", 0.0)),

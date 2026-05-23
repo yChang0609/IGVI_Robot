@@ -67,6 +67,7 @@ from igvi_ui.pages.docker_page import DockerPage
 from igvi_ui.pages.robot_page import RobotPage
 from igvi_ui.pages.settings_page import SettingsPage
 from igvi_ui.theme import STYLE_SHEET
+from igvi_ui.widgets.sensor_group import SensorGroup
 from igvi_ui.widgets.status_badge import StatusBadge
 
 
@@ -139,17 +140,30 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("Muted")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        topbar_layout.addLayout(title_box, 1)
+        topbar_layout.addLayout(title_box)
+        topbar_layout.addStretch(1)
+
+        # Status bar order: Sensors → Host Agent → Dock → Compose → UI Bridge
+        # → Battery → Emergency Stop.
+        self.sensor_group = SensorGroup()
         self.host_badge = StatusBadge("Host Agent", "muted")
         self.docker_badge = StatusBadge("Docker", "muted")
         self.compose_badge = StatusBadge("Compose", "muted")
         self.bridge_badge = StatusBadge("UI Bridge", "muted")
         self.battery_badge = StatusBadge("Battery: unknown", "muted")
+        self.estop_btn = QPushButton("■ EMERGENCY STOP")
+        self.estop_btn.setObjectName("Danger")
+        self.estop_btn.setCheckable(True)
+        self.estop_btn.setMinimumHeight(30)
+        self.estop_btn.setToolTip("Stop the base and arm immediately. Click again to release.")
+        self.estop_btn.clicked.connect(self._toggle_estop)
+        topbar_layout.addWidget(self.sensor_group)
         topbar_layout.addWidget(self.host_badge)
         topbar_layout.addWidget(self.docker_badge)
         topbar_layout.addWidget(self.compose_badge)
         topbar_layout.addWidget(self.bridge_badge)
         topbar_layout.addWidget(self.battery_badge)
+        topbar_layout.addWidget(self.estop_btn)
 
         self.status_line = QLabel("Ready")
         self.status_line.setObjectName("Muted")
@@ -182,6 +196,7 @@ class MainWindow(QMainWindow):
             self.compose_badge.set_state("Compose: unknown", "muted")
             self.bridge_badge.set_state("UI Bridge: unknown", "muted")
             self.battery_badge.set_state("Battery: unknown", "muted")
+            self.sensor_group.update_sources({}, available=False)
             self.status_line.setText(f"Host Agent unavailable: {exc}")
             return
 
@@ -194,11 +209,43 @@ class MainWindow(QMainWindow):
             "Compose: ok" if health.get("compose_available") else "Compose: unavailable",
             "ok" if health.get("compose_available") else "warn",
         )
+        bridge_ok = bool(bridge.get("ok"))
         self.bridge_badge.set_state(
-            "UI Bridge: ok" if bridge.get("ok") else "UI Bridge: stale",
-            "ok" if bridge.get("ok") else "warn",
+            "UI Bridge: ok" if bridge_ok else "UI Bridge: stale",
+            "ok" if bridge_ok else "warn",
         )
+        fusion_sources = (bridge.get("payload") or {}).get("fusion_sources") or {}
+        self.sensor_group.update_sources(fusion_sources, available=bridge_ok)
         self._refresh_battery_badge()
+        self._refresh_estop_button()
+
+    def _refresh_estop_button(self) -> None:
+        try:
+            status = self.client.estop_status()
+        except HostClientError:
+            return
+        self._apply_estop_button(bool(status.get("engaged", False)))
+
+    def _apply_estop_button(self, engaged: bool) -> None:
+        self.estop_btn.blockSignals(True)
+        self.estop_btn.setChecked(engaged)
+        self.estop_btn.blockSignals(False)
+        self.estop_btn.setText("⚠ E-STOP ENGAGED — click to release" if engaged else "■ EMERGENCY STOP")
+
+    def _toggle_estop(self) -> None:
+        desired = self.estop_btn.isChecked()
+        try:
+            result = self.client.estop_set(desired)
+        except HostClientError as exc:
+            self._apply_estop_button(not desired)  # revert; request didn't land
+            self.status_line.setText(f"E-stop failed: {exc}")
+            return
+        engaged = bool(result.get("engaged", desired))
+        self._apply_estop_button(engaged)
+        self.status_line.setText(
+            "EMERGENCY STOP ENGAGED — base and arm halted" if engaged
+            else "Emergency stop released"
+        )
 
     def _refresh_battery_badge(self) -> None:
         try:

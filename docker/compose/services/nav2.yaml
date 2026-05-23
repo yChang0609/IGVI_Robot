@@ -12,7 +12,7 @@ x-launch-volume: &launch_volume ../../../robot_ws/launch:/launch:ro
 services:
   nav2:
     <<: *base_service
-    profiles: ["navigation"]
+    profiles: ["application"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.fusion

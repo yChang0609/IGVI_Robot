@@ -31,7 +31,7 @@ x-model-volume: &model_volume ${IGVI_DATA_ROOT}/models/eto_eye:/models:ro
 services:
   eto_eye_gpu:
     <<: *base_service
-    profiles: ["eto_eye_gpu"]
+    profiles: ["application"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.eto_eye_gpu

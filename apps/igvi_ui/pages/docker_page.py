@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, QTimer, Signal, Qt
+from PySide6.QtCore import QSize, QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -13,9 +12,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +24,55 @@ from igvi_ui.clients.host_client import HostClient, HostClientError
 
 
 _RUNNING = {"running", "restarting"}
+
+_UI_GROUPS: list[tuple[str, str]] = [
+    ("communication", "Communication"),
+    ("robot", "Robot"),
+    ("slam_system", "SLAM System"),
+    ("application", "Application"),
+    ("task_server", "Task Server"),
+]
+
+_SLAM_MUTEX = {
+    "slam_fusion": "slam_localization",
+    "slam_localization": "slam_fusion",
+}
+
+_TREE_STYLE = """
+QTreeWidget {
+    border: 1px solid #1e2228;
+    outline: none;
+}
+QTreeWidget::item {
+    padding: 3px 0px;
+}
+QTreeWidget::item:hover {
+    background: #181c22;
+}
+QTreeWidget::item:selected {
+    background: #1a2636;
+}
+"""
+
+_GRP_BTN = (
+    "QPushButton { padding: 3px 16px; border-radius: 4px;"
+    " font-size: 12px; font-weight: 500; min-width: 70px; }"
+)
+_GRP_START_STYLE = (
+    _GRP_BTN
+    + " QPushButton { background: #24472e; color: #b8dcc4; border: 1px solid #2f5c3c; }"
+    " QPushButton:hover { background: #2f5c3c; }"
+)
+_GRP_STOP_STYLE = (
+    _GRP_BTN
+    + " QPushButton { background: #47242a; color: #dcb8bc; border: 1px solid #5c2f35; }"
+    " QPushButton:hover { background: #5c2f35; }"
+)
+_GRP_SLAM_STYLE = (
+    _GRP_BTN
+    + " QPushButton { background: #243047; color: #b8c4dc; border: 1px solid #2f405c; }"
+    " QPushButton:hover { background: #2f405c; }"
+)
 
 
 class ComposeActionWorker(QThread):
@@ -84,7 +132,7 @@ class LogTailWorker(QThread):
 class DockerPage(QWidget):
     log_message = Signal(str)
 
-    COLUMNS = ("Service", "Profile", "Status", "Health", "Image", "Ports")
+    COLUMNS = ("Service", "Status", "Health", "Image", "Ports")
 
     def __init__(self, client: HostClient):
         super().__init__()
@@ -94,10 +142,10 @@ class DockerPage(QWidget):
         self.log_worker: LogTailWorker | None = None
         self.busy_actions: set[str] = set()
         self.current_log_service: str | None = None
-        self.profile_filter = "All"
         self._progress_busy: bool = False
         self._progress_target: str = ""
         self._pending_actions: dict[str, str] = {}
+        self._group_items: dict[str, QTreeWidgetItem] = {}
         self._build_ui()
 
         self.refresh_timer = QTimer(self)
@@ -112,14 +160,8 @@ class DockerPage(QWidget):
         self.progress_timer.timeout.connect(self._poll_progress)
 
         self.refresh()
-        self._reload_profiles()
 
     def shutdown(self) -> None:
-        """Stop timers and join all worker threads. Idempotent.
-
-        Docker is the default page, so its workers are the most likely to be
-        alive at exit; a running QThread destroyed here aborts the process.
-        """
         for timer in (self.refresh_timer, self.log_timer, self.progress_timer):
             timer.stop()
         stop_thread(self.log_worker)
@@ -138,7 +180,7 @@ class DockerPage(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self._build_table_panel())
+        splitter.addWidget(self._build_tree_panel())
         splitter.addWidget(self._build_log_panel())
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -154,26 +196,6 @@ class DockerPage(QWidget):
         title = QLabel("Docker Compose")
         title.setObjectName("PanelTitle")
         row.addWidget(title)
-        row.addSpacing(10)
-
-        row.addWidget(QLabel("Profile:"))
-        self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(140)
-        self.profile_combo.addItem("All")
-        self.profile_combo.currentTextChanged.connect(self._on_profile_filter_changed)
-        row.addWidget(self.profile_combo)
-
-        self.up_profile_button = QPushButton("Up Profile")
-        self.up_profile_button.setObjectName("Primary")
-        self.up_profile_button.clicked.connect(self._up_profile)
-        row.addWidget(self.up_profile_button)
-
-        row.addSpacing(12)
-        self.dev_button = QPushButton("Dev Mode")
-        self.dev_button.setCheckable(True)
-        self.dev_button.clicked.connect(self._toggle_dev_mode)
-        row.addWidget(self.dev_button)
-
         row.addStretch(1)
 
         self.start_button = QPushButton("Start")
@@ -227,31 +249,38 @@ class DockerPage(QWidget):
 
         return bar
 
-    def _build_table_panel(self) -> QWidget:
+    def _build_tree_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("Panel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self.summary = QLabel("Loading services…")
+        self.summary = QLabel("Loading services...")
         self.summary.setObjectName("Muted")
         layout.addWidget(self.summary)
 
-        self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._open_context_menu)
-        layout.addWidget(self.table, 1)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(list(self.COLUMNS))
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setExpandsOnDoubleClick(False)
+        self.tree.setIndentation(24)
+        self.tree.setUniformRowHeights(False)
+        self.tree.setStyleSheet(_TREE_STYLE)
+        header = self.tree.header()
+        header.setMinimumSectionSize(60)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.tree.setColumnWidth(0, 200)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._open_context_menu)
+        layout.addWidget(self.tree, 1)
         return panel
 
     def _build_log_panel(self) -> QWidget:
@@ -262,7 +291,7 @@ class DockerPage(QWidget):
         layout.setSpacing(6)
 
         header = QHBoxLayout()
-        self.log_title = QLabel("Logs — (select a service)")
+        self.log_title = QLabel("Logs -- (select a service)")
         self.log_title.setObjectName("PanelTitle")
         header.addWidget(self.log_title)
         header.addStretch(1)
@@ -290,104 +319,167 @@ class DockerPage(QWidget):
     # --------------------------------------------------------------- refresh
     def refresh(self) -> None:
         try:
-            health = self.client.health()
-            self.dev_button.setChecked(bool(health.get("dev_mode", False)))
+            self.client.health()
             self.services = self.client.services()
         except HostClientError as exc:
             self.summary.setText(f"Host Agent unavailable: {exc}")
             self.services = []
         self._render_services()
 
-    def _reload_profiles(self) -> None:
-        try:
-            profiles = self.client.profiles()
-        except HostClientError:
-            return
-        current = self.profile_combo.currentText() or "All"
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.clear()
-        self.profile_combo.addItem("All")
-        for profile in profiles:
-            self.profile_combo.addItem(profile)
-        idx = self.profile_combo.findText(current)
-        self.profile_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.profile_combo.blockSignals(False)
-
-    def _filtered_services(self) -> list[dict]:
-        if self.profile_filter == "All":
-            return self.services
-        return [s for s in self.services if str(s.get("profile") or "") == self.profile_filter]
+    def _services_by_profile(self) -> dict[str, list[dict]]:
+        grouped: dict[str, list[dict]] = {}
+        for svc in self.services:
+            profile = str(svc.get("profile") or "default")
+            grouped.setdefault(profile, []).append(svc)
+        return grouped
 
     def _render_services(self) -> None:
-        filtered = self._filtered_services()
-        self.table.setRowCount(len(filtered))
+        self.tree.clear()
+        self._group_items.clear()
+        grouped = self._services_by_profile()
+        total = 0
         running = 0
-        for row, service in enumerate(filtered):
-            name = str(service.get("service", ""))
-            status = str(service.get("status") or "")
-            if status in _RUNNING:
-                running += 1
-            self.table.setItem(row, 0, QTableWidgetItem(name))
-            self.table.setItem(row, 1, QTableWidgetItem(str(service.get("profile") or "")))
-            pending = self._pending_actions.get(name)
-            if pending:
-                self.table.setItem(row, 2, self._make_pending_item(pending))
-            else:
-                self.table.setItem(row, 2, self._make_status_item(status))
-            self.table.setItem(row, 3, QTableWidgetItem(str(service.get("health") or "")))
-            self.table.setItem(row, 4, QTableWidgetItem(str(service.get("image") or "")))
-            self.table.setItem(row, 5, QTableWidgetItem(", ".join(service.get("ports") or [])))
-        self.table.resizeColumnToContents(0)
-        self.table.resizeColumnToContents(1)
-        self.table.resizeColumnToContents(2)
-        self.table.resizeColumnToContents(3)
-        total = len(self.services)
-        shown = len(filtered)
-        self.summary.setText(
-            f"{running} running · {shown} shown · {total} total"
-            + (f" · filter: {self.profile_filter}" if self.profile_filter != "All" else "")
-        )
 
-    def _make_status_item(self, status: str) -> QTableWidgetItem:
-        item = QTableWidgetItem(status)
-        if status in _RUNNING:
-            item.setForeground(Qt.GlobalColor.green)
-        elif status in {"exited", "dead"}:
-            item.setForeground(Qt.GlobalColor.red)
-        elif status in {"not_created", ""}:
-            item.setForeground(Qt.GlobalColor.gray)
-        elif status == "docker_unavailable":
-            item.setForeground(Qt.GlobalColor.darkYellow)
+        known_profiles = [p for p, _ in _UI_GROUPS]
+
+        for profile_key, display_name in _UI_GROUPS:
+            services = grouped.pop(profile_key, [])
+            if not services:
+                continue
+            group_item = self._create_group(profile_key, display_name, services)
+            self.tree.addTopLevelItem(group_item)
+            row = self.tree.indexOfTopLevelItem(group_item)
+            self.tree.setFirstColumnSpanned(row, self.tree.rootIndex(), True)
+            self._group_items[profile_key] = group_item
+            self._attach_group_buttons(group_item, profile_key, services)
+            for svc in services:
+                self._add_service_child(group_item, svc)
+                total += 1
+                if str(svc.get("status", "")) in _RUNNING:
+                    running += 1
+
+        for profile_key, services in sorted(grouped.items()):
+            if not services:
+                continue
+            group_item = self._create_group(profile_key, profile_key.title(), services)
+            self.tree.addTopLevelItem(group_item)
+            row = self.tree.indexOfTopLevelItem(group_item)
+            self.tree.setFirstColumnSpanned(row, self.tree.rootIndex(), True)
+            self._group_items[profile_key] = group_item
+            self._attach_group_buttons(group_item, profile_key, services)
+            for svc in services:
+                self._add_service_child(group_item, svc)
+                total += 1
+                if str(svc.get("status", "")) in _RUNNING:
+                    running += 1
+
+        self.tree.expandAll()
+        self.summary.setText(f"{running} running · {total} total")
+
+    def _create_group(self, profile_key: str, display_name: str, services: list[dict]) -> QTreeWidgetItem:
+        running_count = sum(1 for s in services if str(s.get("status", "")) in _RUNNING)
+        item = QTreeWidgetItem()
+        item.setText(0, f"{display_name}  ({running_count}/{len(services)} running)")
+        item.setData(0, Qt.ItemDataRole.UserRole, profile_key)
+        font = item.font(0)
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 1)
+        item.setFont(0, font)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        item.setSizeHint(0, QSize(-1, 38))
         return item
+
+    def _attach_group_buttons(self, group_item: QTreeWidgetItem, profile_key: str, services: list[dict]) -> None:
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(4, 4, 8, 4)
+        layout.setSpacing(6)
+
+        label = QLabel(group_item.text(0))
+        font = label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 1)
+        label.setFont(font)
+        layout.addWidget(label)
+        layout.addStretch(1)
+
+        svc_names = [str(s.get("service", "")) for s in services]
+
+        if profile_key == "slam_system":
+            construction_btn = QPushButton("Construction")
+            construction_btn.setStyleSheet(_GRP_SLAM_STYLE)
+            construction_btn.setFixedHeight(26)
+            construction_btn.clicked.connect(lambda: self._slam_switch("slam_fusion"))
+            layout.addWidget(construction_btn)
+
+            localization_btn = QPushButton("Localization")
+            localization_btn.setStyleSheet(_GRP_SLAM_STYLE)
+            localization_btn.setFixedHeight(26)
+            localization_btn.clicked.connect(lambda: self._slam_switch("slam_localization"))
+            layout.addWidget(localization_btn)
+        else:
+            start_btn = QPushButton("Start")
+            start_btn.setStyleSheet(_GRP_START_STYLE)
+            start_btn.setFixedHeight(26)
+            start_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("start", services=names))
+            layout.addWidget(start_btn)
+
+        stop_btn = QPushButton("Stop")
+        stop_btn.setStyleSheet(_GRP_STOP_STYLE)
+        stop_btn.setFixedHeight(26)
+        stop_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("stop", services=names))
+        layout.addWidget(stop_btn)
+
+        self.tree.setItemWidget(group_item, 0, widget)
+        group_item.setText(0, "")
+
+    def _add_service_child(self, parent: QTreeWidgetItem, svc: dict) -> None:
+        name = str(svc.get("service", ""))
+        status = str(svc.get("status") or "")
+        child = QTreeWidgetItem(parent)
+        child.setText(0, name)
+        child.setData(0, Qt.ItemDataRole.UserRole, name)
+        pending = self._pending_actions.get(name)
+        if pending:
+            child.setText(1, self._PENDING_LABEL.get(pending, f"{pending}..."))
+            child.setForeground(1, Qt.GlobalColor.darkYellow)
+            font = child.font(1)
+            font.setItalic(True)
+            child.setFont(1, font)
+        else:
+            child.setText(1, status)
+            if status in _RUNNING:
+                child.setForeground(1, Qt.GlobalColor.green)
+            elif status in {"exited", "dead"}:
+                child.setForeground(1, Qt.GlobalColor.red)
+            elif status in {"not_created", ""}:
+                child.setForeground(1, Qt.GlobalColor.gray)
+            elif status == "docker_unavailable":
+                child.setForeground(1, Qt.GlobalColor.darkYellow)
+        child.setText(2, str(svc.get("health") or ""))
+        child.setText(3, str(svc.get("image") or ""))
+        child.setText(4, ", ".join(svc.get("ports") or []))
+        child.setSizeHint(0, QSize(-1, 28))
 
     _PENDING_LABEL = {
-        "start": "starting…",
-        "restart": "restarting…",
-        "stop": "stopping…",
-        "build": "building…",
-        "rebuild": "rebuilding…",
-        "stop_all": "stopping…",
-        "remove_all": "removing…",
-        "remove": "removing…",
-        "build_start": "building & starting…", 
+        "start": "starting...",
+        "restart": "restarting...",
+        "stop": "stopping...",
+        "build": "building...",
+        "rebuild": "rebuilding...",
+        "build_start": "building & starting...",
+        "stop_all": "stopping...",
+        "remove_all": "removing...",
+        "remove": "removing...",
     }
-
-    def _make_pending_item(self, action: str) -> QTableWidgetItem:
-        item = QTableWidgetItem(self._PENDING_LABEL.get(action, f"{action}…"))
-        item.setForeground(Qt.GlobalColor.darkYellow)
-        font = item.font()
-        font.setItalic(True)
-        item.setFont(font)
-        return item
 
     # ------------------------------------------------------------- selection
     def _selected_services(self) -> list[str]:
-        filtered = self._filtered_services()
-        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         services: list[str] = []
-        for row in rows:
-            if 0 <= row < len(filtered):
-                name = str(filtered[row].get("service") or "")
+        for item in self.tree.selectedItems():
+            if item.parent() is not None:
+                name = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
                 if name and name not in services:
                     services.append(name)
         return services
@@ -397,17 +489,13 @@ class DockerPage(QWidget):
         if len(services) == 1:
             self._show_log(services[0])
         elif len(services) > 1:
-            self.log_title.setText(f"Logs — {len(services)} services selected")
+            self.log_title.setText(f"Logs -- {len(services)} services selected")
             self.log_view.setPlainText(
                 "Multiple services selected:\n"
                 + "\n".join(f"- {service}" for service in services)
                 + "\n\nUse the toolbar Start / Stop / Restart buttons."
             )
             self.current_log_service = None
-
-    def _on_profile_filter_changed(self, text: str) -> None:
-        self.profile_filter = text or "All"
-        self._render_services()
 
     # ----------------------------------------------------------- context menu
     def _open_context_menu(self, position) -> None:
@@ -417,7 +505,7 @@ class DockerPage(QWidget):
         menu = QMenu(self)
         single = services[0] if len(services) == 1 else None
         if single:
-            menu.addAction(f"Show logs — {single}", lambda: self._show_log(single))
+            menu.addAction(f"Show logs -- {single}", lambda: self._show_log(single))
             menu.addSeparator()
         menu.addAction(f"Start ({len(services)})", lambda: self._run_action("start"))
         menu.addAction(f"Restart ({len(services)})", lambda: self._run_action("restart"))
@@ -427,12 +515,12 @@ class DockerPage(QWidget):
         menu.addAction(f"Rebuild ({len(services)})", lambda: self._run_action("rebuild"))
         menu.addAction(f"Start + Build ({len(services)})", lambda: self._run_action("build_start"))
         menu.addAction(f"Stop + Rm ({len(services)})", lambda: self._run_action("remove"))
-        menu.exec(self.table.viewport().mapToGlobal(position))
+        menu.exec(self.tree.viewport().mapToGlobal(position))
 
     # ----------------------------------------------------------------- logs
     def _show_log(self, service: str) -> None:
         self.current_log_service = service
-        self.log_title.setText(f"Logs — {service}")
+        self.log_title.setText(f"Logs -- {service}")
         self._reload_log()
 
     def _reload_log(self) -> None:
@@ -469,6 +557,58 @@ class DockerPage(QWidget):
     def _log_worker_finished(self) -> None:
         self.log_worker = None
 
+    # -------------------------------------------------------- SLAM mutex
+    def _slam_switch(self, target: str) -> None:
+        rival = _SLAM_MUTEX.get(target)
+        if not rival:
+            self._start_worker("start", services=[target])
+            return
+
+        rival_running = any(
+            str(s.get("service")) == rival and str(s.get("status", "")) in _RUNNING
+            for s in self.services
+        )
+        if rival_running:
+            target_label = "Construction (slam_fusion)" if target == "slam_fusion" else "Localization (slam_localization)"
+            rival_label = "Construction (slam_fusion)" if rival == "slam_fusion" else "Localization (slam_localization)"
+            answer = QMessageBox.question(
+                self,
+                "SLAM Conflict",
+                f"{rival_label} is currently running.\n"
+                f"It shares the same database files as {target_label} -- "
+                f"running both simultaneously will corrupt the map.\n\n"
+                f"Stop {rival_label} and start {target_label}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._slam_stop_then_start(rival, target)
+        else:
+            self._start_worker("start", services=[target])
+
+    def _slam_stop_then_start(self, stop_service: str, start_service: str) -> None:
+        worker = ComposeActionWorker(self.client, "stop", services=[stop_service])
+        self._pending_actions[stop_service] = "stop"
+        self._render_services()
+
+        def on_stop_done(_action: str, _result: dict) -> None:
+            self._pending_actions.pop(stop_service, None)
+            self.refresh()
+            self._start_worker("start", services=[start_service])
+
+        def on_stop_fail(_action: str, message: str) -> None:
+            self._pending_actions.pop(stop_service, None)
+            self._render_services()
+            QMessageBox.critical(self, "SLAM switch failed", f"Could not stop {stop_service}:\n{message}")
+
+        worker.completed.connect(on_stop_done)
+        worker.failed.connect(on_stop_fail)
+        worker.finished.connect(lambda w=worker: self._worker_finished(w))
+        self.action_workers.append(worker)
+        self.busy_actions.add("stop")
+        self._set_busy(True)
+        worker.start()
+
     # --------------------------------------------------------------- actions
     def _run_action(self, action: str) -> None:
         services = self._selected_services()
@@ -483,14 +623,32 @@ class DockerPage(QWidget):
             )
             if confirm != QMessageBox.StandardButton.Yes:
                 return
+
+        if action in {"start", "build_start", "restart"}:
+            conflict = self._check_slam_conflict(services)
+            if conflict is not None:
+                return
+
         self._start_worker(action, services=services or None)
 
-    def _up_profile(self) -> None:
-        profile = self.profile_combo.currentText()
-        if not profile or profile == "All":
-            QMessageBox.warning(self, "Select profile", "Pick a profile other than All first.")
-            return
-        self._start_worker("start", profile=profile)
+    def _check_slam_conflict(self, services: list[str]) -> str | None:
+        for svc in services:
+            rival = _SLAM_MUTEX.get(svc)
+            if rival and rival not in services:
+                rival_running = any(
+                    str(s.get("service")) == rival and str(s.get("status", "")) in _RUNNING
+                    for s in self.services
+                )
+                if rival_running:
+                    QMessageBox.warning(
+                        self,
+                        "SLAM Conflict",
+                        f"Cannot start {svc} while {rival} is running.\n"
+                        f"They share the same database files.\n\n"
+                        f"Stop {rival} first, or use the Construction/Localization buttons in the SLAM System group.",
+                    )
+                    return svc
+        return None
 
     def _run_stop_all(self) -> None:
         confirm = QMessageBox.question(
@@ -515,7 +673,7 @@ class DockerPage(QWidget):
     def _start_worker(self, action: str, services: list[str] | None = None, profile: str | None = None) -> None:
         target = ", ".join(services) if services else profile or "all services"
         self.log_message.emit(f"{action} started for {target}")
-        self.summary.setText(f"{action} running for {target}…")
+        self.summary.setText(f"{action} running for {target}...")
         pending_targets = services or ([s["service"] for s in self.services] if action in {"stop_all", "remove_all"} else [])
         for name in pending_targets:
             self._pending_actions[name] = action
@@ -543,7 +701,7 @@ class DockerPage(QWidget):
         action = str(data.get("action") or "")
         busy = bool(data.get("busy"))
         if last:
-            short = last if len(last) <= 160 else last[:157] + "…"
+            short = last if len(last) <= 160 else last[:157] + "..."
             self.summary.setText(f"{action or 'compose'} · {self._progress_target} · {short}")
         if not busy:
             self.progress_timer.stop()
@@ -574,26 +732,14 @@ class DockerPage(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         for button in (
-            self.dev_button,
-            self.up_profile_button,
             self.start_button,
-            self.build_start_button, 
+            self.build_start_button,
             self.restart_button,
             self.stop_button,
-            self.stop_rm_button,    
+            self.stop_rm_button,
             self.build_button,
             self.rebuild_button,
             self.stop_all_button,
             self.remove_all_button,
         ):
             button.setEnabled(not busy)
-
-    def _toggle_dev_mode(self) -> None:
-        try:
-            self.client.set_dev_mode(self.dev_button.isChecked())
-        except HostClientError as exc:
-            QMessageBox.critical(self, "Dev mode failed", str(exc))
-            self.dev_button.setChecked(not self.dev_button.isChecked())
-            return
-        self._reload_profiles()
-        self.refresh()

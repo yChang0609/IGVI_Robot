@@ -29,6 +29,17 @@ class DevModeRequest(BaseModel):
     enabled: bool
 
 
+class EstopRequest(BaseModel):
+    engaged: bool = True
+
+
+class EstopStatusResponse(BaseModel):
+    ok: bool = True
+    engaged: bool = False
+    action: str = "estop"
+    message: str = ""
+
+
 class ComposeActionRequest(BaseModel):
     service: str | None = None
     services: list[str] | None = None

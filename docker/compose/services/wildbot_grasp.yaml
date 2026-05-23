@@ -12,7 +12,7 @@ x-grasp-source-volume: &grasp_source_volume ../../../robot_ws/src/wildbot_grasp:
 services:
   wildbot_grasp:
     <<: *base_service
-    profiles: ["grasp", "grasp_task"]
+    profiles: ["robot"]
     x-description: "Unified grasp stack: action server, arm safeguard, bear task, and nav topic interface"
     build:
       context: ../../..
@@ -28,7 +28,7 @@ services:
 
   bridge_retrieve:
     <<: *base_service
-    profiles: ["grasp"]
+    profiles: ["task_server"]
     x-description: "Bridge-center waypoint + YOLO xiong_qiao retrieval mission"
     image: wildbot_grasp:latest
     environment:
@@ -41,7 +41,7 @@ services:
 
   search_retrieve_server:
     <<: *base_service
-    profiles: ["grasp"]
+    profiles: ["task_server"]
     x-description: "Search and retrieve action server for Wildbot"
     image: wildbot_grasp:latest
     environment:
