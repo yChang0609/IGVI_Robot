@@ -57,46 +57,29 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 2. Locate the target. If a remembered point of this class sits near the
-        # bridge, rotate to face it first; then verify the bear is in YOLO view.
-        # If it's still not visible (stale memory, angle drift), fall back to scan.
-        bridge_point = (goal.bridge_pose_x, goal.bridge_pose_y)
-        mem = self.find_memory_near(
-            target_class, bridge_point, float(self.get_parameter("bridge_memory_radius_m").value)
-        )
-        if mem is not None:
-            pos = mem["position"]
-            self.publish_feedback(goal_handle, "facing_target", 0.45,
-                                  f"Memory point near bridge; rotating to face {target_class}")
-            ok, message = self.face_point(goal_handle, (pos["x"], pos["y"]))
-            if not ok:
-                result.success = False
-                result.message = message
-                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-                return result
-            # After facing the memory point, verify the bear is actually in YOLO view.
-            # Memory can be stale or the angle slightly off — scan as fallback.
-            if self.detection_for_class(target_class) is None:
-                self.publish_feedback(goal_handle, "scanning", 0.5,
-                                      f"Bear not visible after facing memory point; scanning")
-                ok, message = self.scan_for_target(goal_handle, target_class)
-                if not ok:
-                    result.success = False
-                    result.message = message
-                    goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-                    return result
-        else:
-            self.publish_feedback(goal_handle, "scanning", 0.45,
-                                  f"No memory near bridge; scanning for {target_class}")
-            ok, message = self.scan_for_target(goal_handle, target_class)
-            if not ok:
-                result.success = False
-                result.message = message
-                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-                return result
+        # 2. Scan: rotate CW slowly until bear is visible
+        self.publish_feedback(goal_handle, "scanning", 0.4,
+                              f"Scanning CW for {target_class}")
+        ok, message = self.scan_cw_for_target(goal_handle, target_class)
+        if not ok:
+            result.success = False
+            result.message = message
+            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            return result
 
-        # 3. Grasp state: YOLO centering + approach + grab (shared with search_retrieve)
-        self.publish_feedback(goal_handle, "grasping", 0.62, f"Approaching and grabbing {target_class}")
+        # 3. Center: rotate in place to align bear with image center
+        self.publish_feedback(goal_handle, "centering", 0.55,
+                              f"Centering on {target_class}")
+        ok, message = self.center_on_target(goal_handle, target_class)
+        if not ok:
+            result.success = False
+            result.message = message
+            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            return result
+
+        # 4. Approach and grab
+        self.publish_feedback(goal_handle, "grasping", 0.65,
+                              f"Approaching and grabbing {target_class}")
         ok, message = self.approach_and_grab(goal_handle, target_class)
         if not ok:
             result.success = False
@@ -104,7 +87,7 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 4. Return home
+        # 5. Return home
         self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
         ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning_home", 0.88)
         if not ok:
@@ -113,7 +96,7 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 5. Release
+        # 6. Release
         self.publish_feedback(goal_handle, "releasing", 0.97, "Releasing object at start pose")
         ok, message = self.release_arm(goal_handle)
         if not ok:

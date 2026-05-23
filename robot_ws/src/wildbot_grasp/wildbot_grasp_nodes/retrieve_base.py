@@ -393,16 +393,17 @@ class RetrieveBase(Node):
                     error_px = center_x - bbox_cx
                     centered = abs(error_px) <= tolerance
                     twist = Twist()
+                    # Always creep forward even when not centered — mirrors the
+                    # depth-valid path (drive + correct yaw simultaneously).
+                    # Rotating in place without forward motion causes oscillation
+                    # because YOLO latency means each correction overshoots.
+                    twist.linear.x = linear_speed
                     if centered:
-                        # Target is centered but depth unavailable (e.g. below
-                        # camera min range or poor IR reflectance). Creep forward;
-                        # after 3 s of sustained blind approach, assume grab range.
                         if no_depth_centered_t0 is None:
                             no_depth_centered_t0 = time.monotonic()
-                        if time.monotonic() - no_depth_centered_t0 >= 3.0:
+                        if time.monotonic() - no_depth_centered_t0 >= 2.0:
                             self.cmd_vel_pub.publish(Twist())
-                            return True, "centered 3s without depth; attempting grab"
-                        twist.linear.x = linear_speed
+                            return True, "centered 2s without depth; attempting grab"
                     else:
                         no_depth_centered_t0 = None
                         twist.angular.z = clamp_ang(error_px * kp)
@@ -555,6 +556,80 @@ class RetrieveBase(Node):
             if seen:
                 return True, "target found during continued rotation"
         return False, "target not found after full scan"
+
+    def scan_cw_for_target(self, goal_handle, target_class: str):
+        """Rotate clockwise continuously until target_class appears in YOLO detections.
+        Returns immediately if already visible. Timeout controlled by scan_total_timeout_sec."""
+        if self.detection_for_class(target_class) is not None:
+            return True, "target already visible"
+
+        speed = abs(float(self.get_parameter("scan_angular_speed").value))
+        deadline = time.monotonic() + float(self.get_parameter("scan_total_timeout_sec").value)
+        twist = Twist()
+        twist.angular.z = -speed  # CW = negative angular.z in ROS
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled"
+            if self.detection_for_class(target_class) is not None:
+                self.cmd_vel_pub.publish(Twist())
+                return True, "target found during CW scan"
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return False, f"target not found after {self.get_parameter('scan_total_timeout_sec').value:.0f}s scan"
+
+    def center_on_target(self, goal_handle, target_class: str):
+        """Rotate in place (no forward motion) until target_class is centered within
+        approach_center_tolerance_px. Requires 3 consecutive centered frames to confirm."""
+        kp = float(self.get_parameter("visual_servo_kp").value)
+        center_x = float(self.get_parameter("image_center_x").value)
+        tolerance = float(self.get_parameter("approach_center_tolerance_px").value)
+        deadline = time.monotonic() + 10.0
+        centered_frames = 0
+        lost_frames = 0
+
+        def clamp_ang(v):
+            return max(-0.3, min(0.3, v))
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled"
+
+            det = self.detection_for_class(target_class)
+            if det is None:
+                lost_frames += 1
+                if lost_frames > 20:  # ~1s of no detection → give up
+                    self.cmd_vel_pub.publish(Twist())
+                    return False, "target lost during centering"
+                self.cmd_vel_pub.publish(Twist())
+                time.sleep(0.05)
+                continue
+            lost_frames = 0
+
+            bbox_cx = det.get("bbox", {}).get("center_x")
+            if bbox_cx is None:
+                time.sleep(0.05)
+                continue
+
+            error_px = center_x - float(bbox_cx)
+            if abs(error_px) <= tolerance:
+                centered_frames += 1
+                self.cmd_vel_pub.publish(Twist())  # hold still while confirming
+                if centered_frames >= 3:
+                    return True, f"centered (error {error_px:+.0f}px)"
+            else:
+                centered_frames = 0
+                twist = Twist()
+                twist.angular.z = clamp_ang(error_px * kp)
+                self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return False, "centering timed out"
 
     # ------------------------------------------------------------------
     # Grasp and release
