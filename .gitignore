@@ -144,3 +144,4 @@ video.txt
 .*
 !/docker/compose/.env.example
 
+models/eto_eye/best.onnx

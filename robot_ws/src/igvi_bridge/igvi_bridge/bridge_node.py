@@ -29,21 +29,15 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
-from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from .door_mission import DoorMissionCoordinator
+from .open_door_proxy import OpenDoorProxy
 
 try:
     from PIL import Image as PILImage  # type: ignore
 except ImportError:  # pragma: no cover
     PILImage = None  # type: ignore
-
-try:
-    from wildbot_grasp.action import OpenDoor  # type: ignore
-    _OPEN_DOOR_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    OpenDoor = None  # type: ignore
-    _OPEN_DOOR_AVAILABLE = False
-
 
 def _make_parameter(name: str, value: Any) -> Parameter:
     """Wrap a Python value in an rcl_interfaces/msg/Parameter.
@@ -122,36 +116,22 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
 
-        # Open-door action state — mirrors the nav action machinery.
-        self._open_door_lock = threading.Lock()
-        self._open_door_state: str = "idle" if _OPEN_DOOR_AVAILABLE else "unavailable"
-        self._open_door_stage: str = ""
-        self._open_door_message: str = (
-            "" if _OPEN_DOOR_AVAILABLE else "wildbot_grasp not installed in bridge image"
+        self._open_door = OpenDoorProxy(
+            self,
+            on_result=lambda state, message: self._door_mission.on_open_door_result(state, message),
         )
-        self._open_door_progress: float = 0.0
-        self._open_door_goal_handle = None
-        self._open_door_client = (
-            ActionClient(self, OpenDoor, "open_door") if _OPEN_DOOR_AVAILABLE else None
-        )
-
-        # Door-mission state: a single chained task = navigate to a named
-        # waypoint (default door_approach), then run the open_door action.
-        # The mission piggy-backs on the existing nav + open_door action
-        # callbacks (_on_nav_result, _on_open_door_result) — those handlers
-        # advance the mission's phase rather than the mission running its own
-        # threads, so it's pure state and never spins or polls.
-        self._door_mission_lock = threading.Lock()
-        self._door_mission: dict[str, Any] = {
-            "active": False,
-            "phase": "idle",          # idle|navigating|opening|succeeded|failed|canceled
-            "waypoint": "",
-            "ready_distance_m": 0.0,
-            "message": "",
-        }
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
+        self._door_mission = DoorMissionCoordinator(
+            get_waypoint=self._get_waypoint,
+            send_nav_goal=self.send_nav_goal,
+            cancel_nav_goal=self.cancel_nav_goal,
+            snapshot_nav=self.snapshot_nav,
+            send_open_door_goal=self.send_open_door_goal,
+            cancel_open_door_goal=self.cancel_open_door_goal,
+            snapshot_open_door=self.snapshot_open_door,
+        )
 
         self._arm_temp_lock = threading.Lock()
         self._arm_temperatures: list[float] = []
@@ -211,7 +191,6 @@ class BridgeNode(Node):
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_safeguard/target_trajectory", 10)
         self._imu_calibration_start_pub = self.create_publisher(Empty, "/imu/calibration/start", 10)
-        self._clear_path_pub = self.create_publisher(Empty, "/motion/clear_path", 10)
         self._local_costmap_clear_client = self.create_client(
             ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
         )
@@ -553,312 +532,32 @@ class BridgeNode(Node):
     # ── Open-door action (red-bar FSM trigger) ────────────────────────────────
 
     def snapshot_open_door(self) -> dict[str, Any]:
-        with self._open_door_lock:
-            return {
-                "available": _OPEN_DOOR_AVAILABLE,
-                "state": self._open_door_state,
-                "stage": self._open_door_stage,
-                "message": self._open_door_message,
-                "progress": self._open_door_progress,
-            }
+        return self._open_door.snapshot()
 
     def send_open_door_goal(self, ready_distance_m: float = 0.0) -> tuple[bool, str]:
-        if not _OPEN_DOOR_AVAILABLE or self._open_door_client is None:
-            return False, "wildbot_grasp action types not installed in bridge image"
-        client = self._open_door_client
-        if not client.server_is_ready():
-            if not client.wait_for_server(timeout_sec=2.0):
-                self._set_open_door_state(
-                    "unavailable", "", "open_door action server not running — check wildbot_grasp"
-                )
-                return False, "open_door action server not running"
-
-        # Drop any stale nav plan in motion_arbiter before open_door takes over.
-        # Otherwise, when the PRESS phase pauses /motion/cmd to play the arm
-        # slam, the arbiter's override_timeout elapses and it resumes the old
-        # path — including the goal-yaw align — and spins the robot mid-slam.
-        self._clear_path_pub.publish(Empty())
-
-        goal_msg = OpenDoor.Goal()
-        goal_msg.ready_distance_m = float(ready_distance_m)
-
-        self._set_open_door_state("sending", "", "goal dispatched", progress=0.0)
-        future = client.send_goal_async(goal_msg, feedback_callback=self._on_open_door_feedback)
-        future.add_done_callback(self._on_open_door_goal_response)
-        return True, f"open_door dispatched (ready_distance_m={ready_distance_m})"
+        return self._open_door.send_goal(ready_distance_m)
 
     def cancel_open_door_goal(self) -> tuple[bool, str]:
-        with self._open_door_lock:
-            handle = self._open_door_goal_handle
-        if handle is None:
-            return False, "no active open_door goal"
-        handle.cancel_goal_async()
-        self._set_open_door_state("cancelling", "", "cancel requested")
-        return True, "cancel requested"
+        return self._open_door.cancel_goal()
 
-    # ── Door mission: navigate to waypoint, then run open_door ───────────────
-    #
-    # This is the integrated "single task" the operator wants: go to the named
-    # waypoint (typically door_approach), and when nav succeeds, automatically
-    # dispatch the open_door action. The mission is just a thin coordinator
-    # over the existing nav + open_door action plumbing — it owns no extra
-    # threads; the same callbacks that report nav/open_door results advance the
-    # mission phase. Future UIs only need start/cancel/status.
+    # ── Door mission API proxy ───────────────────────────────────────────────
 
     def start_door_mission(
         self, waypoint: str = "door_approach", ready_distance_m: float = 0.0
     ) -> tuple[bool, str]:
-        """Begin the chained nav → open_door task. Non-blocking; status is
-        polled via snapshot_door_mission()."""
-        wp_name = (waypoint or "door_approach").strip()
-        with self._door_mission_lock:
-            if self._door_mission["active"]:
-                return False, f"door mission already active (phase={self._door_mission['phase']})"
-        with self._waypoints_lock:
-            wp = self._waypoints.get(wp_name)
-            wp = dict(wp) if wp else None
-        if wp is None:
-            return False, f"no waypoint named '{wp_name}'"
-        # Stage the mission state before dispatching nav, so the nav result
-        # callback already sees `active=True, phase=navigating` when it fires.
-        with self._door_mission_lock:
-            self._door_mission.update(
-                active=True,
-                phase="navigating",
-                waypoint=wp_name,
-                ready_distance_m=float(ready_distance_m),
-                message=f"navigating to '{wp_name}'",
-            )
-        ok, msg = self.send_nav_goal(wp["x"], wp["y"], wp["yaw"])
-        if not ok:
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="failed",
-                    message=f"nav dispatch failed: {msg}",
-                )
-            return False, f"door mission failed to start nav: {msg}"
-        return True, f"door mission started: navigating to '{wp_name}'"
+        return self._door_mission.start(waypoint, ready_distance_m)
 
     def cancel_door_mission(self) -> tuple[bool, str]:
-        """Cancel whichever sub-action (nav or open_door) is currently active."""
-        with self._door_mission_lock:
-            if not self._door_mission["active"]:
-                return False, "no active door mission"
-            phase = self._door_mission["phase"]
-        if phase == "navigating":
-            ok, msg = self.cancel_nav_goal()
-        elif phase == "opening":
-            ok, msg = self.cancel_open_door_goal()
-        else:
-            ok, msg = False, f"nothing to cancel in phase '{phase}'"
-        with self._door_mission_lock:
-            self._door_mission.update(
-                active=False, phase="canceled",
-                message=f"canceled in phase '{phase}': {msg}",
-            )
-        return True, f"door mission canceled in phase '{phase}'"
+        return self._door_mission.cancel()
 
     def snapshot_door_mission(self) -> dict[str, Any]:
-        """Mission status + nested nav/open_door snapshots so a UI can render
-        everything from one polled GET."""
-        with self._door_mission_lock:
-            mission = dict(self._door_mission)
-        mission["nav"] = self.snapshot_nav()
-        mission["open_door"] = self.snapshot_open_door()
-        return mission
-
-    def _advance_door_mission_after_nav(self, nav_state: str, nav_message: str) -> None:
-        """Called from _on_nav_result when nav finishes. If the mission is in
-        phase 'navigating', advance it (success → kick off open_door; otherwise
-        mark the mission failed/canceled)."""
-        with self._door_mission_lock:
-            if not self._door_mission["active"] or self._door_mission["phase"] != "navigating":
-                return
-            ready = float(self._door_mission["ready_distance_m"])
-            wp = self._door_mission["waypoint"]
-        if nav_state == "succeeded":
-            ok, send_msg = self.send_open_door_goal(ready_distance_m=ready)
-            if not ok:
-                with self._door_mission_lock:
-                    self._door_mission.update(
-                        active=False, phase="failed",
-                        message=f"reached '{wp}' but open_door failed to start: {send_msg}",
-                    )
-                return
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    phase="opening",
-                    message=f"reached '{wp}'; running open_door (ready={ready:.2f}m)",
-                )
-        elif nav_state == "canceled":
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="canceled",
-                    message=f"nav canceled before reaching '{wp}'",
-                )
-        else:  # aborted / rejected / failed
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="failed",
-                    message=f"nav {nav_state} before reaching '{wp}': {nav_message}",
-                )
-
-    def _advance_door_mission_after_open_door(self, door_state: str, door_message: str) -> None:
-        """Called from _on_open_door_result. Closes out the mission."""
-        with self._door_mission_lock:
-            if not self._door_mission["active"] or self._door_mission["phase"] != "opening":
-                return
-            wp = self._door_mission["waypoint"]
-        if door_state == "succeeded":
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="succeeded",
-                    message=f"door mission complete (via '{wp}'): {door_message}",
-                )
-        elif door_state == "canceled":
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="canceled",
-                    message=f"open_door canceled at '{wp}'",
-                )
-        else:
-            with self._door_mission_lock:
-                self._door_mission.update(
-                    active=False, phase="failed",
-                    message=f"open_door {door_state} at '{wp}': {door_message}",
-                )
-
-    def _on_open_door_feedback(self, msg: Any) -> None:
-        fb = getattr(msg, "feedback", None)
-        if fb is None:
-            return
-        self._set_open_door_state(
-            "running",
-            stage=str(getattr(fb, "stage", "")),
-            message=str(getattr(fb, "detail", "")),
-            progress=float(getattr(fb, "progress", 0.0)),
-        )
-
-    def _on_open_door_goal_response(self, future: Any) -> None:
-        try:
-            handle = future.result()
-        except Exception as exc:  # noqa: BLE001
-            self._set_open_door_state("error", "", f"send_goal failed: {exc}")
-            return
-        if not handle.accepted:
-            self._set_open_door_state("rejected", "", "goal rejected by server")
-            return
-        with self._open_door_lock:
-            self._open_door_goal_handle = handle
-        self._set_open_door_state("running", "", "goal accepted")
-        handle.get_result_async().add_done_callback(self._on_open_door_result)
-
-    def _on_open_door_result(self, future: Any) -> None:
-        try:
-            wrapped = future.result()
-            result = wrapped.result
-            status = wrapped.status
-        except Exception as exc:  # noqa: BLE001
-            self._set_open_door_state("error", "", f"result fetch failed: {exc}")
-            return
-        with self._open_door_lock:
-            self._open_door_goal_handle = None
-        result_msg = str(getattr(result, "message", ""))
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self._set_open_door_state(
-                "succeeded", "complete", result_msg or "door opened", progress=1.0,
-            )
-            door_state = "succeeded"
-        elif status == GoalStatus.STATUS_CANCELED:
-            self._set_open_door_state("canceled", "", "goal canceled")
-            door_state = "canceled"
-        else:
-            self._set_open_door_state(
-                "aborted", "", result_msg or f"status={status}",
-            )
-            door_state = "aborted"
-        # Close out any door mission that was waiting on this open_door result.
-        self._advance_door_mission_after_open_door(door_state, result_msg)
+        return self._door_mission.snapshot()
 
     def save_open_door_poses(self) -> tuple[bool, str]:
-        """Call open_door_server's ~/save_poses Trigger to persist tuned params."""
-        service_name = "/open_door_server/save_poses"
-        client = self.create_client(Trigger, service_name)
-        try:
-            if not client.wait_for_service(timeout_sec=2.0):
-                return False, f"{service_name} not available — is open_door_server running?"
-            done = threading.Event()
-            outcome: dict[str, Any] = {"ok": False, "message": "save_poses timed out"}
-            future = client.call_async(Trigger.Request())
-
-            def _finished(_future: Any) -> None:
-                try:
-                    resp = _future.result()
-                    outcome["ok"] = bool(resp.success)
-                    outcome["message"] = str(resp.message)
-                except Exception as exc:  # noqa: BLE001
-                    outcome["message"] = f"save_poses failed: {exc}"
-                finally:
-                    done.set()
-
-            future.add_done_callback(_finished)
-            done.wait(timeout=4.0)
-            return bool(outcome["ok"]), str(outcome["message"])
-        finally:
-            self.destroy_client(client)
+        return self._open_door.save_poses()
 
     def call_open_door_step(self, step: str) -> tuple[bool, str]:
-        """Call one of open_door_server's debug Trigger services individually.
-
-        Lets the UI fire the arm slam, the base forward drive, or the
-        retract-home as separate steps (run_press / run_push / go_home) to debug
-        without running the full ALIGN→APPROACH→PRESS→PUSH action.
-        """
-        allowed = {"run_press", "run_push", "go_home"}
-        if step not in allowed:
-            return False, f"unknown open_door step '{step}'"
-        service_name = f"/open_door_server/{step}"
-        client = self.create_client(Trigger, service_name)
-        try:
-            if not client.wait_for_service(timeout_sec=2.0):
-                return False, f"{service_name} not available — is open_door_server running?"
-            done = threading.Event()
-            outcome: dict[str, Any] = {"ok": False, "message": f"{step} timed out"}
-            future = client.call_async(Trigger.Request())
-
-            def _finished(_future: Any) -> None:
-                try:
-                    resp = _future.result()
-                    outcome["ok"] = bool(resp.success)
-                    outcome["message"] = str(resp.message)
-                except Exception as exc:  # noqa: BLE001
-                    outcome["message"] = f"{step} failed: {exc}"
-                finally:
-                    done.set()
-
-            future.add_done_callback(_finished)
-            # run_push drives the base for push_duration_sec and run_press plays
-            # three arm poses with dwells — both block server-side, so allow ample
-            # headroom over the ~3 s push default.
-            done.wait(timeout=30.0)
-            return bool(outcome["ok"]), str(outcome["message"])
-        finally:
-            self.destroy_client(client)
-
-    def _set_open_door_state(
-        self,
-        state: str,
-        stage: str = "",
-        message: str = "",
-        progress: float | None = None,
-    ) -> None:
-        with self._open_door_lock:
-            self._open_door_state = state
-            if stage:
-                self._open_door_stage = stage
-            self._open_door_message = message
-            if progress is not None:
-                self._open_door_progress = float(progress)
+        return self._open_door.call_step(step)
 
     # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
 
@@ -902,6 +601,11 @@ class BridgeNode(Node):
     def list_waypoints(self) -> dict[str, dict[str, float]]:
         with self._waypoints_lock:
             return {k: dict(v) for k, v in self._waypoints.items()}
+
+    def _get_waypoint(self, name: str) -> dict[str, float] | None:
+        with self._waypoints_lock:
+            wp = self._waypoints.get(str(name).strip())
+            return dict(wp) if wp else None
 
     def save_waypoint(
         self,
@@ -1113,9 +817,7 @@ class BridgeNode(Node):
             self._nav_state = state
             self._nav_message = message
             self._nav_goal_handle = None
-        # If a door mission is in flight, this nav result is its trigger to
-        # either kick off open_door (on success) or close out as failed/canceled.
-        self._advance_door_mission_after_nav(state, message)
+        self._door_mission.on_nav_result(state, message)
 
     def _on_nav_cancel_response(self, future: Any) -> None:
         try:
