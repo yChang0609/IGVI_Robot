@@ -287,6 +287,7 @@ class DockerPage(QWidget):
 
         self.summary = QLabel("Loading services...")
         self.summary.setObjectName("Muted")
+        self.summary.setFixedHeight(20)
         layout.addWidget(self.summary)
 
         self.tree = QTreeWidget()

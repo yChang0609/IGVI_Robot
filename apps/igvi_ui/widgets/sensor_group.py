@@ -21,12 +21,13 @@ class SensorGroup(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("SensorGroup")
+        self.setFixedHeight(36)
         self.setStyleSheet(
             "QFrame#SensorGroup { background: #171d25; border: 1px solid #323b48; "
             "border-radius: 8px; }"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(11)
 
         title = QLabel("Sensors")
@@ -51,4 +52,5 @@ class SensorGroup(QFrame):
             glyph = "●" if ok else "○"
             color = "#22c55e" if ok else "#ef4444"
             label.setText(f"{glyph} {name}")
-            label.setStyleSheet(f"color: {color}; font-weight: 600;")
+            # Avoid font-weight changes — they cause 1-2px height variation on macOS.
+            label.setStyleSheet(f"color: {color};")

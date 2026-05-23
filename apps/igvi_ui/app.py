@@ -131,8 +131,9 @@ class MainWindow(QMainWindow):
 
         topbar = QFrame()
         topbar.setObjectName("TopBar")
+        topbar.setFixedHeight(74)
         topbar_layout = QHBoxLayout(topbar)
-        topbar_layout.setContentsMargins(22, 12, 22, 12)
+        topbar_layout.setContentsMargins(22, 10, 22, 10)
         title_box = QVBoxLayout()
         title = QLabel("IGVI Robot Control Center")
         title.setObjectName("Title")
@@ -168,8 +169,8 @@ class MainWindow(QMainWindow):
 
         self.status_line = QLabel("Ready")
         self.status_line.setObjectName("Muted")
-        self.status_line.setMinimumHeight(26)
-        self.status_line.setContentsMargins(14, 0, 14, 6)
+        self.status_line.setFixedHeight(26)
+        self.status_line.setContentsMargins(14, 0, 14, 4)
 
         workspace_layout.addWidget(topbar)
         workspace_layout.addWidget(self.stack, 1)
