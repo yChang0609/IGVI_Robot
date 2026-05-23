@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
+    QFrame,
 )
 
 from igvi_ui.clients.host_client import HostClient, HostClientError
@@ -26,19 +28,42 @@ class SearchRetrieveControl(QWidget):
         self.map_2d = map_2d
         
         self.map_2d.home_pose_picked.connect(self._on_home_pose_picked)
+        self.map_2d.arena_pose_picked.connect(self._on_arena_pose_picked)
         
         self._home_pose: tuple[float, float, float] | None = None
+        self._arena_setting_target: str = ""
+        self._arena_patrol_count: int = 0
         self._target_id: str = ""
         self._current_objects: list = []
         
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._poll_status)
+        self._status_timer.start()
         
         self._build_ui()
+        
+        try:
+            waypoints = self.client.list_waypoints()
+            if "home" in waypoints:
+                hw = waypoints["home"]
+                self._home_pose = (hw.get("x", 0.0), hw.get("y", 0.0), hw.get("yaw", 0.0))
+                self.home_label.setText(f"x: {self._home_pose[0]:.2f}, y: {self._home_pose[1]:.2f}, yaw: {self._home_pose[2]:.2f}")
+        except HostClientError:
+            pass
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_widget = QWidget()
+        scroll.setWidget(scroll_widget)
+        main_layout.addWidget(scroll)
+        
+        layout = QVBoxLayout(scroll_widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
@@ -88,6 +113,50 @@ class SearchRetrieveControl(QWidget):
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        
+        # Arena Mission
+        arena_layout = QVBoxLayout()
+        arena_layout.addWidget(QLabel("─── Arena Mission ───"))
+        
+        btn_layout1 = QHBoxLayout()
+        self.arena_our_base_btn = QPushButton("Set Our Base")
+        self.arena_our_base_btn.setCheckable(True)
+        self.arena_our_base_btn.clicked.connect(lambda: self._toggle_arena_set("our_base"))
+        self.arena_enemy_base_btn = QPushButton("Set Enemy Base")
+        self.arena_enemy_base_btn.setCheckable(True)
+        self.arena_enemy_base_btn.clicked.connect(lambda: self._toggle_arena_set("enemy_base"))
+        btn_layout1.addWidget(self.arena_our_base_btn)
+        btn_layout1.addWidget(self.arena_enemy_base_btn)
+        arena_layout.addLayout(btn_layout1)
+
+        btn_layout2 = QHBoxLayout()
+        self.arena_patrol_btn = QPushButton("Add Patrol Point")
+        self.arena_patrol_btn.setCheckable(True)
+        self.arena_patrol_btn.clicked.connect(lambda: self._toggle_arena_set("patrol"))
+        self.arena_clear_btn = QPushButton("Clear Patrols")
+        self.arena_clear_btn.setObjectName("Danger")
+        self.arena_clear_btn.clicked.connect(self._clear_patrols)
+        btn_layout2.addWidget(self.arena_patrol_btn)
+        btn_layout2.addWidget(self.arena_clear_btn)
+        arena_layout.addLayout(btn_layout2)
+        
+        arena_actions = QHBoxLayout()
+        self.start_arena_btn = QPushButton("Start Arena")
+        self.start_arena_btn.setObjectName("Primary")
+        self.start_arena_btn.clicked.connect(self._start_arena)
+        self.cancel_arena_btn = QPushButton("Cancel Arena")
+        self.cancel_arena_btn.setObjectName("Danger")
+        self.cancel_arena_btn.clicked.connect(self._cancel_arena)
+        self.cancel_arena_btn.setEnabled(False)
+        arena_actions.addWidget(self.start_arena_btn)
+        arena_actions.addWidget(self.cancel_arena_btn)
+        arena_layout.addLayout(arena_actions)
+        
+        self.arena_status_label = QLabel("Arena Ready")
+        self.arena_status_label.setWordWrap(True)
+        arena_layout.addWidget(self.arena_status_label)
+        
+        layout.addLayout(arena_layout)
         
         layout.addStretch(1)
 
@@ -146,6 +215,12 @@ class SearchRetrieveControl(QWidget):
         self.set_home_btn.setChecked(False)
         self.set_home_btn.setText("Set Home on Map")
         self.map_2d.set_home_pose_mode(False)
+        
+        try:
+            self.client.save_waypoint("home", x, y, yaw)
+            self.map_2d.update_waypoints(self.client.list_waypoints())
+        except HostClientError as e:
+            QMessageBox.warning(self, "Error", f"Failed to save home waypoint: {e}")
 
     def _start_task(self) -> None:
         if not self._target_id:
@@ -199,10 +274,30 @@ class SearchRetrieveControl(QWidget):
             if state == "idle":
                 self.start_btn.setEnabled(True)
                 self.cancel_btn.setEnabled(False)
-                self._status_timer.stop()
                 
         except HostClientError:
             pass
+            
+        # Poll Arena Status
+        try:
+            status = self.client.arena_mission_status()
+            state = status.get("state", "idle")
+            msg = status.get("message", "")
+            
+            fb = status.get("feedback", {})
+            if fb and state == "active":
+                stage = fb.get("stage", "")
+                detail = fb.get("detail", "")
+                self.arena_status_label.setText(f"Arena State: {state}\n{stage}: {detail}")
+            else:
+                self.arena_status_label.setText(f"Arena State: {state}\n{msg}")
+                
+            if state == "idle":
+                self.start_arena_btn.setEnabled(True)
+                self.cancel_arena_btn.setEnabled(False)
+        except HostClientError:
+            pass
+
 
     def _clear_memory(self) -> None:
         try:
@@ -216,3 +311,89 @@ class SearchRetrieveControl(QWidget):
 
     def shutdown(self) -> None:
         self._status_timer.stop()
+
+
+    def _toggle_arena_set(self, target: str) -> None:
+        if target == "":
+            self.map_2d.set_arena_pose_mode(False)
+            self._arena_setting_target = ""
+            self.arena_our_base_btn.setText("Set Our Base")
+            self.arena_enemy_base_btn.setText("Set Enemy Base")
+            self.arena_patrol_btn.setText("Add Patrol Point")
+            return
+            
+        btn = None
+        if target == "our_base": btn = self.arena_our_base_btn
+        if target == "enemy_base": btn = self.arena_enemy_base_btn
+        if target == "patrol": btn = self.arena_patrol_btn
+        
+        is_setting = btn.isChecked()
+        self.map_2d.set_arena_pose_mode(is_setting)
+        
+        if is_setting:
+            self._arena_setting_target = target
+            for b in [self.arena_our_base_btn, self.arena_enemy_base_btn, self.arena_patrol_btn]:
+                if b != btn: b.setChecked(False)
+            btn.setText(f"Click Map to Set {target}...")
+        else:
+            self._arena_setting_target = ""
+            self.arena_our_base_btn.setText("Set Our Base")
+            self.arena_enemy_base_btn.setText("Set Enemy Base")
+            self.arena_patrol_btn.setText("Add Patrol Point")
+
+    def _on_arena_pose_picked(self, x: float, y: float, yaw: float) -> None:
+        target = self._arena_setting_target
+        if not target: return
+        
+        name = target
+        if target == "patrol":
+            self._arena_patrol_count += 1
+            name = f"patrol_{self._arena_patrol_count}"
+            
+        try:
+            self.client.save_waypoint(name, x, y, yaw)
+            self.map_2d.update_waypoints(self.client.list_waypoints())
+            QMessageBox.information(self, "Saved", f"Saved {name} waypoint.")
+        except HostClientError as e:
+            QMessageBox.warning(self, "Error", f"Failed to save {name}: {e}")
+            
+        self.arena_our_base_btn.setChecked(False)
+        self.arena_enemy_base_btn.setChecked(False)
+        self.arena_patrol_btn.setChecked(False)
+        self._toggle_arena_set("")  # reset texts
+
+    def _clear_patrols(self) -> None:
+        try:
+            waypoints = self.client.list_waypoints()
+            deleted = 0
+            for w in waypoints.keys():
+                if w.startswith("patrol_"):
+                    self.client.delete_waypoint(w)
+                    deleted += 1
+            self._arena_patrol_count = 0
+            self.map_2d.update_waypoints(self.client.list_waypoints())
+            QMessageBox.information(self, "Cleared", f"Cleared {deleted} patrol waypoints.")
+        except HostClientError as e:
+            QMessageBox.warning(self, "Error", str(e))
+
+    def _start_arena(self) -> None:
+        self.start_arena_btn.setEnabled(False)
+        self.arena_status_label.setText("Starting Arena...")
+        try:
+            res = self.client.arena_mission_start()
+            if res.get("ok"):
+                self.cancel_arena_btn.setEnabled(True)
+                self.arena_status_label.setText("Arena started...")
+            else:
+                self.start_arena_btn.setEnabled(True)
+                QMessageBox.warning(self, "Error", res.get("message", "Failed to start"))
+        except HostClientError as e:
+            self.start_arena_btn.setEnabled(True)
+            QMessageBox.warning(self, "Error", str(e))
+
+    def _cancel_arena(self) -> None:
+        try:
+            self.client.arena_mission_cancel()
+            self.arena_status_label.setText("Canceling Arena...")
+        except HostClientError as e:
+            QMessageBox.warning(self, "Error", str(e))

@@ -220,6 +220,14 @@ class BridgeRetrieveStatusResponse(BaseModel):
     feedback: dict = Field(default_factory=dict)
 
 
+class ArenaMissionStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
 class SaveMapRequest(BaseModel):
     filename: str = "arena_map"
 

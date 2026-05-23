@@ -219,6 +219,15 @@ class HostClient:
     def bridge_retrieve_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/bridge_retrieve/status")
 
+    def arena_mission_start(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/arena_mission/start", {}, timeout=8.0)
+
+    def arena_mission_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/arena_mission/cancel", {}, timeout=5.0)
+
+    def arena_mission_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/arena_mission/status")
+
     def semantic_memory(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
 

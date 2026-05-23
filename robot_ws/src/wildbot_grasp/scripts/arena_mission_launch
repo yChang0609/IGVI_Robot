@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+append_param() {
+  local -n _ref="$1"
+  local env_name="$2"
+  local param_name="$3"
+  local value="${!env_name:-}"
+  if [[ -n "${value}" ]]; then
+    _ref+=(-p "${param_name}:=${value}")
+  fi
+}
+
+ros_args=(--ros-args)
+append_param ros_args ARENA_EXCLUSION_RADIUS_M base_exclusion_radius_m
+append_param ros_args ARENA_BLACKLIST_TIMEOUT_SEC blacklist_timeout_sec
+
+exec ros2 run wildbot_grasp arena_mission_server "${ros_args[@]}"

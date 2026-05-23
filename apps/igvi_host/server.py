@@ -23,6 +23,7 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    ArenaMissionStatusResponse,
     BatteryStatusResponse,
     BridgeRetrieveRequest,
     BridgeRetrieveStatusResponse,
@@ -526,6 +527,29 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_bridge_retrieve_status() -> BridgeRetrieveStatusResponse:
         result = await run_ros(lambda client: client.get_bridge_retrieve_status())
         return BridgeRetrieveStatusResponse(**result)
+
+    @app.post("/api/ros/arena_mission/start", response_model=RosActionResponse)
+    async def ros_arena_mission_start() -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_arena_mission())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="arena_mission_start",
+            message=str(result.get("message", "arena mission started")),
+        )
+
+    @app.post("/api/ros/arena_mission/cancel", response_model=RosActionResponse)
+    async def ros_arena_mission_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_arena_mission())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="arena_mission_cancel",
+            message=str(result.get("message", "arena mission canceled")),
+        )
+
+    @app.get("/api/ros/arena_mission/status", response_model=ArenaMissionStatusResponse)
+    async def ros_arena_mission_status() -> ArenaMissionStatusResponse:
+        result = await run_ros(lambda client: client.get_arena_mission_status())
+        return ArenaMissionStatusResponse(**result)
 
     @app.get("/api/ros/semantic_memory")
     async def ros_semantic_memory() -> dict:

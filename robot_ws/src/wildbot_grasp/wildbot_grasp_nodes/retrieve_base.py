@@ -38,7 +38,7 @@ class RetrieveBase(Node):
         self.declare_parameter("visual_servo_kp", visual_servo_kp)
         self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
-        self.declare_parameter("arrival_tolerance", 0.25)
+        self.declare_parameter("arrival_tolerance", 0.1)
         self.declare_parameter("arrival_timeout", 45.0)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
@@ -231,16 +231,25 @@ class RetrieveBase(Node):
         goal_x = float(pose.pose.position.x)
         goal_y = float(pose.pose.position.y)
 
-        robot_pose = self.get_robot_pose()
-        if robot_pose is not None:
-            dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
-            if dist <= tolerance:
-                return True, f"arrived within {dist:.2f}m"
-            else:
-                self.get_logger().info(f"Nav2 reported success, but distance {dist:.2f}m > tolerance {tolerance:.2f}m")
-                return True, f"arrived (Nav2 success, dist {dist:.2f}m)"
+        # Wait loop
+        start_time = time.time()
+        timeout = 60.0
+        while rclpy.ok():
+            if goal_handle and goal_handle.is_cancel_requested:
+                return False, "mission canceled"
+                
+            if time.time() - start_time > timeout:
+                return False, "navigation timeout"
 
-        return True, "arrived (Nav2 success, pose unavailable)"
+            robot_pose = self.get_robot_pose()
+            if robot_pose is not None:
+                dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
+                if dist <= tolerance:
+                    return True, f"arrived within {dist:.2f}m"
+
+            time.sleep(0.1)
+
+        return False, "ros shutdown"
 
     # ------------------------------------------------------------------
     # Semantic memory

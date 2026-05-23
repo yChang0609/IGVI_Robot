@@ -97,6 +97,13 @@ class BridgeNode(Node):
         self._bridge_mission_goal_handle = None
         self._bridge_mission_goal: dict[str, Any] | None = None
         self._bridge_mission_feedback: dict[str, Any] = {}
+        self._arena_mission_lock = threading.Lock()
+        self._arena_mission_state: str = "idle"
+        self._arena_mission_message: str = ""
+        self._arena_mission_goal_handle = None
+        self._arena_mission_goal: dict[str, Any] | None = None
+        self._arena_mission_feedback: dict[str, Any] = {}
+
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
@@ -194,6 +201,7 @@ class BridgeNode(Node):
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self._search_client = ActionClient(self, SearchAndRetrieve, "search_retrieve")
         self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
+        self._arena_mission_client = ActionClient(self, SearchAndRetrieve, "arena_mission")
         self._semantic_memory: dict = {}
         self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
         self._semantic_memory_clear_pub = self.create_publisher(Empty, "/semantic_memory/clear", 10)
@@ -1004,6 +1012,94 @@ class BridgeNode(Node):
         else:
             self._update_bridge_mission_state("active", "cancel rejected")
 
+    # ── Arena Mission ─────────────────────────────────────────────────────────
+
+    def _update_arena_mission_state(self, state: str, message: str) -> None:
+        with self._arena_mission_lock:
+            self._arena_mission_state = state
+            self._arena_mission_message = message
+
+    def send_arena_mission_goal(self) -> tuple[bool, str]:
+        with self._arena_mission_lock:
+            if self._arena_mission_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: already in state '{self._arena_mission_state}'"
+
+        if not self._arena_mission_client.server_is_ready():
+            if not self._arena_mission_client.wait_for_server(timeout_sec=2.0):
+                self._update_arena_mission_state("unavailable", "Arena mission server offline")
+                return False, "Arena mission server offline"
+
+        goal_msg = SearchAndRetrieve.Goal()
+        goal_msg.target_id = "arena_mode"
+
+        with self._arena_mission_lock:
+            self._arena_mission_goal_handle = None
+            self._arena_mission_goal = {"target_id": "arena_mode"}
+            self._arena_mission_feedback = {}
+        
+        self._update_arena_mission_state("sending", "goal dispatched")
+        future = self._arena_mission_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._on_arena_mission_feedback,
+        )
+        future.add_done_callback(self._on_arena_mission_response)
+        return True, "goal dispatched"
+
+    def cancel_arena_mission_goal(self) -> tuple[bool, str]:
+        with self._arena_mission_lock:
+            handle = self._arena_mission_goal_handle
+        if handle is None:
+            return False, "no active arena mission goal to cancel"
+        self._update_arena_mission_state("canceling", "cancel requested")
+        handle.cancel_goal_async()
+        return True, "cancel requested"
+
+    def snapshot_arena_mission(self) -> dict[str, Any]:
+        with self._arena_mission_lock:
+            return {
+                "state": self._arena_mission_state,
+                "message": self._arena_mission_message,
+                "goal": dict(self._arena_mission_goal) if self._arena_mission_goal else None,
+                "feedback": dict(self._arena_mission_feedback),
+                "server_ready": self._arena_mission_client.server_is_ready(),
+            }
+
+    def _on_arena_mission_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._arena_mission_lock:
+            self._arena_mission_feedback = {
+                "stage": str(fb.stage),
+                "progress": float(fb.progress),
+                "detail": str(fb.detail),
+            }
+
+    def _on_arena_mission_response(self, future) -> None:
+        try:
+            goal_handle = future.result()
+            with self._arena_mission_lock:
+                if not goal_handle.accepted:
+                    self._update_arena_mission_state("error", "goal rejected by server")
+                    return
+                self._arena_mission_goal_handle = goal_handle
+            self._update_arena_mission_state("active", "goal accepted")
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(self._on_arena_mission_result)
+        except Exception as exc:
+            self._update_arena_mission_state("error", f"goal send failed: {exc}")
+
+    def _on_arena_mission_result(self, future) -> None:
+        try:
+            result = future.result().result
+            status = future.result().status
+            with self._arena_mission_lock:
+                self._arena_mission_goal_handle = None
+                self._arena_mission_state = "idle"
+                self._arena_mission_message = (
+                    f"finished (status {status}): {result.message} (success={result.success})"
+                )
+        except Exception as exc:
+            self._update_arena_mission_state("error", f"result processing failed: {exc}")
+
     # ── Semantic Memory ──────────────────────────────────────────────────────
 
     def _on_semantic_memory(self, msg: String) -> None:
@@ -1282,6 +1378,9 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_search())
             elif path == "/api/bridge_retrieve/status":
                 self._json(node.snapshot_bridge_mission())
+            elif path == "/api/arena_mission/status":
+                self._json(node.snapshot_arena_mission())
+
             elif path == "/api/waypoints":
                 self._json({"waypoints": node.list_waypoints()})
             elif path == "/api/motion/state":
@@ -1395,6 +1494,13 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/bridge_retrieve/cancel":
                 ok, msg = node.cancel_bridge_mission_goal()
                 self._json({"ok": ok, "action": "bridge_retrieve_cancel", "message": msg})
+            elif path == "/api/arena_mission/start":
+                ok, msg = node.send_arena_mission_goal()
+                self._json({"ok": ok, "action": "arena_mission_start", "message": msg})
+            elif path == "/api/arena_mission/cancel":
+                ok, msg = node.cancel_arena_mission_goal()
+                self._json({"ok": ok, "action": "arena_mission_cancel", "message": msg})
+
             elif path == "/api/waypoints/save":
                 x = body.get("x")
                 y = body.get("y")

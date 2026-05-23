@@ -146,6 +146,23 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def start_arena_mission(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/start", {})
+
+    async def cancel_arena_mission(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/cancel", {})
+
+    async def get_arena_mission_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_arena_mission_status)
+
+    def _fetch_arena_mission_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/arena_mission/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_semantic_memory(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_semantic_memory)
 

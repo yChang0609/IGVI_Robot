@@ -21,6 +21,8 @@ install(PROGRAMS
   scripts/search_retrieve_launch
   scripts/bridge_retrieve_server
   scripts/bridge_retrieve_launch
+  scripts/arena_mission_server
+  scripts/arena_mission_launch
   scripts/bear_grasp_task_node
   scripts/grasp_stack
   scripts/camera_masker_node

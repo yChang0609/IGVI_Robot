@@ -15,6 +15,7 @@ class Map2DView(QWidget):
     waypoint_point_picked = Signal(float, float, float)  # world x, y, yaw
     initial_pose_picked = Signal(float, float, float)  # world x, y, yaw
     home_pose_picked = Signal(float, float, float)  # world x, y, yaw
+    arena_pose_picked = Signal(float, float, float)  # world x, y, yaw
 
     def __init__(self) -> None:
         super().__init__()
@@ -103,6 +104,9 @@ class Map2DView(QWidget):
 
     def set_home_pose_mode(self, enabled: bool) -> None:
         self._set_pick_target("home_pose" if enabled else "")
+
+    def set_arena_pose_mode(self, enabled: bool) -> None:
+        self._set_pick_target("arena_pose" if enabled else "")
 
     def _set_pick_target(self, target: str) -> None:
         self._pick_mode = target
@@ -202,10 +206,41 @@ class Map2DView(QWidget):
             if pt is None:
                 continue
             is_bridge = str(name) == "bridge_center"
-            pen_color = QColor("#38bdf8") if is_bridge else QColor("#22c55e")
-            fill_color = QColor(56, 189, 248, 120) if is_bridge else QColor(34, 197, 94, 90)
-            label_color = QColor("#bae6fd") if is_bridge else QColor("#bbf7d0")
-            radius = 8 if is_bridge else 6
+            is_our_base = str(name) == "our_base"
+            is_enemy_base = str(name) == "enemy_base"
+            is_patrol = str(name).startswith("patrol_")
+            is_home = str(name) == "home"
+
+            if is_bridge:
+                pen_color = QColor("#38bdf8")
+                fill_color = QColor(56, 189, 248, 120)
+                label_color = QColor("#bae6fd")
+                radius = 8
+            elif is_home:
+                pen_color = QColor("#eab308") # Yellow
+                fill_color = QColor(234, 179, 8, 120)
+                label_color = QColor("#fef08a")
+                radius = 8
+            elif is_our_base:
+                pen_color = QColor("#3b82f6") # Blue
+                fill_color = QColor(59, 130, 246, 120)
+                label_color = QColor("#93c5fd")
+                radius = 8
+            elif is_enemy_base:
+                pen_color = QColor("#ef4444") # Red
+                fill_color = QColor(239, 68, 68, 120)
+                label_color = QColor("#fca5a5")
+                radius = 8
+            elif is_patrol:
+                pen_color = QColor("#a855f7") # Purple
+                fill_color = QColor(168, 85, 247, 90)
+                label_color = QColor("#d8b4fe")
+                radius = 6
+            else:
+                pen_color = QColor("#22c55e")
+                fill_color = QColor(34, 197, 94, 90)
+                label_color = QColor("#bbf7d0")
+                radius = 6
             painter.setPen(QPen(pen_color, 2))
             painter.setBrush(fill_color)
             painter.drawEllipse(pt, radius, radius)
@@ -214,6 +249,12 @@ class Map2DView(QWidget):
                 cross = 12.0
                 painter.drawLine(QPointF(pt.x() - cross, pt.y()), QPointF(pt.x() + cross, pt.y()))
                 painter.drawLine(QPointF(pt.x(), pt.y() - cross), QPointF(pt.x(), pt.y() + cross))
+            elif is_our_base or is_enemy_base:
+                res = self._map_data.get("resolution", 0.05)
+                exclusion_radius_px = 0.3 / res if res > 0 else 6
+                painter.setPen(QPen(pen_color, 1, Qt.PenStyle.DashLine))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(pt, exclusion_radius_px, exclusion_radius_px)
             wyaw = wp.get("yaw", 0.0)
             painter.setPen(QPen(pen_color, 2))
             painter.drawLine(
@@ -221,7 +262,8 @@ class Map2DView(QWidget):
                 QPointF(pt.x() + math.cos(wyaw) * 16, pt.y() - math.sin(wyaw) * 16),
             )
             painter.setPen(label_color)
-            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Bridge" if is_bridge else str(name))
+            display_name = "Bridge" if is_bridge else "Our Base" if is_our_base else "Enemy Base" if is_enemy_base else "Home" if is_home else str(name)
+            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), display_name)
 
         for obj in self._semantic_objects:
             pos = obj.get("position", {})
@@ -334,6 +376,8 @@ class Map2DView(QWidget):
         elif self._pick_mode == "home_pose":
             self.home_pose_picked.emit(gx, gy, yaw)
             self._home_pose = (gx, gy, yaw)
+        elif self._pick_mode == "arena_pose":
+            self.arena_pose_picked.emit(gx, gy, yaw)
         else:
             self._goal = (gx, gy, yaw)
             self.goal_requested.emit(gx, gy, yaw)

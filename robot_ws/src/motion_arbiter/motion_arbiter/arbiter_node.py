@@ -75,7 +75,7 @@ class MotionArbiter(Node):
         self.declare_parameter("kp_angular", 1.4)
         # self.declare_parameter("kp_wz_feedback", 0.15)
         self.declare_parameter("slow_heading_threshold", math.pi / 4)
-        self.declare_parameter("slow_linear_velocity", 0.08)
+        self.declare_parameter("slow_linear_velocity", 0.0)
         self.declare_parameter("output_topic", "/cmd_vel")
 
         self._control_rate = float(self.get_parameter("control_rate").value)
@@ -337,8 +337,8 @@ class MotionArbiter(Node):
 
         slow_thr = float(self.get_parameter("slow_heading_threshold").value)
         if abs(heading_error) > slow_thr:
-            # Rotate in place if heading error is too large to prevent driving sideways into walls
-            vx = 0.0
+            # Slow down but do not stop completely if heading error is large
+            vx = float(self.get_parameter("slow_linear_velocity").value)
         else:
             vx = float(self.get_parameter("max_linear_velocity").value)
         wz = float(self.get_parameter("kp_angular").value) * heading_error
