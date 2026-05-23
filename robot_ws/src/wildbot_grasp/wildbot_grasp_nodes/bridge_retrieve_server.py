@@ -125,14 +125,29 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 5. Return home
+        # 5. Return along the fixed return path: visit each via-point in order,
+        #    then finish at home. This forces a deterministic route across the
+        #    bridge instead of letting Nav2 plan a direct (possibly invalid) path.
+        #    Each via-point is approached facing the next point (travel direction)
+        #    so the robot flows through without spinning at every stop.
         self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
-        ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning_home", 0.88)
-        if not ok:
-            result.success = False
-            result.message = message
-            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-            return result
+        via_pts = list(zip(goal.return_path_x, goal.return_path_y))
+        return_legs = []
+        for j, (px, py) in enumerate(via_pts):
+            nx, ny = via_pts[j + 1] if j + 1 < len(via_pts) else (goal.home_pose_x, goal.home_pose_y)
+            yaw = math.atan2(ny - py, nx - px)
+            return_legs.append((f"return_via_{j + 1}", self.make_pose(px, py, yaw)))
+        return_legs.append(("returning_home", home_pose))
+
+        total = len(return_legs)
+        for k, (stage, pose) in enumerate(return_legs):
+            progress = 0.88 + 0.08 * ((k + 1) / total)
+            ok, message = self.navigate_to_pose(goal_handle, pose, stage, progress)
+            if not ok:
+                result.success = False
+                result.message = message
+                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                return result
 
         # 6. Release
         self.publish_feedback(goal_handle, "releasing", 0.97, "Releasing object at start pose")

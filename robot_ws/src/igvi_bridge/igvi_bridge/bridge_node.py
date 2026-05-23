@@ -4,6 +4,7 @@ import io
 import json
 import math
 import os
+import re
 import struct
 import tempfile
 import threading
@@ -792,6 +793,14 @@ class BridgeNode(Node):
             home_wp = dict(home_wp) if home_wp else None
             door_wp = self._waypoints.get("door_ref")
             door_wp = dict(door_wp) if door_wp else None
+            # Ordered return via-points: waypoints named return_<N>, sorted by N.
+            return_wps = [
+                dict(self._waypoints[name])
+                for name in sorted(
+                    (n for n in self._waypoints if re.fullmatch(r"return_\d+", n)),
+                    key=lambda n: int(n.split("_")[1]),
+                )
+            ]
         if home_wp is None:
             self._update_bridge_mission_state("error", "No home waypoint set — press Home first")
             return False, "No home waypoint set — press Home first"
@@ -813,6 +822,10 @@ class BridgeNode(Node):
         goal_msg.door_ref_valid = door_wp is not None
         goal_msg.door_ref_x = float(door_wp["x"]) if door_wp else 0.0
         goal_msg.door_ref_y = float(door_wp["y"]) if door_wp else 0.0
+        # Ordered return via-points (empty → return straight to home).
+        goal_msg.return_path_x = [float(wp["x"]) for wp in return_wps]
+        goal_msg.return_path_y = [float(wp["y"]) for wp in return_wps]
+        goal_msg.return_path_yaw = [float(wp.get("yaw", 0.0)) for wp in return_wps]
         with self._bridge_mission_lock:
             self._bridge_mission_goal = {
                 "target_class": target_class,
@@ -821,6 +834,7 @@ class BridgeNode(Node):
                 "bridge_pose_yaw": bridge_yaw,
                 "home_pose": {"x": home_wp["x"], "y": home_wp["y"], "yaw": home_wp.get("yaw", 0.0)},
                 "door_ref": {"x": door_wp["x"], "y": door_wp["y"]} if door_wp else None,
+                "return_path": [{"x": wp["x"], "y": wp["y"]} for wp in return_wps],
             }
             self._bridge_mission_feedback = {}
         self._update_bridge_mission_state("sending", "goal dispatched")

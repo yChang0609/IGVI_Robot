@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -19,6 +22,8 @@ from igvi_ui.widgets.map_views import Map2DView
 HOME_WAYPOINT_NAME = "home"
 BRIDGE_WAYPOINT_NAME = "bridge_center"
 DOOR_REF_WAYPOINT_NAME = "door_ref"
+RETURN_WAYPOINT_PREFIX = "return_"  # ordered return via-points: return_1, return_2, …
+RETURN_WAYPOINT_RE = re.compile(r"^return_(\d+)$")
 
 
 class BridgeRetrieveControl(QWidget):
@@ -28,6 +33,7 @@ class BridgeRetrieveControl(QWidget):
         self.map_2d = map_2d
         self._bridge_pick_armed = False
         self._door_pick_armed = False
+        self._return_pick_armed = False
         self.map_2d.waypoint_point_picked.connect(self._on_point_picked)
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
@@ -38,6 +44,7 @@ class BridgeRetrieveControl(QWidget):
         super().hideEvent(event)
         self._disarm_bridge_pick()
         self._disarm_door_pick()
+        self._disarm_return_pick()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -63,34 +70,49 @@ class BridgeRetrieveControl(QWidget):
         self.door_ref_label = QLabel("not set")
         self.door_ref_label.setObjectName("Muted")
         target_grid.addWidget(self.door_ref_label, 2, 1)
+        target_grid.addWidget(QLabel("Return path:"), 3, 0)
+        self.return_path_label = QLabel("none")
+        self.return_path_label.setObjectName("Muted")
+        target_grid.addWidget(self.return_path_label, 3, 1)
         layout.addLayout(target_grid)
 
-        buttons = QGridLayout()
-        buttons.setSpacing(8)
+        # Group: Home + return-path setup.
+        home_group = QGroupBox("Home & Return Path")
+        home_layout = QGridLayout(home_group)
+        home_layout.setSpacing(8)
         self.home_btn = QPushButton("Home")
         self.home_btn.clicked.connect(self._save_home)
-        self.bridge_pick_btn = QPushButton("Set Bridge Waypoint")
-        self.bridge_pick_btn.setCheckable(True)
-        self.bridge_pick_btn.clicked.connect(self._toggle_bridge_pick)
+        self.return_pick_btn = QPushButton("Add Return Point")
+        self.return_pick_btn.setCheckable(True)
+        self.return_pick_btn.clicked.connect(self._toggle_return_pick)
+        self.return_clear_btn = QPushButton("Clear Return Path")
+        self.return_clear_btn.clicked.connect(self._clear_return_path)
+        home_layout.addWidget(self.home_btn, 0, 0, 1, 2)
+        home_layout.addWidget(self.return_pick_btn, 1, 0)
+        home_layout.addWidget(self.return_clear_btn, 1, 1)
+        layout.addWidget(home_group)
+
+        # Door ref, then bridge waypoint, then mission controls.
+        buttons = QGridLayout()
+        buttons.setSpacing(8)
         self.door_pick_btn = QPushButton("Set Door Ref Point")
         self.door_pick_btn.setCheckable(True)
         self.door_pick_btn.clicked.connect(self._toggle_door_pick)
+        self.bridge_pick_btn = QPushButton("Set Bridge Waypoint")
+        self.bridge_pick_btn.setCheckable(True)
+        self.bridge_pick_btn.clicked.connect(self._toggle_bridge_pick)
         self.start_btn = QPushButton("Start Bridge Mission")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self._start_task)
+        # Cancel doubles as the stop control: cancels every mission, stops the
+        # robot and clears costmaps. Always available.
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("Danger")
         self.cancel_btn.clicked.connect(self._cancel_task)
-        self.cancel_btn.setEnabled(False)
-        self.stop_btn = QPushButton("STOP")
-        self.stop_btn.setObjectName("Danger")
-        self.stop_btn.clicked.connect(self._emergency_stop)
-        buttons.addWidget(self.home_btn, 0, 0, 1, 2)
+        buttons.addWidget(self.door_pick_btn, 0, 0, 1, 2)
         buttons.addWidget(self.bridge_pick_btn, 1, 0, 1, 2)
-        buttons.addWidget(self.door_pick_btn, 2, 0, 1, 2)
-        buttons.addWidget(self.start_btn, 3, 0)
-        buttons.addWidget(self.cancel_btn, 3, 1)
-        buttons.addWidget(self.stop_btn, 4, 0, 1, 2)
+        buttons.addWidget(self.start_btn, 2, 0)
+        buttons.addWidget(self.cancel_btn, 2, 1)
         layout.addLayout(buttons)
 
         self.status_label = QLabel("Ready")
@@ -122,6 +144,14 @@ class BridgeRetrieveControl(QWidget):
             )
         else:
             self.door_ref_label.setText("not set")
+
+        return_names = self._sorted_return_names(waypoints)
+        if return_names:
+            self.return_path_label.setText(
+                f"{len(return_names)} pts: " + " → ".join(return_names) + " → home"
+            )
+        else:
+            self.return_path_label.setText("none (straight to home)")
 
         current = self.waypoint_combo.currentData()
         self.waypoint_combo.blockSignals(True)
@@ -165,6 +195,7 @@ class BridgeRetrieveControl(QWidget):
     def _toggle_bridge_pick(self) -> None:
         if self.bridge_pick_btn.isChecked():
             self._disarm_door_pick()
+            self._disarm_return_pick()
             self._bridge_pick_armed = True
             self.map_2d.set_pick_mode(True)
             self.bridge_pick_btn.setText("Click Map for Bridge...")
@@ -182,6 +213,7 @@ class BridgeRetrieveControl(QWidget):
     def _toggle_door_pick(self) -> None:
         if self.door_pick_btn.isChecked():
             self._disarm_bridge_pick()
+            self._disarm_return_pick()
             self._door_pick_armed = True
             self.map_2d.set_pick_mode(True)
             self.door_pick_btn.setText("Click Map for Door Ref...")
@@ -196,8 +228,69 @@ class BridgeRetrieveControl(QWidget):
         self.door_pick_btn.setChecked(False)
         self.door_pick_btn.setText("Set Door Ref Point")
 
+    def _toggle_return_pick(self) -> None:
+        if self.return_pick_btn.isChecked():
+            self._disarm_bridge_pick()
+            self._disarm_door_pick()
+            self._return_pick_armed = True
+            self.map_2d.set_pick_mode(True)
+            self.return_pick_btn.setText("Click Map to Add (toggle off when done)")
+            self.status_label.setText("Click the map to append return via-points in order.")
+        else:
+            self._disarm_return_pick()
+
+    def _disarm_return_pick(self) -> None:
+        if self._return_pick_armed:
+            self._return_pick_armed = False
+            self.map_2d.set_pick_mode(False)
+        self.return_pick_btn.setChecked(False)
+        self.return_pick_btn.setText("Add Return Point")
+
+    @staticmethod
+    def _sorted_return_names(waypoints: dict) -> list[str]:
+        names = [n for n in waypoints if RETURN_WAYPOINT_RE.match(n)]
+        return sorted(names, key=lambda n: int(RETURN_WAYPOINT_RE.match(n).group(1)))
+
+    def _append_return_point(self, x: float, y: float, yaw: float) -> None:
+        try:
+            waypoints = self.client.list_waypoints()
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Return point failed", str(exc))
+            return
+        used = [int(RETURN_WAYPOINT_RE.match(n).group(1))
+                for n in waypoints if RETURN_WAYPOINT_RE.match(n)]
+        index = (max(used) + 1) if used else 1
+        # Stays armed so more points can be appended with further clicks.
+        self._save_picked_waypoint(
+            f"{RETURN_WAYPOINT_PREFIX}{index}", x, y, yaw, f"Return point {index}", select=False
+        )
+
+    def _clear_return_path(self) -> None:
+        try:
+            waypoints = self.client.list_waypoints()
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Clear failed", str(exc))
+            return
+        names = self._sorted_return_names(waypoints)
+        if not names:
+            self.status_label.setText("No return points to clear.")
+            return
+        errors: list[str] = []
+        for name in names:
+            try:
+                self.client.delete_waypoint(name)
+            except HostClientError as exc:
+                errors.append(f"{name}: {exc}")
+        self.refresh_waypoints()
+        if errors:
+            QMessageBox.warning(self, "Clear partially failed", "\n".join(errors))
+        else:
+            self.status_label.setText(f"Cleared {len(names)} return points.")
+
     def _on_point_picked(self, x: float, y: float, yaw: float) -> None:
-        if self._door_pick_armed:
+        if self._return_pick_armed:
+            self._append_return_point(x, y, yaw)
+        elif self._door_pick_armed:
             self._disarm_door_pick()
             self._save_picked_waypoint(
                 DOOR_REF_WAYPOINT_NAME, x, y, yaw, "Door ref", select=False
@@ -248,25 +341,20 @@ class BridgeRetrieveControl(QWidget):
             return
         if result.get("ok"):
             self.start_btn.setEnabled(False)
-            self.cancel_btn.setEnabled(True)
             self.status_label.setText("Bridge mission started...")
             self._status_timer.start()
         else:
             QMessageBox.warning(self, "Start rejected", str(result.get("message", "unknown error")))
 
     def _cancel_task(self) -> None:
-        try:
-            self.client.bridge_retrieve_cancel()
-            self.status_label.setText("Canceling...")
-        except HostClientError as exc:
-            QMessageBox.warning(self, "Cancel failed", str(exc))
-
-    def _emergency_stop(self) -> None:
+        """Stop everything: cancel all missions + stop the robot (ros_stop already
+        cancels bridge/search/nav and halts wheels + holds the arm), then clear
+        both costmaps so the next plan starts clean."""
         errors: list[str] = []
         for label, action in (
-            ("bridge mission", self.client.bridge_retrieve_cancel),
-            ("navigation", self.client.nav_cancel),
-            ("robot stop", self.client.ros_stop),
+            ("stop & cancel", self.client.ros_stop),
+            ("clear local costmap", lambda: self.client.clear_costmap("local")),
+            ("clear global costmap", lambda: self.client.clear_costmap("global")),
         ):
             try:
                 action()
@@ -274,12 +362,11 @@ class BridgeRetrieveControl(QWidget):
                 errors.append(f"{label}: {exc}")
 
         self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
         self._status_timer.stop()
         if errors:
-            QMessageBox.warning(self, "STOP partially failed", "\n".join(errors))
+            QMessageBox.warning(self, "Cancel partially failed", "\n".join(errors))
         else:
-            self.status_label.setText("Emergency stop sent.")
+            self.status_label.setText("Canceled: stopped, missions canceled, costmaps cleared.")
 
     def _poll_status(self) -> None:
         try:
@@ -300,10 +387,10 @@ class BridgeRetrieveControl(QWidget):
 
         if state == "idle":
             self.start_btn.setEnabled(True)
-            self.cancel_btn.setEnabled(False)
             self._status_timer.stop()
 
     def shutdown(self) -> None:
         self._disarm_bridge_pick()
         self._disarm_door_pick()
+        self._disarm_return_pick()
         self._status_timer.stop()

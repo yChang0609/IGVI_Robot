@@ -20,6 +20,12 @@ float64 home_pose_yaw
 bool door_ref_valid
 float64 door_ref_x
 float64 door_ref_y
+# Ordered return via-points (map frame). After grasping, the mission visits
+# these in order and then finishes at home_pose, so the return route is
+# deterministic (forced to cross the bridge). Empty → return straight to home.
+float64[] return_path_x
+float64[] return_path_y
+float64[] return_path_yaw
 ---
 bool success
 string message
