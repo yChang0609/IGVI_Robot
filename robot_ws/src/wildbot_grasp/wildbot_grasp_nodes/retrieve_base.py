@@ -50,6 +50,9 @@ class RetrieveBase(Node):
         self.declare_parameter("scan_angular_speed", 0.4)
         self.declare_parameter("scan_step_timeout_sec", 15.0)
         self.declare_parameter("scan_total_timeout_sec", 40.0)
+        # Stepped door-ref scan: pause per stop + extra rotation past the door ref.
+        self.declare_parameter("scan_step_settle_sec", 0.5)
+        self.declare_parameter("scan_step_extra_deg", 45.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -557,33 +560,37 @@ class RetrieveBase(Node):
                 return True, "target found during continued rotation"
         return False, "target not found after full scan"
 
-    def scan_cw_for_target(self, goal_handle, target_class: str):
-        """Rotate clockwise continuously until target_class appears in YOLO detections.
-        Returns immediately if already visible. Timeout controlled by scan_total_timeout_sec."""
-        if self.detection_for_class(target_class) is not None:
-            return True, "target already visible"
+    def scan_door_steps_for_target(self, goal_handle, target_class: str, door_point):
+        """Stepped scan used when target_class is not yet in semantic memory.
 
-        speed = abs(float(self.get_parameter("scan_angular_speed").value))
-        deadline = time.monotonic() + float(self.get_parameter("scan_total_timeout_sec").value)
-        twist = Twist()
-        twist.angular.z = -speed  # CW = negative angular.z in ROS
+        Rotate to face door_point, then `scan_step_extra_deg` further in the same
+        rotation sense — two stops that together sweep the bear's expected region.
+        At each stop hold still for `scan_step_settle_sec` so YOLO / semantic
+        memory can register the target. Returns (obj, message): obj is the memory
+        object the moment it appears at any stop, else None (with the reason)."""
+        pose = self.get_robot_pose()
+        if pose is None:
+            return None, "could not read robot pose"
+        settle = float(self.get_parameter("scan_step_settle_sec").value)
+        extra = float(self.get_parameter("scan_step_extra_deg").value)
 
-        while rclpy.ok() and time.monotonic() < deadline:
-            if goal_handle.is_cancel_requested:
-                self.cmd_vel_pub.publish(Twist())
-                return False, "mission canceled"
-            if self.detection_for_class(target_class) is not None:
-                self.cmd_vel_pub.publish(Twist())
-                # Clear stored path so motion_arbiter stays IDLE (not PATH_TRACKING)
-                # when zero-Twist is published — prevents robot drifting after scan stops.
-                self._plan_pub.publish(Path())
-                time.sleep(0.1)
-                return True, "target found during CW scan"
-            self.cmd_vel_pub.publish(twist)
-            time.sleep(0.05)
+        desired = math.atan2(door_point[1] - pose[1], door_point[0] - pose[0])
+        to_door_deg = math.degrees(self._ang_norm(desired - pose[2]))
+        sense = 1.0 if to_door_deg >= 0 else -1.0
+        # Stop 1: face the door ref. Stop 2: `extra` deg further, same sense.
+        steps = [("door ref", to_door_deg), (f"door ref +{extra:.0f}deg", sense * extra)]
 
-        self.cmd_vel_pub.publish(Twist())
-        return False, f"target not found after {self.get_parameter('scan_total_timeout_sec').value:.0f}s scan"
+        for label, step_deg in steps:
+            ok, msg, _ = self.rotate_relative(goal_handle, step_deg)
+            if not ok:
+                return None, msg
+            # Hold still and let detections / semantic memory settle at this view.
+            self.cmd_vel_pub.publish(Twist())
+            self._plan_pub.publish(Path())
+            obj = self.find_target_from_memory(target_class, timeout_sec=settle)
+            if obj is not None:
+                return obj, f"{target_class} found in memory facing {label}"
+        return None, f"{target_class} not in memory after door-ref scan ({len(steps)} views)"
 
     def center_on_target(self, goal_handle, target_class: str):
         """Rotate in place (no forward motion) until target_class is centered within

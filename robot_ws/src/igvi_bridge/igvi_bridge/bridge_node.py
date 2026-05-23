@@ -790,9 +790,15 @@ class BridgeNode(Node):
         with self._waypoints_lock:
             home_wp = self._waypoints.get("home")
             home_wp = dict(home_wp) if home_wp else None
+            door_wp = self._waypoints.get("door_ref")
+            door_wp = dict(door_wp) if door_wp else None
         if home_wp is None:
             self._update_bridge_mission_state("error", "No home waypoint set — press Home first")
             return False, "No home waypoint set — press Home first"
+        if door_wp is None:
+            self._update_bridge_mission_state(
+                "error", "No door ref point set — press Set Door Ref Point first")
+            return False, "No door ref point set — press Set Door Ref Point first"
 
         goal_msg = BridgeRetrieve.Goal()
         goal_msg.target_class = str(target_class)
@@ -803,6 +809,10 @@ class BridgeNode(Node):
         goal_msg.home_pose_x = float(home_wp["x"])
         goal_msg.home_pose_y = float(home_wp["y"])
         goal_msg.home_pose_yaw = float(home_wp.get("yaw", 0.0))
+        # door_ref is optional: only its direction biases the scan rotation sense.
+        goal_msg.door_ref_valid = door_wp is not None
+        goal_msg.door_ref_x = float(door_wp["x"]) if door_wp else 0.0
+        goal_msg.door_ref_y = float(door_wp["y"]) if door_wp else 0.0
         with self._bridge_mission_lock:
             self._bridge_mission_goal = {
                 "target_class": target_class,
@@ -810,6 +820,7 @@ class BridgeNode(Node):
                 "bridge_pose_y": bridge_y,
                 "bridge_pose_yaw": bridge_yaw,
                 "home_pose": {"x": home_wp["x"], "y": home_wp["y"], "yaw": home_wp.get("yaw", 0.0)},
+                "door_ref": {"x": door_wp["x"], "y": door_wp["y"]} if door_wp else None,
             }
             self._bridge_mission_feedback = {}
         self._update_bridge_mission_state("sending", "goal dispatched")

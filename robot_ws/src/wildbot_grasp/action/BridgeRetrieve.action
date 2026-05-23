@@ -13,6 +13,13 @@ bool home_pose_valid
 float64 home_pose_x
 float64 home_pose_y
 float64 home_pose_yaw
+# Door reference point (map frame). Not a navigation goal — only its direction
+# from the robot is used to pick the scan rotation sense (CW/CCW) when the
+# target is not yet known in semantic memory. When door_ref_valid is false the
+# server falls back to a fixed CW scan.
+bool door_ref_valid
+float64 door_ref_x
+float64 door_ref_y
 ---
 bool success
 string message

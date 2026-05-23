@@ -18,6 +18,7 @@ from igvi_ui.widgets.map_views import Map2DView
 
 HOME_WAYPOINT_NAME = "home"
 BRIDGE_WAYPOINT_NAME = "bridge_center"
+DOOR_REF_WAYPOINT_NAME = "door_ref"
 
 
 class BridgeRetrieveControl(QWidget):
@@ -26,7 +27,8 @@ class BridgeRetrieveControl(QWidget):
         self.client = client
         self.map_2d = map_2d
         self._bridge_pick_armed = False
-        self.map_2d.waypoint_point_picked.connect(self._on_bridge_point_picked)
+        self._door_pick_armed = False
+        self.map_2d.waypoint_point_picked.connect(self._on_point_picked)
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._poll_status)
@@ -35,6 +37,7 @@ class BridgeRetrieveControl(QWidget):
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._disarm_bridge_pick()
+        self._disarm_door_pick()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -56,6 +59,10 @@ class BridgeRetrieveControl(QWidget):
         self.bridge_point_label = QLabel("not set")
         self.bridge_point_label.setObjectName("Muted")
         target_grid.addWidget(self.bridge_point_label, 1, 1)
+        target_grid.addWidget(QLabel("Door ref point:"), 2, 0)
+        self.door_ref_label = QLabel("not set")
+        self.door_ref_label.setObjectName("Muted")
+        target_grid.addWidget(self.door_ref_label, 2, 1)
         layout.addLayout(target_grid)
 
         buttons = QGridLayout()
@@ -65,6 +72,9 @@ class BridgeRetrieveControl(QWidget):
         self.bridge_pick_btn = QPushButton("Set Bridge Waypoint")
         self.bridge_pick_btn.setCheckable(True)
         self.bridge_pick_btn.clicked.connect(self._toggle_bridge_pick)
+        self.door_pick_btn = QPushButton("Set Door Ref Point")
+        self.door_pick_btn.setCheckable(True)
+        self.door_pick_btn.clicked.connect(self._toggle_door_pick)
         self.start_btn = QPushButton("Start Bridge Mission")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self._start_task)
@@ -77,9 +87,10 @@ class BridgeRetrieveControl(QWidget):
         self.stop_btn.clicked.connect(self._emergency_stop)
         buttons.addWidget(self.home_btn, 0, 0, 1, 2)
         buttons.addWidget(self.bridge_pick_btn, 1, 0, 1, 2)
-        buttons.addWidget(self.start_btn, 2, 0)
-        buttons.addWidget(self.cancel_btn, 2, 1)
-        buttons.addWidget(self.stop_btn, 3, 0, 1, 2)
+        buttons.addWidget(self.door_pick_btn, 2, 0, 1, 2)
+        buttons.addWidget(self.start_btn, 3, 0)
+        buttons.addWidget(self.cancel_btn, 3, 1)
+        buttons.addWidget(self.stop_btn, 4, 0, 1, 2)
         layout.addLayout(buttons)
 
         self.status_label = QLabel("Ready")
@@ -103,6 +114,14 @@ class BridgeRetrieveControl(QWidget):
             )
         else:
             self.bridge_point_label.setText("not set")
+
+        door_wp = waypoints.get(DOOR_REF_WAYPOINT_NAME)
+        if door_wp:
+            self.door_ref_label.setText(
+                f"x {door_wp.get('x', 0.0):.2f}  y {door_wp.get('y', 0.0):.2f}"
+            )
+        else:
+            self.door_ref_label.setText("not set")
 
         current = self.waypoint_combo.currentData()
         self.waypoint_combo.blockSignals(True)
@@ -145,6 +164,7 @@ class BridgeRetrieveControl(QWidget):
 
     def _toggle_bridge_pick(self) -> None:
         if self.bridge_pick_btn.isChecked():
+            self._disarm_door_pick()
             self._bridge_pick_armed = True
             self.map_2d.set_pick_mode(True)
             self.bridge_pick_btn.setText("Click Map for Bridge...")
@@ -159,23 +179,52 @@ class BridgeRetrieveControl(QWidget):
         self.bridge_pick_btn.setChecked(False)
         self.bridge_pick_btn.setText("Set Bridge Waypoint")
 
-    def _on_bridge_point_picked(self, x: float, y: float, yaw: float) -> None:
-        if not self._bridge_pick_armed:
-            return
-        self._disarm_bridge_pick()
+    def _toggle_door_pick(self) -> None:
+        if self.door_pick_btn.isChecked():
+            self._disarm_bridge_pick()
+            self._door_pick_armed = True
+            self.map_2d.set_pick_mode(True)
+            self.door_pick_btn.setText("Click Map for Door Ref...")
+            self.status_label.setText("Click the map to save door_ref (direction only).")
+        else:
+            self._disarm_door_pick()
+
+    def _disarm_door_pick(self) -> None:
+        if self._door_pick_armed:
+            self._door_pick_armed = False
+            self.map_2d.set_pick_mode(False)
+        self.door_pick_btn.setChecked(False)
+        self.door_pick_btn.setText("Set Door Ref Point")
+
+    def _on_point_picked(self, x: float, y: float, yaw: float) -> None:
+        if self._door_pick_armed:
+            self._disarm_door_pick()
+            self._save_picked_waypoint(
+                DOOR_REF_WAYPOINT_NAME, x, y, yaw, "Door ref", select=False
+            )
+        elif self._bridge_pick_armed:
+            self._disarm_bridge_pick()
+            self._save_picked_waypoint(
+                BRIDGE_WAYPOINT_NAME, x, y, yaw, "Bridge waypoint", select=True
+            )
+
+    def _save_picked_waypoint(
+        self, name: str, x: float, y: float, yaw: float, label: str, select: bool
+    ) -> None:
         try:
-            result = self.client.save_waypoint(BRIDGE_WAYPOINT_NAME, x, y, yaw)
+            result = self.client.save_waypoint(name, x, y, yaw)
         except HostClientError as exc:
-            QMessageBox.warning(self, "Bridge waypoint failed", str(exc))
+            QMessageBox.warning(self, f"{label} failed", str(exc))
             return
 
         msg = str(result.get("message", ""))
         if result.get("ok"):
-            self.status_label.setText(f"Bridge waypoint saved: {msg}")
+            self.status_label.setText(f"{label} saved: {msg}")
             self.refresh_waypoints()
-            self._select_waypoint(BRIDGE_WAYPOINT_NAME)
+            if select:
+                self._select_waypoint(name)
         else:
-            QMessageBox.warning(self, "Bridge waypoint rejected", msg or "unknown error")
+            QMessageBox.warning(self, f"{label} rejected", msg or "unknown error")
 
     def _select_waypoint(self, name: str) -> None:
         for index in range(self.waypoint_combo.count()):
@@ -256,4 +305,5 @@ class BridgeRetrieveControl(QWidget):
 
     def shutdown(self) -> None:
         self._disarm_bridge_pick()
+        self._disarm_door_pick()
         self._status_timer.stop()

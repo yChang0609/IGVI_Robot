@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import math
+
 import rclpy
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
@@ -48,8 +50,25 @@ class BridgeRetrieveServer(RetrieveBase):
             f"{goal.home_pose_y:.2f}, {goal.home_pose_yaw:.2f})"
         )
 
-        # 1. Navigate to bridge center (gets the robot near the bear/wall)
-        bridge_pose = self.make_pose(goal.bridge_pose_x, goal.bridge_pose_y, goal.bridge_pose_yaw)
+        # A door reference point is required: it decides the scan rotation sense
+        # (and is the fallback direction when the target isn't in memory yet).
+        if not goal.door_ref_valid:
+            result.success = False
+            result.message = "No door reference point set — set a door_ref point first"
+            goal_handle.abort()
+            return result
+
+        # 1. Navigate to bridge center. Ignore the waypoint's stored yaw: arrive
+        #    facing the travel direction from home to the bridge point, so the
+        #    scan step starts from a natural heading. Fall back to the stored yaw
+        #    if no home pose is available.
+        approach_yaw = goal.bridge_pose_yaw
+        if goal.home_pose_valid:
+            approach_yaw = math.atan2(
+                goal.bridge_pose_y - goal.home_pose_y,
+                goal.bridge_pose_x - goal.home_pose_x,
+            )
+        bridge_pose = self.make_pose(goal.bridge_pose_x, goal.bridge_pose_y, approach_yaw)
         ok, message = self.navigate_to_pose(goal_handle, bridge_pose, "to_bridge_center", 0.15)
         if not ok:
             result.success = False
@@ -57,10 +76,29 @@ class BridgeRetrieveServer(RetrieveBase):
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
 
-        # 2. Scan: rotate CW slowly until bear is visible
-        self.publish_feedback(goal_handle, "scanning", 0.4,
-                              f"Scanning CW for {target_class}")
-        ok, message = self.scan_cw_for_target(goal_handle, target_class)
+        # 2. Locate the target on the map. If semantic memory doesn't know where
+        #    the bear is yet, do a stepped scan: rotate to face the door ref, then
+        #    a fixed step further in the same sense, pausing at each stop so YOLO /
+        #    semantic memory can register it. Abort if both views find nothing.
+        target_obj = self.find_target_from_memory(target_class, timeout_sec=1.5)
+        if target_obj is None:
+            self.publish_feedback(goal_handle, "scanning", 0.4,
+                                  f"Stepped scan toward door ref for {target_class}")
+            target_obj, message = self.scan_door_steps_for_target(
+                goal_handle, target_class, (goal.door_ref_x, goal.door_ref_y))
+            if target_obj is None:
+                result.success = False
+                result.message = message
+                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                return result
+
+        # Face the bear's map position, then hand off to centering.
+        pos = target_obj["position"]
+        self.publish_feedback(
+            goal_handle, "facing", 0.5,
+            f"Facing {target_class} at map ({pos['x']:.2f}, {pos['y']:.2f})",
+        )
+        ok, message = self.face_point(goal_handle, (pos["x"], pos["y"]))
         if not ok:
             result.success = False
             result.message = message
