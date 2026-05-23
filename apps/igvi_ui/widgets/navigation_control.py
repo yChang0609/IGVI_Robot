@@ -221,7 +221,8 @@ class NavigationControl(QWidget):
 
     def _clear_costmap(self) -> None:
         try:
-            self.client.clear_costmap("local")
+            self.client.clear_costmap("global")
+            self.map_2d.clear_costmap()
         except HostClientError as exc:
             QMessageBox.warning(self, "Clear costmap failed", str(exc))
 

@@ -61,6 +61,11 @@ class Map2DView(QWidget):
         self._costmap_image = _build_costmap_image(data)
         self.update()
 
+    def clear_costmap(self) -> None:
+        self._costmap_data = None
+        self._costmap_image = None
+        self.update()
+
     def update_pose(self, pose: dict[str, float]) -> None:
         self._pose = pose
         self.update()

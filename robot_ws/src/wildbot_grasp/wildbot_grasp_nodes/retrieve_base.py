@@ -8,6 +8,7 @@ import rclpy
 import tf2_ros
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Path
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient, CancelResponse
@@ -73,6 +74,7 @@ class RetrieveBase(Node):
             callback_group=self.callback_group,
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        self._plan_pub = self.create_publisher(Path, "/plan", 1)
         self._clear_global_client = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
             callback_group=self.callback_group,
@@ -564,6 +566,12 @@ class RetrieveBase(Node):
         ok, message = self.visual_approach(goal_handle, target_class)
         if not ok:
             return False, message
+        # Clear any stored path in motion_arbiter before grab. Without this,
+        # the zero-Twist stop from visual_approach immediately triggers PATH_TRACKING
+        # (see arbiter_node._on_motion_cmd), causing the robot to drift left/right
+        # along the old bridge_center path while the arm is trying to grasp.
+        self._plan_pub.publish(Path())
+        time.sleep(0.1)
         return self.call_grab_object(goal_handle, target_class)
 
     def call_grab_object(self, goal_handle, target_class: str):
@@ -588,6 +596,7 @@ class RetrieveBase(Node):
             if goal_handle.is_cancel_requested:
                 grab_goal_handle.cancel_goal_async()
                 return False, "mission canceled"
+            self.cmd_vel_pub.publish(Twist())  # keep robot stationary during grab
             time.sleep(0.1)
 
         wrapped = result_future.result()
