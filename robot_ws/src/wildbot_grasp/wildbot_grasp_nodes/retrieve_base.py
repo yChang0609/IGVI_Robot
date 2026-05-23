@@ -53,8 +53,19 @@ class RetrieveBase(Node):
         # Stepped door-ref scan: pause per stop + extra rotation past the door ref.
         self.declare_parameter("scan_step_settle_sec", 0.5)
         self.declare_parameter("scan_step_extra_deg", 45.0)
-        # face_point: standoff distance when moving in to face a map point.
-        self.declare_parameter("face_point_distance_m", 0.6)
+        # face_point: standoff distance to back up to (for camera visibility).
+        self.declare_parameter("face_point_distance_m", 0.3)
+        # face_point: angular P controller for rotating to face the point.
+        self.declare_parameter("face_point_ang_kp", 2.0)
+        self.declare_parameter("face_point_ang_max", 0.9)
+        self.declare_parameter("face_point_ang_floor", 0.30)
+        # face_point: alignment threshold — start adding reverse motion once
+        # |yaw_err| drops below this (deg). Until then, rotate only.
+        self.declare_parameter("face_point_align_deg", 30.0)
+        # face_point: reverse speed once aligned, and final stop yaw tolerance.
+        self.declare_parameter("face_point_reverse_speed", 0.10)
+        self.declare_parameter("face_point_yaw_tol_deg", 8.0)
+        self.declare_parameter("face_point_timeout_sec", 10.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -523,7 +534,7 @@ class RetrieveBase(Node):
             if cur is None:
                 time.sleep(0.05)
                 continue
-            if abs(self._ang_norm(target_yaw - cur[2])) < math.radians(4.0):
+            if abs(self._ang_norm(target_yaw - cur[2])) < math.radians(5.0):
                 break
             twist.angular.z = direction * abs(speed)
             self.cmd_vel_pub.publish(twist)
@@ -533,45 +544,80 @@ class RetrieveBase(Node):
         return True, "rotation complete", False
 
     def face_point(self, goal_handle, point, distance: float = None):
-        """Navigate to a standoff pose `distance` m short of the point, then fine-tune yaw.
-
-        Two phases: (1) Nav2 to a pose on the robot→point line at standoff
-        distance, so the robot is roughly in place; (2) rotate in place to
-        correct any residual yaw error from Nav2's final orientation."""
-        pose = self.get_robot_pose()
-        if pose is None:
-            return False, "could not read robot pose"
-
+        """Rotate to face the point. Once roughly aligned (|yaw_err| <
+        align_deg), also reverse to back away to `distance` so the target
+        is visible in camera FOV. Done when aligned AND at/past standoff."""
         standoff = (float(self.get_parameter("face_point_distance_m").value)
                     if distance is None else float(distance))
+        ang_kp = float(self.get_parameter("face_point_ang_kp").value)
+        ang_max = float(self.get_parameter("face_point_ang_max").value)
+        ang_floor = float(self.get_parameter("face_point_ang_floor").value)
+        align_rad = math.radians(float(self.get_parameter("face_point_align_deg").value))
+        rev_speed = float(self.get_parameter("face_point_reverse_speed").value)
+        yaw_tol = math.radians(float(self.get_parameter("face_point_yaw_tol_deg").value))
+        timeout = float(self.get_parameter("face_point_timeout_sec").value)
         bx, by = float(point[0]), float(point[1])
-        rx, ry = pose[0], pose[1]
-        dx, dy = bx - rx, by - ry
-        dist = math.hypot(dx, dy)
-        desired_yaw = math.atan2(dy, dx) if dist > 1e-6 else pose[2]
 
-        if dist > standoff:
-            ux, uy = dx / dist, dy / dist
-            gx = bx - standoff * ux
-            gy = by - standoff * uy
-            goal_pose = self.make_pose(gx, gy, desired_yaw)
-            ok, msg = self.navigate_to_pose(goal_handle, goal_pose,
-                                            stage="facing", progress=0.5)
-            if not ok:
-                return False, msg
+        # Clear nav2 path so motion_arbiter doesn't override our cmd_vel.
+        self._plan_pub.publish(Path())
+        self.cmd_vel_pub.publish(Twist())
+        time.sleep(0.1)
 
-        cur = self.get_robot_pose()
-        if cur is None:
-            return False, "could not read robot pose after navigation"
-        # Recompute desired yaw from the post-nav pose so the final facing is
-        # based on where we actually ended up, not where we expected to be.
-        desired_yaw = math.atan2(by - cur[1], bx - cur[0])
-        delta_deg = math.degrees(self._ang_norm(desired_yaw - cur[2]))
-        ok, _, _ = self.rotate_relative(goal_handle, delta_deg)
-        if not ok:
-            return False, "failed to fine-tune yaw after nav"
-        return True, (f"faced memory point, standing {standoff:.2f}m away "
-                      f"(yaw trim {delta_deg:.0f} deg)")
+        deadline = time.monotonic() + timeout
+        twist = Twist()
+        last_log = 0.0
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled"
+            cur = self.get_robot_pose()
+            if cur is None:
+                time.sleep(0.05)
+                continue
+
+            dx, dy = bx - cur[0], by - cur[1]
+            dist = math.hypot(dx, dy)
+            yaw_err = self._ang_norm(math.atan2(dy, dx) - cur[2])
+
+            aligned = abs(yaw_err) < yaw_tol
+            far_enough = dist >= standoff
+            if aligned and far_enough:
+                self.cmd_vel_pub.publish(Twist())
+                self.publish_feedback(
+                    goal_handle, "face/done", 0.55,
+                    f"faced at {dist:.2f}m, yaw_err={math.degrees(yaw_err):+.1f}deg",
+                )
+                return True, f"faced point at {dist:.2f}m"
+
+            # Angular: P + anti-stiction floor, always on.
+            ang_raw = ang_kp * yaw_err
+            if abs(ang_raw) > 1e-3 and abs(ang_raw) < ang_floor:
+                ang_raw = math.copysign(ang_floor, ang_raw)
+            twist.angular.z = max(-ang_max, min(ang_max, ang_raw))
+
+            # Linear: reverse only when roughly aligned AND not yet at standoff.
+            if abs(yaw_err) < align_rad and not far_enough:
+                twist.linear.x = -abs(rev_speed)
+            else:
+                twist.linear.x = 0.0
+
+            self.cmd_vel_pub.publish(twist)
+
+            now = time.monotonic()
+            if now - last_log >= 0.5:
+                last_log = now
+                phase = "turn+rev" if twist.linear.x < 0 else "turn"
+                self.publish_feedback(
+                    goal_handle, "face/step", 0.52,
+                    (f"{phase} dist={dist:.2f}m yaw_err={math.degrees(yaw_err):+.1f}deg "
+                     f"lin={twist.linear.x:+.2f} ang={twist.angular.z:+.2f}"),
+                )
+
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return False, "face_point timed out"
 
     def scan_for_target(self, goal_handle, target_class: str):
         """Scan-rotate to find the target: CW 45deg, then CCW 90deg, then keep
