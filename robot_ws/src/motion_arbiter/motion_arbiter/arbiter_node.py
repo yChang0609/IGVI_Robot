@@ -111,7 +111,24 @@ class MotionArbiter(Node):
     # ── ROS callbacks ─────────────────────────────────────────────────────
 
     def _on_path(self, msg: Path) -> None:
+        # Empty Path = explicit "abort tracking" from a task server (e.g. the
+        # retrieve servers clear the path before visual servoing so the stale
+        # nav2 plan doesn't pull the robot back during in-place centering /
+        # approach). Nav2's planner_server only publishes on plan success, so
+        # empty messages here are intentional clears, not planning failures.
         if not msg.poses:
+            with self._lock:
+                if not self._path:
+                    return
+                self._path = []
+                self._path_index = 0
+                if self._estop:
+                    self._state = State.ESTOP
+                elif self._state in (State.OVERRIDE, State.MANUAL):
+                    pass  # let the manual command finish; nothing to revert to
+                else:
+                    self._state = State.IDLE
+            self.get_logger().info("Path cleared")
             return
         with self._lock:
             self._path_frame_id = msg.header.frame_id

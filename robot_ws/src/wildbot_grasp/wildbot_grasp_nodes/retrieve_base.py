@@ -345,6 +345,15 @@ class RetrieveBase(Node):
         - depth-dropout latch: depth often drops at very close range — once we
           have reached grab distance, stay latched and grab instead of stalling.
         """
+        # Clear any stored nav2 path in motion_arbiter. wait_until_arrived
+        # returns on position tolerance alone, so the pure-pursuit ALIGNING
+        # state can still be holding the original goal yaw/position. Without
+        # this, every zero-Twist this loop emits (target lost, in-range stop)
+        # falls back to PATH_TRACKING and pulls the robot back toward the
+        # original nav goal, fighting the visual servo.
+        self._plan_pub.publish(Path())
+        time.sleep(0.1)
+
         target_dist = float(self.get_parameter("approach_target_distance_m").value)
         linear_speed = float(self.get_parameter("approach_linear_speed").value)
         kp = float(self.get_parameter("visual_servo_kp").value)
