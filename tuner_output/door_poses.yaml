@@ -12,8 +12,8 @@ open_door_server:
     push_duration_sec: 2.0
     push_speed: 0.15
     door_home_pose_deg:
-    - 163.0
-    - 14.0
+    - 209.0
+    - 1.0
     - 240.0
     door_pose_1_deg:
     - 90.0
@@ -28,7 +28,7 @@ open_door_server:
     - 181.0
     - 168.0
     door_arm_push_pose_deg:
-    - 41.0
+    - 71.0
     - 159.0
     - 168.0
     red_hue_lo1: 0

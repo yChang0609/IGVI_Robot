@@ -45,6 +45,7 @@ OPEN_DOOR_NODE = "open_door_server"
 _PHASE_STYLE: dict[str, tuple[str, str]] = {
     "idle":        ("Idle",        "#6b7280"),
     "navigating":  ("Navigating",  "#3b82f6"),
+    "driving":     ("Driving",     "#3b82f6"),
     "opening":     ("Opening Door", "#3b82f6"),
     "succeeded":   ("Succeeded",   "#22c55e"),
     "failed":      ("Failed",      "#ef4444"),
@@ -274,7 +275,7 @@ class DoorMissionControl(QWidget):
         # Disable Start during an active mission; enable Cancel only while
         # there's something to cancel (navigating / opening).
         self.start_btn.setEnabled(not active)
-        self.cancel_btn.setEnabled(phase in ("navigating", "opening"))
+        self.cancel_btn.setEnabled(phase in ("navigating", "driving", "opening"))
 
         nav = data.get("nav") or {}
         door = data.get("open_door") or {}

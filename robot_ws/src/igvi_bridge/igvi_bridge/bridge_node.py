@@ -187,6 +187,10 @@ class BridgeNode(Node):
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
         # /cmd_vel output onto /base_controller/cmd_vel for the wheel driver.
         self._motion_cmd_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        # Drops any path motion_arbiter is currently tracking — used when a
+        # door mission is canceled mid-drive, since canceling the (already
+        # complete) Nav2 goal does not stop the pure-pursuit executor.
+        self._motion_clear_path_pub = self.create_publisher(Empty, "/motion/clear_path", 10)
         self._wheel_cmd_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
@@ -264,7 +268,13 @@ class BridgeNode(Node):
         self._wheel_cmd_pub.publish(out)
 
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
-        self._motion_state = str(getattr(msg, "data", ""))
+        state = str(getattr(msg, "data", ""))
+        self._motion_state = state
+        # Door mission waits in its "driving" phase for motion_arbiter to
+        # finish executing the plan — Nav2's plan-only stack returns SUCCEEDED
+        # at planning time, so this is the only signal that the robot is
+        # actually at the goal.
+        self._door_mission.on_motion_state(state)
 
     def _on_arm_temperatures(self, msg: Float64MultiArray) -> None:
         now = self.get_clock().now().nanoseconds / 1_000_000_000.0
@@ -549,6 +559,12 @@ class BridgeNode(Node):
         return self._door_mission.start(waypoint, ready_distance_m)
 
     def cancel_door_mission(self) -> tuple[bool, str]:
+        # If the mission is mid-drive, the Nav2 goal is already complete and
+        # canceling it is a no-op; the actual stop signal motion_arbiter
+        # respects is /motion/clear_path.
+        phase = self._door_mission.snapshot().get("phase", "")
+        if phase == "driving":
+            self._motion_clear_path_pub.publish(Empty())
         return self._door_mission.cancel()
 
     def snapshot_door_mission(self) -> dict[str, Any]:
