@@ -211,6 +211,7 @@ class BridgeNode(Node):
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self._arm_pub = self.create_publisher(JointTrajectory, "/arm_safeguard/target_trajectory", 10)
         self._imu_calibration_start_pub = self.create_publisher(Empty, "/imu/calibration/start", 10)
+        self._clear_path_pub = self.create_publisher(Empty, "/motion/clear_path", 10)
         self._local_costmap_clear_client = self.create_client(
             ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
         )
@@ -571,6 +572,12 @@ class BridgeNode(Node):
                     "unavailable", "", "open_door action server not running — check wildbot_grasp"
                 )
                 return False, "open_door action server not running"
+
+        # Drop any stale nav plan in motion_arbiter before open_door takes over.
+        # Otherwise, when the PRESS phase pauses /motion/cmd to play the arm
+        # slam, the arbiter's override_timeout elapses and it resumes the old
+        # path — including the goal-yaw align — and spins the robot mid-slam.
+        self._clear_path_pub.publish(Empty())
 
         goal_msg = OpenDoor.Goal()
         goal_msg.ready_distance_m = float(ready_distance_m)

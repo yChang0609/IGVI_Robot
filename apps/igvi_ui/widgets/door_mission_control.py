@@ -38,6 +38,7 @@ from igvi_ui.clients.host_client import HostClient, HostClientError
 
 
 DEFAULT_WAYPOINT = "door_approach"
+OPEN_DOOR_NODE = "open_door_server"
 
 # Phase → (display label, chip color). Mirrors the server-side phase strings
 # in bridge_node.start_door_mission / _advance_door_mission_*.
@@ -144,6 +145,22 @@ class DoorMissionControl(QWidget):
         rd_row.addWidget(self.ready_spin)
         layout.addLayout(rd_row)
 
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Approach speed (m/s)"))
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(0.05, 0.30)
+        self.speed_spin.setSingleStep(0.02)
+        self.speed_spin.setDecimals(2)
+        self.speed_spin.setValue(0.10)
+        self.speed_spin.setToolTip(
+            "Forward speed during open_door's APPROACH phase. Applied as a live "
+            "param on open_door_server, so it affects both this mission and "
+            "any direct open_door run."
+        )
+        self.speed_spin.valueChanged.connect(self._apply_approach_speed)
+        speed_row.addWidget(self.speed_spin)
+        layout.addLayout(speed_row)
+
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("Start Door Mission")
         self.start_btn.clicked.connect(self._on_start)
@@ -210,6 +227,9 @@ class DoorMissionControl(QWidget):
     def _on_start(self) -> None:
         waypoint = self.waypoint_edit.text().strip() or DEFAULT_WAYPOINT
         ready = float(self.ready_spin.value())
+        # Push the current approach_speed before dispatching, so a value the
+        # user typed without firing valueChanged still takes effect.
+        self._apply_approach_speed(float(self.speed_spin.value()), quiet=True)
         try:
             result = self.client.door_mission_start(waypoint=waypoint, ready_distance_m=ready)
         except HostClientError as exc:
@@ -217,6 +237,18 @@ class DoorMissionControl(QWidget):
             return
         msg = str(result.get("message", "door mission dispatched"))
         self.log_message.emit(msg)
+
+    def _apply_approach_speed(self, value: float, quiet: bool = False) -> None:
+        try:
+            result = self.client.set_params(OPEN_DOOR_NODE, {"approach_speed": float(value)})
+        except HostClientError as exc:
+            if not quiet:
+                self.log_message.emit(f"Approach speed set failed: {exc}")
+            return
+        if not result.get("ok", False) and not quiet:
+            self.log_message.emit(
+                f"approach_speed: {result.get('message', 'rejected')}"
+            )
 
     def _on_cancel(self) -> None:
         try:

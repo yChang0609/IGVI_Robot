@@ -151,8 +151,9 @@ class DoorPage(QWidget):
         title = QLabel("Door Opener — Red-Bar Detector")
         title.setObjectName("Title")
         subtitle = QLabel(
-            "Live /open_door/debug_image, HSV tuning, and one-click trigger. "
-            "Tuning sliders set parameters on open_door_server instantly."
+            "Live /open_door/debug_image, HSV tuning, and the one-click "
+            "Door Mission. Tuning sliders set parameters on open_door_server "
+            "instantly."
         )
         subtitle.setObjectName("Muted")
         subtitle.setWordWrap(True)
@@ -204,34 +205,18 @@ class DoorPage(QWidget):
         return scroll
 
     def _build_action_card(self) -> QWidget:
+        # FSM status read-out for the open_door action. The mission is started
+        # from the single Door Mission card above; this card just reflects the
+        # live ALIGN/APPROACH/PRESS/PUSH stage + progress.
         card = QFrame()
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        heading = QLabel("Trigger")
+        heading = QLabel("Open-door status")
         heading.setStyleSheet("font-weight: 600;")
         layout.addWidget(heading)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Ready distance (m)"))
-        self.ready_spin = QDoubleSpinBox()
-        self.ready_spin.setRange(0.0, 2.0)
-        self.ready_spin.setSingleStep(0.05)
-        self.ready_spin.setValue(0.45)
-        self.ready_spin.setDecimals(2)
-        row.addWidget(self.ready_spin)
-        layout.addLayout(row)
-
-        btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("Start Open Door")
-        self.start_btn.clicked.connect(self._on_start)
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        btn_row.addWidget(self.start_btn, 1)
-        btn_row.addWidget(self.cancel_btn)
-        layout.addLayout(btn_row)
 
         self.state_label = QLabel("state: —")
         self.state_label.setStyleSheet("font-weight: 600;")
@@ -521,22 +506,6 @@ class DoorPage(QWidget):
         else:
             self.log_message.emit(f"{param} = {value}")
 
-    def _on_start(self) -> None:
-        try:
-            result = self.client.open_door_start(float(self.ready_spin.value()))
-        except HostClientError as exc:
-            self.log_message.emit(f"Open-door start failed: {exc}")
-            return
-        self.log_message.emit(str(result.get("message", "open_door dispatched")))
-
-    def _on_cancel(self) -> None:
-        try:
-            result = self.client.open_door_cancel()
-        except HostClientError as exc:
-            self.log_message.emit(f"Cancel failed: {exc}")
-            return
-        self.log_message.emit(str(result.get("message", "cancel requested")))
-
     def _run_step(self, step: str, label: str) -> None:
         if self._step_worker is not None and self._step_worker.isRunning():
             self.log_message.emit("A door step is already running; wait for it to finish.")
@@ -564,14 +533,11 @@ class DoorPage(QWidget):
             btn.setEnabled(enabled)
 
     def _on_status(self, data: dict) -> None:
-        available = bool(data.get("available", False))
         state = str(data.get("state", "unavailable"))
         stage = str(data.get("stage", ""))
         message = str(data.get("message", ""))
         progress = float(data.get("progress", 0.0))
 
-        self.start_btn.setEnabled(available and state not in ("running", "sending"))
-        self.cancel_btn.setEnabled(state in ("running", "sending"))
         label = state if not stage else f"{state} · {stage}"
         self.state_label.setText(f"state: {label}")
         self.detail_label.setText(message)

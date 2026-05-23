@@ -35,7 +35,7 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist, TwistStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 
 class State(Enum):
@@ -53,6 +53,7 @@ class MotionArbiter(Node):
         self.declare_parameter("override_timeout", 0.6)
         self.declare_parameter("lookahead_distance", 0.35)
         self.declare_parameter("goal_tolerance", 0.18)
+        self.declare_parameter("yaw_tolerance", 0.05)
         self.declare_parameter("max_linear_velocity", 0.3)
         self.declare_parameter("max_angular_velocity", 1.2)
         self.declare_parameter("accel_linear", 0.6)
@@ -69,6 +70,7 @@ class MotionArbiter(Node):
         self._lock = threading.Lock()
         self._state: State = State.IDLE
         self._path: list[tuple[float, float]] = []
+        self._goal_yaw: float | None = None
         self._path_index: int = 0
         self._motion_target: tuple[float, float] = (0.0, 0.0)
         self._last_motion_time = None
@@ -79,6 +81,7 @@ class MotionArbiter(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
+        self.create_subscription(Empty, "/motion/clear_path", self._on_clear_path, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odom, 10)
 
@@ -98,6 +101,7 @@ class MotionArbiter(Node):
             return
         with self._lock:
             self._path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+            self._goal_yaw = _yaw_from_quat(msg.poses[-1].pose.orientation)
             self._path_index = 0
             if self._state == State.OVERRIDE:
                 self.get_logger().info(
@@ -116,6 +120,23 @@ class MotionArbiter(Node):
                 self._state = State.PATH_TRACKING if self._path else State.IDLE
             else:
                 self._state = State.OVERRIDE if self._path else State.MANUAL
+
+    def _on_clear_path(self, _msg: Empty) -> None:
+        # External signal (e.g. open_door is taking control) to drop any
+        # stored nav plan. Without this, a stale path resumes via PATH_TRACKING
+        # whenever override_timeout elapses between commands (e.g. during the
+        # arm slam sequence), spinning the robot toward the old goal yaw.
+        with self._lock:
+            had_path = bool(self._path)
+            self._path = []
+            self._goal_yaw = None
+            self._path_index = 0
+            if self._state in (State.PATH_TRACKING, State.OVERRIDE):
+                self._state = (
+                    State.MANUAL if self._state == State.OVERRIDE else State.IDLE
+                )
+        if had_path:
+            self.get_logger().info("Path cleared via /motion/clear_path")
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         p = msg.pose.pose
@@ -139,6 +160,7 @@ class MotionArbiter(Node):
         with self._lock:
             state = self._state
             path = list(self._path)
+            goal_yaw = self._goal_yaw
             path_index = self._path_index
             motion_target = self._motion_target
             last_motion = self._last_motion_time
@@ -155,11 +177,12 @@ class MotionArbiter(Node):
 
         # Compute desired velocity for this tick
         if state == State.PATH_TRACKING and path:
-            result = self._pure_pursuit(path, path_index, pose)
+            result = self._pure_pursuit(path, path_index, pose, goal_yaw)
             if result is None:
                 with self._lock:
                     self._path = []
                     self._path_index = 0
+                    self._goal_yaw = None
                     self._state = State.IDLE
                 state = State.IDLE
                 desired_vx, desired_wz = 0.0, 0.0
@@ -207,8 +230,14 @@ class MotionArbiter(Node):
         path: list[tuple[float, float]],
         path_index: int,
         pose: tuple[float, float, float],
+        goal_yaw: float | None,
     ) -> tuple[float, float, int] | None:
-        """Returns (vx, wz, new_path_index) or None when path is complete."""
+        """Returns (vx, wz, new_path_index) or None when path is complete.
+
+        Once within `goal_tolerance` of the final position, rotates in place
+        toward `goal_yaw` (if provided) until within `yaw_tolerance`, then
+        signals completion.
+        """
         if not path:
             return None
         x, y, yaw = pose
@@ -216,7 +245,14 @@ class MotionArbiter(Node):
         gx, gy = path[-1]
         goal_tol = float(self.get_parameter("goal_tolerance").value)
         if math.hypot(gx - x, gy - y) < goal_tol:
-            return None
+            if goal_yaw is None:
+                return None
+            yaw_tol = float(self.get_parameter("yaw_tolerance").value)
+            yaw_err = _wrap_angle(goal_yaw - yaw)
+            if abs(yaw_err) < yaw_tol:
+                return None
+            wz = float(self.get_parameter("kp_angular").value) * yaw_err
+            return 0.0, wz, len(path) - 1
 
         # Advance closest-point index (no rewinding)
         closest_idx = path_index
@@ -250,12 +286,15 @@ class MotionArbiter(Node):
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def _yaw_from_pose(x: float, y: float, q) -> tuple[float, float, float]:
-    yaw = math.atan2(
+def _yaw_from_quat(q) -> float:
+    return math.atan2(
         2.0 * (q.w * q.z + q.x * q.y),
         1.0 - 2.0 * (q.y * q.y + q.z * q.z),
     )
-    return float(x), float(y), float(yaw)
+
+
+def _yaw_from_pose(x: float, y: float, q) -> tuple[float, float, float]:
+    return float(x), float(y), float(_yaw_from_quat(q))
 
 
 def _wrap_angle(a: float) -> float:
