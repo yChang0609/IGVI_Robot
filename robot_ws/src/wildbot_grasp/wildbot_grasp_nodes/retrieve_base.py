@@ -574,6 +574,10 @@ class RetrieveBase(Node):
                 return False, "mission canceled"
             if self.detection_for_class(target_class) is not None:
                 self.cmd_vel_pub.publish(Twist())
+                # Clear stored path so motion_arbiter stays IDLE (not PATH_TRACKING)
+                # when zero-Twist is published — prevents robot drifting after scan stops.
+                self._plan_pub.publish(Path())
+                time.sleep(0.1)
                 return True, "target found during CW scan"
             self.cmd_vel_pub.publish(twist)
             time.sleep(0.05)
@@ -584,6 +588,10 @@ class RetrieveBase(Node):
     def center_on_target(self, goal_handle, target_class: str):
         """Rotate in place (no forward motion) until target_class is centered within
         approach_center_tolerance_px. Requires 3 consecutive centered frames to confirm."""
+        # Clear any stored path so zero-Twist → IDLE, not PATH_TRACKING.
+        self._plan_pub.publish(Path())
+        time.sleep(0.1)
+
         kp = float(self.get_parameter("visual_servo_kp").value)
         center_x = float(self.get_parameter("image_center_x").value)
         tolerance = float(self.get_parameter("approach_center_tolerance_px").value)
@@ -602,7 +610,7 @@ class RetrieveBase(Node):
             det = self.detection_for_class(target_class)
             if det is None:
                 lost_frames += 1
-                if lost_frames > 20:  # ~1s of no detection → give up
+                if lost_frames > 40:  # ~2s of no detection → give up
                     self.cmd_vel_pub.publish(Twist())
                     return False, "target lost during centering"
                 self.cmd_vel_pub.publish(Twist())
