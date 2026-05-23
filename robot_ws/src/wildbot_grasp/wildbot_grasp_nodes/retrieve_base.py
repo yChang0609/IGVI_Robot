@@ -53,6 +53,8 @@ class RetrieveBase(Node):
         # Stepped door-ref scan: pause per stop + extra rotation past the door ref.
         self.declare_parameter("scan_step_settle_sec", 0.5)
         self.declare_parameter("scan_step_extra_deg", 45.0)
+        # face_point: standoff distance when moving in to face a map point.
+        self.declare_parameter("face_point_distance_m", 0.6)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -78,12 +80,10 @@ class RetrieveBase(Node):
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
         self._plan_pub = self.create_publisher(Path, "/plan", 1)
+        # Only global_costmap exists in this stack: planner_server hosts it.
+        # No controller_server → no local_costmap, so no local clear service.
         self._clear_global_client = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
-            callback_group=self.callback_group,
-        )
-        self._clear_local_client = self.create_client(
-            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap",
             callback_group=self.callback_group,
         )
         self.nav_client = ActionClient(
@@ -532,15 +532,46 @@ class RetrieveBase(Node):
         self.cmd_vel_pub.publish(Twist())
         return True, "rotation complete", False
 
-    def face_point(self, goal_handle, point):
-        """Rotate in place to face an absolute (x, y) point (e.g. the bear's memory point)."""
+    def face_point(self, goal_handle, point, distance: float = None):
+        """Navigate to a standoff pose `distance` m short of the point, then fine-tune yaw.
+
+        Two phases: (1) Nav2 to a pose on the robot→point line at standoff
+        distance, so the robot is roughly in place; (2) rotate in place to
+        correct any residual yaw error from Nav2's final orientation."""
         pose = self.get_robot_pose()
         if pose is None:
             return False, "could not read robot pose"
-        desired = math.atan2(point[1] - pose[1], point[0] - pose[0])
-        delta_deg = math.degrees(self._ang_norm(desired - pose[2]))
+
+        standoff = (float(self.get_parameter("face_point_distance_m").value)
+                    if distance is None else float(distance))
+        bx, by = float(point[0]), float(point[1])
+        rx, ry = pose[0], pose[1]
+        dx, dy = bx - rx, by - ry
+        dist = math.hypot(dx, dy)
+        desired_yaw = math.atan2(dy, dx) if dist > 1e-6 else pose[2]
+
+        if dist > standoff:
+            ux, uy = dx / dist, dy / dist
+            gx = bx - standoff * ux
+            gy = by - standoff * uy
+            goal_pose = self.make_pose(gx, gy, desired_yaw)
+            ok, msg = self.navigate_to_pose(goal_handle, goal_pose,
+                                            stage="facing", progress=0.5)
+            if not ok:
+                return False, msg
+
+        cur = self.get_robot_pose()
+        if cur is None:
+            return False, "could not read robot pose after navigation"
+        # Recompute desired yaw from the post-nav pose so the final facing is
+        # based on where we actually ended up, not where we expected to be.
+        desired_yaw = math.atan2(by - cur[1], bx - cur[0])
+        delta_deg = math.degrees(self._ang_norm(desired_yaw - cur[2]))
         ok, _, _ = self.rotate_relative(goal_handle, delta_deg)
-        return ok, f"faced memory point (turned {delta_deg:.0f} deg)"
+        if not ok:
+            return False, "failed to fine-tune yaw after nav"
+        return True, (f"faced memory point, standing {standoff:.2f}m away "
+                      f"(yaw trim {delta_deg:.0f} deg)")
 
     def scan_for_target(self, goal_handle, target_class: str):
         """Scan-rotate to find the target: CW 45deg, then CCW 90deg, then keep
@@ -707,13 +738,22 @@ class RetrieveBase(Node):
         return True, r.message
 
     def clear_costmaps(self):
-        """Fire-and-forget clear of both costmaps. Called after grasp and after release
-        so the held/placed object doesn't block Nav2 planning."""
-        req = ClearEntireCostmap.Request()
-        self._clear_global_client.call_async(req)
-        self._clear_local_client.call_async(req)
-        time.sleep(0.3)  # let Nav2 process before the next navigate call
-        self.get_logger().info("costmaps cleared")
+        """Clear the global costmap so the held/placed object doesn't block
+        Nav2 planning. Waits for the service so we know the clear landed
+        before the next navigate_to_pose."""
+        if not self._clear_global_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                "global_costmap clear service not ready; skipping clear"
+            )
+            return
+        future = self._clear_global_client.call_async(ClearEntireCostmap.Request())
+        deadline = time.monotonic() + 2.0
+        while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if future.done():
+            self.get_logger().info("global_costmap cleared")
+        else:
+            self.get_logger().warn("global_costmap clear timed out")
 
     def release_arm(self, goal_handle):
         self.arm.publish_named("release_object", "place_pose_deg")

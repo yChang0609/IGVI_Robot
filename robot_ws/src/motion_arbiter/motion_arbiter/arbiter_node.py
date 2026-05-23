@@ -65,7 +65,7 @@ class MotionArbiter(Node):
         self.declare_parameter("control_rate", 20.0)
         self.declare_parameter("override_timeout", 0.6)
         self.declare_parameter("lookahead_distance", 0.35)
-        self.declare_parameter("goal_tolerance", 0.18)
+        self.declare_parameter("goal_tolerance", 0.15)
         self.declare_parameter("yaw_tolerance", 0.1)
         self.declare_parameter("kp_linear_align", 0.8)
         self.declare_parameter("max_linear_velocity", 0.3)
