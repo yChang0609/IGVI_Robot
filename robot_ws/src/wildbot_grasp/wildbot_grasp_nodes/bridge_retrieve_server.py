@@ -42,29 +42,11 @@ class BridgeRetrieveServer(RetrieveBase):
         goal = goal_handle.request
         target_class = goal.target_class or str(self.get_parameter("target_class").value)
 
-        # Decide where to return after grasping. Prefer the explicit home pose
-        # from the goal (the saved "home" waypoint); only fall back to the pose
-        # at mission start when none was provided. Falling back is risky: if the
-        # robot starts the mission already on the bridge, "home" would be the
-        # bridge and it would release the bear there.
-        if goal.home_pose_valid:
-            home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
-            self.get_logger().info(
-                f"return home set to configured waypoint ({goal.home_pose_x:.2f}, "
-                f"{goal.home_pose_y:.2f}, {goal.home_pose_yaw:.2f})"
-            )
-        else:
-            home_pose_tuple = self.get_robot_pose()
-            if home_pose_tuple is None:
-                result.success = False
-                result.message = "Could not read starting pose and no home waypoint provided"
-                goal_handle.abort()
-                return result
-            home_pose = self.make_pose(*home_pose_tuple)
-            self.get_logger().warning(
-                "no home waypoint in goal; falling back to mission start pose "
-                "(set a 'home' waypoint in the UI to return to a fixed spot)"
-            )
+        home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
+        self.get_logger().info(
+            f"return home set to ({goal.home_pose_x:.2f}, "
+            f"{goal.home_pose_y:.2f}, {goal.home_pose_yaw:.2f})"
+        )
 
         # 1. Navigate to bridge center (gets the robot near the bear/wall)
         bridge_pose = self.make_pose(goal.bridge_pose_x, goal.bridge_pose_y, goal.bridge_pose_yaw)
