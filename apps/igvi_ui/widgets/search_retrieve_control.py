@@ -307,7 +307,6 @@ class SearchRetrieveControl(QWidget):
                     self._update_patrol_start_from_feedback(detail)
             else:
                 self.arena_status_label.setText(f"Arena State: {state}\n{msg}")
-
             if state in ("idle", "error"):
                 self.start_arena_btn.setEnabled(True)
                 self.cancel_arena_btn.setEnabled(False)
