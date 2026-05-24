@@ -247,7 +247,7 @@ def _write_yaml(path: str, captures: dict[str, list[float]], ready_distance_m: O
     rd_line = (
         f"    ready_distance_m: {ready_distance_m:.3f}\n"
         if ready_distance_m is not None
-        else "    ready_distance_m: 0.45  # UNSET — keep default\n"
+        else "    ready_distance_m: 0.26  # UNSET — keep default\n"
     )
     body = (
         "# Captured by wildbot_grasp tune_open_door — merge into open_door_server params.\n"

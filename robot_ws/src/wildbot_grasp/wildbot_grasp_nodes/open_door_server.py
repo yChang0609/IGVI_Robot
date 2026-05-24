@@ -150,7 +150,7 @@ class OpenDoorServer(Node):
         self.declare_parameter("align_stable_ticks", 5)
 
         # ── APPROACH ─────────────────────────────────────────────────────
-        self.declare_parameter("ready_distance_m", 0.45)
+        self.declare_parameter("ready_distance_m", 0.26)
         self.declare_parameter("approach_speed", 0.10)
         self.declare_parameter("approach_center_kp", 0.4)
         self.declare_parameter("approach_max_wz", 0.25)
@@ -531,12 +531,16 @@ class OpenDoorServer(Node):
         state = State.ALIGN
         state_entered = time.monotonic()
         align_stable = 0
+        # Monotonic time the detection first went bad, or None while it's good.
+        # The grace is measured from loss onset (not state entry) so a few dropped
+        # frames near the door — common at close range — don't abort the slam.
+        lost_since = None
 
         self._publish_feedback(goal_handle, State.ALIGN.value, 0.05, "starting alignment")
 
         def lost_too_long() -> bool:
             grace = float(self.get_parameter("lost_grace_sec").value)
-            return (time.monotonic() - state_entered) > grace
+            return lost_since is not None and (time.monotonic() - lost_since) > grace
 
         while rclpy.ok():
             if goal_handle.is_cancel_requested:
@@ -552,10 +556,13 @@ class OpenDoorServer(Node):
             if state == State.ALIGN:
                 if det is None:
                     self._publish_twist(0.0, 0.0)
+                    if lost_since is None:
+                        lost_since = time.monotonic()
                     if lost_too_long():
-                        state, state_entered, align_stable = State.ABORT, time.monotonic(), 0
+                        state, state_entered, align_stable, lost_since = State.ABORT, time.monotonic(), 0, None
                         self._publish_feedback(goal_handle, state.value, 0.0, "red bar lost in ALIGN")
                 else:
+                    lost_since = None  # detection recovered → reset the grace clock
                     tol = float(self.get_parameter("align_pixel_tol").value)
                     kp = float(self.get_parameter("align_kp").value)
                     max_wz = float(self.get_parameter("align_max_wz").value)
@@ -576,10 +583,13 @@ class OpenDoorServer(Node):
             elif state == State.APPROACH:
                 if det is None or not det.depth_valid:
                     self._publish_twist(0.0, 0.0)
+                    if lost_since is None:
+                        lost_since = time.monotonic()
                     if lost_too_long():
-                        state, state_entered = State.ABORT, time.monotonic()
+                        state, state_entered, lost_since = State.ABORT, time.monotonic(), None
                         self._publish_feedback(goal_handle, state.value, 0.0, "bar/depth lost in APPROACH")
                 else:
+                    lost_since = None  # detection recovered → reset the grace clock
                     ready = float(self.get_parameter("ready_distance_m").value)
                     if det.depth_m > 0.0 and det.depth_m <= ready:
                         self._publish_twist(0.0, 0.0)
