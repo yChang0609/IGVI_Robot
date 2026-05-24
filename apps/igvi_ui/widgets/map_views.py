@@ -19,7 +19,7 @@ class Map2DView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(160)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._map_data: dict[str, Any] | None = None
         self._map_pixmap: QPixmap | None = None
@@ -107,6 +107,9 @@ class Map2DView(QWidget):
 
     def set_arena_pose_mode(self, enabled: bool) -> None:
         self._set_pick_target("arena_pose" if enabled else "")
+
+    def set_nav_goal_mode(self, enabled: bool) -> None:
+        self._set_pick_target("nav_goal" if enabled else "")
 
     def _set_pick_target(self, target: str) -> None:
         self._pick_mode = target
@@ -378,7 +381,9 @@ class Map2DView(QWidget):
             self._home_pose = (gx, gy, yaw)
         elif self._pick_mode == "arena_pose":
             self.arena_pose_picked.emit(gx, gy, yaw)
-        else:
+        elif self._pick_mode == "nav_goal":
+            self._pick_mode = ""
+            self.setCursor(Qt.CursorShape.CrossCursor)
             self._goal = (gx, gy, yaw)
             self.goal_requested.emit(gx, gy, yaw)
         self.update()

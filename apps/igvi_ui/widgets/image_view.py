@@ -48,7 +48,7 @@ class _ImagePoller(QThread):
 class _Canvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._pixmap: QPixmap | None = None
         self._placeholder = "Select an image topic"

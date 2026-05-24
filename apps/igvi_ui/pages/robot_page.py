@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTabWidget,
     QVBoxLayout,
@@ -115,8 +116,17 @@ class _DriveControl(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(10)
 
         self._kb_btn = QPushButton("⌨  Keyboard Mode")
@@ -144,12 +154,6 @@ class _DriveControl(QWidget):
         self.angular_slider = self._slider("Angular", layout, 33)
 
         actions = QGridLayout()
-        goal_btn = QPushButton("Set Goal")
-        goal_btn.setObjectName("Primary")
-        goal_btn.setToolTip("Click on the map to set a navigation goal")
-        goal_btn.clicked.connect(lambda: QMessageBox.information(
-            self, "Set Goal", "Click anywhere on the 2D map to send a Nav2 goal."
-        ))
         initial_btn = QPushButton("Initial Pose")
         initial_btn.clicked.connect(lambda: self._pose_action("initial_pose"))
         clear_btn = QPushButton("Clear Costmap")
@@ -157,12 +161,10 @@ class _DriveControl(QWidget):
         estop_btn = QPushButton("E-Stop")
         estop_btn.setObjectName("Danger")
         estop_btn.clicked.connect(self._stop)
-        actions.addWidget(goal_btn, 0, 0)
-        actions.addWidget(initial_btn, 0, 1)
-        actions.addWidget(clear_btn, 1, 0)
-        actions.addWidget(estop_btn, 1, 1)
+        actions.addWidget(initial_btn, 0, 0)
+        actions.addWidget(clear_btn, 0, 1)
+        actions.addWidget(estop_btn, 1, 0, 1, 2)
         layout.addLayout(actions)
-        layout.addStretch(1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -332,6 +334,8 @@ class RobotPage(QWidget):
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 2)
         layout.setColumnStretch(2, 1)
+        layout.setRowStretch(0, 1)
+        layout.setRowStretch(1, 1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

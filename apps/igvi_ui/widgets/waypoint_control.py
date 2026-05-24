@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QInputDialog,
     QLabel,
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -38,8 +40,17 @@ class WaypointControl(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(10)
 
         hint = QLabel(
@@ -51,8 +62,9 @@ class WaypointControl(QWidget):
         layout.addWidget(hint)
 
         self.list_widget = QListWidget()
+        self.list_widget.setMinimumHeight(120)
         self.list_widget.itemSelectionChanged.connect(self._sync_buttons)
-        layout.addWidget(self.list_widget, 1)
+        layout.addWidget(self.list_widget)
 
         self.detail_label = QLabel("—")
         self.detail_label.setObjectName("Muted")

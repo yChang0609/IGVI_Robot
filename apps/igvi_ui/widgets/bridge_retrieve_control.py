@@ -5,12 +5,14 @@ import re
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -47,8 +49,17 @@ class BridgeRetrieveControl(QWidget):
         self._disarm_return_pick()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(12)
 
         waypoint_row = QHBoxLayout()
@@ -118,7 +129,6 @@ class BridgeRetrieveControl(QWidget):
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-        layout.addStretch(1)
         self.refresh_waypoints()
 
     def refresh_waypoints(self) -> None:

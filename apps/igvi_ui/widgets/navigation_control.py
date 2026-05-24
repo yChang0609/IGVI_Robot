@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -61,20 +63,34 @@ class NavigationControl(QWidget):
         self._poller: _StatusPoller | None = None
         self._last_state: str = "idle"
         self._initial_pose_pick_armed = False
+        self._nav_goal_pick_armed = False
         self.map_2d.initial_pose_picked.connect(self._on_initial_pose_picked)
+        self.map_2d.goal_requested.connect(self._on_goal_picked)
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
-        hint = QLabel(
-            "Click on the 2D map to set a goal; drag in the desired heading direction to set yaw."
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(8)
+
+        self.nav_goal_btn = QPushButton("Set Nav Goal (click map)")
+        self.nav_goal_btn.setCheckable(True)
+        self.nav_goal_btn.setObjectName("Primary")
+        self.nav_goal_btn.setToolTip(
+            "Arm goal-placement mode, then click+drag the 2D map to send a Nav2 goal. "
+            "Drag direction sets the arrival heading."
         )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self.nav_goal_btn.clicked.connect(self._toggle_nav_goal_pick)
+        layout.addWidget(self.nav_goal_btn)
 
         self.state_label = QLabel("Idle")
         self.state_label.setStyleSheet("font-weight: 700; font-size: 14px; color: #94a3b8;")
@@ -124,7 +140,6 @@ class NavigationControl(QWidget):
         buttons.addWidget(self.probe_btn, 2, 0, 1, 2)
         buttons.addWidget(self.save_map_btn, 3, 0, 1, 2)
         layout.addLayout(buttons)
-        layout.addStretch(1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -138,6 +153,7 @@ class NavigationControl(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
+        self._disarm_nav_goal_pick()
         self._disarm_initial_pose_pick()
         self.shutdown()
 
@@ -213,6 +229,24 @@ class NavigationControl(QWidget):
             )
         else:
             self._disarm_initial_pose_pick()
+
+    def _toggle_nav_goal_pick(self) -> None:
+        if self.nav_goal_btn.isChecked():
+            self._nav_goal_pick_armed = True
+            self.map_2d.set_nav_goal_mode(True)
+            self.nav_goal_btn.setText("Click map to place goal…")
+        else:
+            self._disarm_nav_goal_pick()
+
+    def _disarm_nav_goal_pick(self) -> None:
+        if self._nav_goal_pick_armed:
+            self._nav_goal_pick_armed = False
+            self.map_2d.set_nav_goal_mode(False)
+        self.nav_goal_btn.setChecked(False)
+        self.nav_goal_btn.setText("Set Nav Goal (click map)")
+
+    def _on_goal_picked(self, _x: float, _y: float, _yaw: float) -> None:
+        self._disarm_nav_goal_pick()
 
     def _disarm_initial_pose_pick(self) -> None:
         if self._initial_pose_pick_armed:
