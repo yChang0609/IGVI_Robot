@@ -133,6 +133,10 @@ class BridgeRetrieveServer(RetrieveBase):
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
             return result
+        
+        # Immediately remove object from semantic memory after successful grasp
+        if "id" in target_obj:
+            self.remove_object_from_memory(target_obj["id"])
 
         # 5. Return along the fixed return path: visit each via-point in order,
         #    then finish at home. This forces a deterministic route across the

@@ -86,6 +86,7 @@ class ArenaMissionServer(RetrieveBase):
         blacklist = {} # target_id -> timestamp (monotonic)
 
         try:
+            self.clear_costmaps()  # Clear costmap at start of mission to ensure clean slate
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     self.get_logger().info("Cancel requested! Returning from execute_callback...")
@@ -185,7 +186,8 @@ class ArenaMissionServer(RetrieveBase):
                     wrapped_result = result_future.result()
                     if wrapped_result and wrapped_result.status == 4: # STATUS_SUCCEEDED
                         self.publish_feedback(goal_handle, "grab_success", 0.0, f"Successfully retrieved {target_id}.")
-                        # Usually the bear is removed from memory by the vision node or we just grab the next one.
+                        # Actively remove the object from memory
+                        self.remove_object_from_memory(target_id)
                     else:
                         self.publish_feedback(goal_handle, "grab_failed", 0.0, f"Failed to retrieve {target_id}. Blacklisting.")
                         blacklist[target_id] = time.monotonic()
@@ -246,6 +248,7 @@ class ArenaMissionServer(RetrieveBase):
                         
                     if time.time() - patrol_start_time > patrol_timeout:
                         self.get_logger().warn(f"Patrol to {patrol_name} timed out")
+                        self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
                         break
                         
                     # Check distance

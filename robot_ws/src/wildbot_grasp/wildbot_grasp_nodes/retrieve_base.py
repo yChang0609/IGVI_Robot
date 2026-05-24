@@ -95,6 +95,10 @@ class RetrieveBase(Node):
             callback_group=self.callback_group,
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        self.remove_memory_pub = self.create_publisher(
+            String, "/semantic_memory/remove", 10,
+            callback_group=self.callback_group,
+        )
         self._plan_pub = self.create_publisher(Path, "/plan", 1)
         self._approach_pose_pub = self.create_publisher(PoseStamped, "/approach_pose", 1)
         self._clear_global_client = self.create_client(
@@ -149,6 +153,12 @@ class RetrieveBase(Node):
         feedback.detail = detail
         goal_handle.publish_feedback(feedback)
         self.get_logger().info(f"{stage}: {detail}")
+
+    def remove_object_from_memory(self, target_id: str):
+        msg = String()
+        msg.data = str(target_id)
+        self.remove_memory_pub.publish(msg)
+        self.get_logger().info(f"Published request to remove object {target_id} from semantic memory")
 
     # ------------------------------------------------------------------
     # Geometry helpers

@@ -88,6 +88,8 @@ class SemanticMemoryNode(Node):
 
         self.create_subscription(Empty, '/semantic_memory/clear', self._on_clear, 10,
                                  callback_group=self.callback_group)
+        self.create_subscription(String, '/semantic_memory/remove', self._on_remove, 10,
+                                 callback_group=self.callback_group)
 
         self.create_timer(1.0, self.cleanup_memory)
         self.create_timer(0.1, self.publish_memory)
@@ -142,6 +144,15 @@ class SemanticMemoryNode(Node):
             count = len(self.memory)
             self.memory.clear()
         self.get_logger().info(f"semantic memory cleared ({count} objects)")
+
+    def _on_remove(self, msg: String):
+        target_id = msg.data
+        with self.memory_lock:
+            if target_id in self.memory:
+                del self.memory[target_id]
+                self.get_logger().info(f"Removed object {target_id} from semantic memory")
+        # Publish memory immediately after removal to ensure fast updates
+        self.publish_memory()
 
     def camera_info_callback(self, msg: CameraInfo):
         if not self.camera_info_received:

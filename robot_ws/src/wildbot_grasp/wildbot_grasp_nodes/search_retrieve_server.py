@@ -83,6 +83,9 @@ class SearchRetrieveServer(RetrieveBase):
                 result.message = message
                 goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
                 return result
+            
+            # Immediately remove object from semantic memory after successful grasp
+            self.remove_object_from_memory(target_id)
     
             # 6. Return to caller-specified home pose
             self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
