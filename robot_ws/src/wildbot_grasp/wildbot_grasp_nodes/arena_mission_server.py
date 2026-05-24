@@ -98,7 +98,7 @@ class ArenaMissionServer(RetrieveBase):
                 waypoints = self.load_waypoints()
                 our_base = waypoints.get("our_base")
                 enemy_base = waypoints.get("enemy_base")
-                home_pose = waypoints.get("home_pose")
+                home_pose = waypoints.get("home_pose") or waypoints.get("home")
                 
                 # We need a valid return pose (home_pose or our_base) to return the bear to.
                 return_target = home_pose or our_base
@@ -257,10 +257,19 @@ class ArenaMissionServer(RetrieveBase):
                     
                 result_future = nav_goal_handle.get_result_async()
                 patrol_interrupted = False
+                # Wait for motion_arbiter to transition away from 'idle' state.
+                # We give it up to 1.5 seconds. If it doesn't transition, we assume
+                # the goal is already reached or the plan was completed instantly.
+                start_wait = time.time()
+                has_started = False
+                while time.time() - start_wait < 1.5:
+                    if goal_handle.is_cancel_requested:
+                        break
+                    if self.motion_state in ("path_tracking", "aligning"):
+                        has_started = True
+                        break
+                    time.sleep(0.05)
                 
-                # Nav2 only plans the path, so result_future completes immediately.
-                # We must loop and check the actual distance to the patrol point!
-                arrival_tolerance = float(self.get_parameter("arrival_tolerance").value)
                 patrol_start_time = time.time()
                 patrol_timeout = 60.0
                 
@@ -281,22 +290,13 @@ class ArenaMissionServer(RetrieveBase):
                         self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
                         break
                         
-                    # Check distance and orientation
-                    robot_pose = self.get_robot_pose()
-                    if robot_pose is not None:
-                        dist_to_patrol = self._dist(robot_pose[0], robot_pose[1], patrol_wp["x"], patrol_wp["y"])
-                        
-                        # Check wrap-around angle difference
-                        angle_diff = patrol_wp["yaw"] - robot_pose[2]
-                        while angle_diff > math.pi:
-                            angle_diff -= 2.0 * math.pi
-                        while angle_diff < -math.pi:
-                            angle_diff += 2.0 * math.pi
-                        
-                        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
-                        
-                        if dist_to_patrol <= arrival_tolerance and abs(angle_diff) <= yaw_tolerance:
-                            break  # Arrived!
+                    # Check if motion_arbiter has returned to idle (completed arrival & alignment)
+                    if has_started and self.motion_state == "idle":
+                        self.get_logger().info(f"Arrived at patrol waypoint '{patrol_name}' (confirmed by motion_arbiter)")
+                        break
+                    elif not has_started and time.time() - patrol_start_time > 2.0:
+                        self.get_logger().info(f"Patrol waypoint '{patrol_name}' already reached.")
+                        break
                         
                     # Memory interrupt check
                     with self.memory_lock:

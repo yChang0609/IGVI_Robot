@@ -89,6 +89,7 @@ class RetrieveBase(Node):
         self.detections_lock = threading.Lock()
         self.latest_memory = {}
         self.latest_detections = []
+        self.motion_state = "idle"
 
         self.create_subscription(
             String, "/semantic_memory", self.memory_callback, 10,
@@ -100,6 +101,10 @@ class RetrieveBase(Node):
         )
         self.create_subscription(
             String, "/detections_json", self.detections_callback, 10,
+            callback_group=self.callback_group,
+        )
+        self.create_subscription(
+            String, "/motion/state", self.motion_state_callback, 10,
             callback_group=self.callback_group,
         )
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
@@ -146,6 +151,9 @@ class RetrieveBase(Node):
                 self.latest_detections = detections if isinstance(detections, list) else []
         except Exception:
             return
+
+    def motion_state_callback(self, msg):
+        self.motion_state = msg.data
 
     # ------------------------------------------------------------------
     # Action server callbacks (shared)
@@ -245,18 +253,23 @@ class RetrieveBase(Node):
         return self.wait_until_arrived(goal_handle, pose)
 
     def wait_until_arrived(self, goal_handle, pose: PoseStamped):
-        tolerance = float(self.get_parameter("arrival_tolerance").value)
-        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
-        goal_x = float(pose.pose.position.x)
-        goal_y = float(pose.pose.position.y)
-
-        q = pose.pose.orientation
-        goal_yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-        )
-
-        # Wait loop
+        # We now unify arrival checking completely under motion_arbiter's state.
+        # Once motion_arbiter returns to 'idle' state, it has successfully completed path tracking
+        # and final yaw alignment according to its internal 'goal_tolerance' and 'yaw_tolerance'.
+        
+        # 1. Wait for motion_arbiter to transition away from 'idle' state.
+        # We give it up to 1.5 seconds. If it doesn't transition, we assume
+        # the goal is already reached or the plan was completed instantly.
+        start_wait = time.time()
+        has_started = False
+        while time.time() - start_wait < 1.5:
+            if goal_handle and goal_handle.is_cancel_requested:
+                return False, "mission canceled"
+            if self.motion_state in ("path_tracking", "aligning"):
+                has_started = True
+                break
+            time.sleep(0.05)
+            
         start_time = time.time()
         timeout = 60.0
         while rclpy.ok():
@@ -266,19 +279,10 @@ class RetrieveBase(Node):
             if time.time() - start_time > timeout:
                 return False, "navigation timeout"
 
-            robot_pose = self.get_robot_pose()
-            if robot_pose is not None:
-                dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
-                
-                # Check wrap-around angle difference
-                angle_diff = goal_yaw - robot_pose[2]
-                while angle_diff > math.pi:
-                    angle_diff -= 2.0 * math.pi
-                while angle_diff < -math.pi:
-                    angle_diff += 2.0 * math.pi
-
-                if dist <= tolerance and abs(angle_diff) <= yaw_tolerance:
-                    return True, f"arrived within {dist:.2f}m and yaw difference {abs(angle_diff):.2f} rad"
+            if has_started and self.motion_state == "idle":
+                return True, "arrived at goal (confirmed by motion_arbiter)"
+            elif not has_started and time.time() - start_time > 2.0:
+                return True, "already at goal (confirmed by motion_arbiter)"
 
             time.sleep(0.1)
 

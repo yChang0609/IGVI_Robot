@@ -186,7 +186,7 @@ class SemanticMemoryNode(Node):
         with self.memory_lock:
             if target_id in self.memory:
                 del self.memory[target_id]
-                self.get_logger().info(f"Removed object {target_id} from semantic memory")
+                self.get_logger().info(f"[Semantic Memory] Removed object {target_id} from semantic memory via topic request")
         # Publish memory immediately after removal to ensure fast updates
         self.publish_memory()
 
@@ -391,6 +391,15 @@ class SemanticMemoryNode(Node):
 
             for obj_id in expired_ids:
                 if obj_id in self.memory:
+                    obj_data = self.memory[obj_id]
+                    time_since_seen = now_sec - obj_data['last_seen']
+                    if time_since_seen > self.timeout_sec:
+                        reason = f"timeout (last seen {time_since_seen:.1f}s ago, limit {self.timeout_sec:.1f}s)"
+                    else:
+                        reason = "missing at expected location (FOI check shows it should be visible but is gone/missing)"
+                    self.get_logger().info(
+                        f"[Semantic Memory] Deleting object {obj_id} ({obj_data['class_name']}) from memory. Reason: {reason}"
+                    )
                     del self.memory[obj_id]
 
     def publish_memory(self):
