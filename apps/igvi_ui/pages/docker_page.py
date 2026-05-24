@@ -73,6 +73,11 @@ _GRP_SLAM_STYLE = (
     + " QPushButton { background: #243047; color: #b8c4dc; border: 1px solid #2f405c; }"
     " QPushButton:hover { background: #2f405c; }"
 )
+_GRP_RESTART_STYLE = (
+    _GRP_BTN
+    + " QPushButton { background: #2d2e1a; color: #d8d4a0; border: 1px solid #4a4820; }"
+    " QPushButton:hover { background: #4a4820; }"
+)
 
 
 class ComposeActionWorker(QThread):
@@ -460,6 +465,22 @@ class DockerPage(QWidget):
         item.setSizeHint(0, QSize(-1, 38))
         return item
 
+    def _running_in_group(self, svc_names: list[str]) -> list[str]:
+        running = {str(s.get("service")) for s in self.services if str(s.get("status", "")) in _RUNNING}
+        return [n for n in svc_names if n in running]
+
+    def _group_restart(self, svc_names: list[str]) -> None:
+        targets = self._running_in_group(svc_names)
+        if not targets:
+            QMessageBox.information(self, "Nothing running", "No services in this group are currently running.")
+            return
+        self._start_worker("restart", services=targets)
+
+    def _group_stop_running(self, svc_names: list[str]) -> None:
+        targets = self._running_in_group(svc_names)
+        if targets:
+            self._start_worker("stop", services=targets)
+
     def _attach_group_buttons(self, group_item: QTreeWidgetItem, profile_key: str, services: list[dict]) -> None:
         widget = QWidget()
         widget.setStyleSheet("background: transparent;")
@@ -489,6 +510,18 @@ class DockerPage(QWidget):
             localization_btn.setFixedHeight(26)
             localization_btn.clicked.connect(lambda: self._slam_switch("slam_localization"))
             layout.addWidget(localization_btn)
+
+            restart_btn = QPushButton("Restart")
+            restart_btn.setStyleSheet(_GRP_RESTART_STYLE)
+            restart_btn.setFixedHeight(26)
+            restart_btn.clicked.connect(lambda _=False, names=svc_names: self._group_restart(names))
+            layout.addWidget(restart_btn)
+
+            stop_btn = QPushButton("Stop")
+            stop_btn.setStyleSheet(_GRP_STOP_STYLE)
+            stop_btn.setFixedHeight(26)
+            stop_btn.clicked.connect(lambda _=False, names=svc_names: self._group_stop_running(names))
+            layout.addWidget(stop_btn)
         else:
             start_btn = QPushButton("Start")
             start_btn.setStyleSheet(_GRP_START_STYLE)
@@ -496,11 +529,17 @@ class DockerPage(QWidget):
             start_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("start", services=names))
             layout.addWidget(start_btn)
 
-        stop_btn = QPushButton("Stop")
-        stop_btn.setStyleSheet(_GRP_STOP_STYLE)
-        stop_btn.setFixedHeight(26)
-        stop_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("stop", services=names))
-        layout.addWidget(stop_btn)
+            restart_btn = QPushButton("Restart")
+            restart_btn.setStyleSheet(_GRP_RESTART_STYLE)
+            restart_btn.setFixedHeight(26)
+            restart_btn.clicked.connect(lambda _=False, names=svc_names: self._group_restart(names))
+            layout.addWidget(restart_btn)
+
+            stop_btn = QPushButton("Stop")
+            stop_btn.setStyleSheet(_GRP_STOP_STYLE)
+            stop_btn.setFixedHeight(26)
+            stop_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("stop", services=names))
+            layout.addWidget(stop_btn)
 
         self.tree.setItemWidget(group_item, 0, widget)
         group_item.setText(0, "")

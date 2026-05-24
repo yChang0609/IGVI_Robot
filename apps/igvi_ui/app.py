@@ -153,12 +153,12 @@ class MainWindow(QMainWindow):
         self.bridge_badge = StatusBadge("UI Bridge", "muted")
         self.battery_badge = StatusBadge("Battery: unknown", "muted")
         self.estop_btn = QPushButton("■ EMERGENCY STOP")
-        self.estop_btn.setObjectName("Danger")
         self.estop_btn.setCheckable(True)
         self.estop_btn.setFixedHeight(30)
         self.estop_btn.setFixedWidth(180)
         self.estop_btn.setToolTip("Stop the base and arm immediately. Click again to release.")
         self.estop_btn.clicked.connect(self._toggle_estop)
+        self.estop_btn.setStyleSheet(self._ESTOP_NORMAL)
         topbar_layout.addWidget(self.sensor_group)
         topbar_layout.addWidget(self.host_badge)
         topbar_layout.addWidget(self.docker_badge)
@@ -228,11 +228,23 @@ class MainWindow(QMainWindow):
             return
         self._apply_estop_button(bool(status.get("engaged", False)))
 
+    _ESTOP_NORMAL = (
+        "QPushButton { background: #14432a; color: #86efac; border: 1px solid #166534;"
+        " border-radius: 7px; font-weight: 600; }"
+        "QPushButton:hover { background: #166534; }"
+    )
+    _ESTOP_ENGAGED = (
+        "QPushButton { background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b;"
+        " border-radius: 7px; font-weight: 700; }"
+        "QPushButton:hover { background: #991b1b; }"
+    )
+
     def _apply_estop_button(self, engaged: bool) -> None:
         self.estop_btn.blockSignals(True)
         self.estop_btn.setChecked(engaged)
         self.estop_btn.blockSignals(False)
         self.estop_btn.setText("⚠ E-STOP ENGAGED" if engaged else "■ EMERGENCY STOP")
+        self.estop_btn.setStyleSheet(self._ESTOP_ENGAGED if engaged else self._ESTOP_NORMAL)
 
     def _toggle_estop(self) -> None:
         desired = self.estop_btn.isChecked()

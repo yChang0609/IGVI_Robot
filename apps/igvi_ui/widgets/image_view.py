@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QPixmap, QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -95,6 +95,24 @@ class ImageView(QWidget):
         self._active_topic: str | None = None
         self._build_ui()
 
+        # Start poller immediately — don't rely on showEvent (child widgets in a
+        # QStackedWidget receive ShowToParent, not Show, so showEvent is never called).
+        self._start_poller()
+
+        # Retry topic discovery while no topic is active (camera may start after UI).
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setInterval(5000)
+        self._retry_timer.timeout.connect(self._retry_topics_if_idle)
+        self._retry_timer.start()
+
+    def _start_poller(self) -> None:
+        if self._poller is None:
+            self._poller = _ImagePoller(self.client)
+            self._poller.frame_received.connect(self._on_frame)
+            self._poller.error.connect(self._on_error)
+            self._poller.set_topic(self._active_topic)
+            self._poller.start()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -125,23 +143,19 @@ class ImageView(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        if self._poller is None:
-            self._poller = _ImagePoller(self.client)
-            self._poller.frame_received.connect(self._on_frame)
-            self._poller.error.connect(self._on_error)
-            self._poller.set_topic(self._active_topic)
-            self._poller.start()
+        # Refresh topic list immediately when the tab becomes visible.
         self.refresh_topics()
 
-    def hideEvent(self, event) -> None:  # noqa: N802
-        super().hideEvent(event)
-        self.shutdown()
-
     def shutdown(self) -> None:
-        """Stop the poller thread. Idempotent; safe to call on app exit."""
+        """Stop background threads. Called explicitly on app exit."""
+        self._retry_timer.stop()
         if self._poller is not None:
             stop_thread(self._poller)
             self._poller = None
+
+    def _retry_topics_if_idle(self) -> None:
+        if not self._active_topic:
+            self.refresh_topics()
 
     # ── Topic management ──────────────────────────────────────────────────────
 
@@ -187,6 +201,7 @@ class ImageView(QWidget):
             self._poller.set_topic(topic)
         self.canvas.set_placeholder(f"Waiting for {topic}…")
         self.status.setText(f"Subscribed: {topic}")
+        self._retry_timer.stop()  # topic found — no need to keep retrying
 
     def _on_frame(self, payload: bytes, active: str) -> None:
         image = QImage.fromData(payload, "JPEG")
