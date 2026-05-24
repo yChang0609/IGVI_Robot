@@ -9,6 +9,7 @@ x-base-service: &base_service
 x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 x-grasp-source-volume: &grasp_source_volume ../../../robot_ws/src/wildbot_grasp:/workspace/src/wildbot_grasp:ro
 x-maps-volume: &maps_volume ${IGVI_DATA_ROOT}/maps:/maps:ro
+x-tuner-output-volume: &tuner_output_volume ../../../tuner_output:/tuner_output
 
 services:
   wildbot_grasp:
@@ -55,7 +56,7 @@ services:
 
   arena_mission_server:
     <<: *base_service
-    profiles: ["grasp"]
+    profiles: ["task_server"]
     x-description: "Arena capture mission orchestrator"
     image: wildbot_grasp:latest
     environment:
@@ -65,6 +66,20 @@ services:
       - *grasp_source_volume
       - *maps_volume
     command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp arena_mission_launch"]
+    restart: unless-stopped
+
+  open_door_server:
+    <<: *base_service
+    profiles: ["task_server"]
+    x-description: "Vision-guided door-opening FSM (red-bar HSV detector on /rgb/image_raw + /depth_to_rgb)"
+    image: wildbot_grasp:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - *grasp_source_volume
+      - *tuner_output_volume
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp open_door_server"]
     restart: unless-stopped
 
 networks:

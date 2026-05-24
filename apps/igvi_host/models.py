@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -111,6 +111,45 @@ class RosActionResponse(BaseModel):
     ok: bool
     action: str
     message: str
+
+
+class ParamsSetRequest(BaseModel):
+    node: str
+    # Scalars (HSV ints, debug bool) or arrays (arm poses like [167.0, 80.0, 170.6]).
+    params: dict[str, Any]
+
+
+class OpenDoorGoalRequest(BaseModel):
+    ready_distance_m: float = 0.0
+
+
+class OpenDoorStatusResponse(BaseModel):
+    ok: bool = True
+    available: bool = False
+    state: str = "unavailable"
+    stage: str = ""
+    message: str = ""
+    progress: float = 0.0
+
+
+class DoorMissionStartRequest(BaseModel):
+    # Integrated nav → open_door task: drive to the named waypoint, then run
+    # the open_door action. Defaults match the standard door_approach setup.
+    waypoint: str = "door_approach"
+    ready_distance_m: float = 0.0
+
+
+class DoorMissionStatusResponse(BaseModel):
+    ok: bool = True
+    active: bool = False
+    # idle | navigating | driving | opening | succeeded | failed | canceled
+    phase: str = "idle"
+    waypoint: str = ""
+    ready_distance_m: float = 0.0
+    message: str = ""
+    # Nested snapshots so a UI can render everything from one polled GET.
+    nav: dict[str, Any] = Field(default_factory=dict)
+    open_door: dict[str, Any] = Field(default_factory=dict)
 
 
 class ComposeProgressResponse(BaseModel):

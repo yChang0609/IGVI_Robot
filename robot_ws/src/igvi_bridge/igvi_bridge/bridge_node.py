@@ -24,6 +24,8 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Twi
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
@@ -33,10 +35,55 @@ from std_msgs.msg import Bool, Empty, Float64MultiArray, String
 from std_srvs.srv import Empty as EmptySrv
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+from .door_mission import DoorMissionCoordinator
+from .open_door_proxy import OpenDoorProxy
+
 try:
     from PIL import Image as PILImage  # type: ignore
 except ImportError:  # pragma: no cover
     PILImage = None  # type: ignore
+
+def _make_parameter(name: str, value: Any) -> Parameter:
+    """Wrap a Python value in an rcl_interfaces/msg/Parameter.
+
+    Scalars map to BOOL/INTEGER/DOUBLE/STRING; lists map to the matching array
+    type. Numeric lists (e.g. arm poses like [167.0, 80.0, 170.6]) become
+    DOUBLE_ARRAY so float angles survive intact.
+    """
+    p = Parameter()
+    p.name = name
+    pv = ParameterValue()
+    if isinstance(value, bool):  # must precede int — bool is an int subclass
+        pv.type = ParameterType.PARAMETER_BOOL
+        pv.bool_value = value
+    elif isinstance(value, int):
+        pv.type = ParameterType.PARAMETER_INTEGER
+        pv.integer_value = int(value)
+    elif isinstance(value, float):
+        pv.type = ParameterType.PARAMETER_DOUBLE
+        pv.double_value = float(value)
+    elif isinstance(value, str):
+        pv.type = ParameterType.PARAMETER_STRING
+        pv.string_value = value
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+        if items and all(isinstance(v, bool) for v in items):
+            pv.type = ParameterType.PARAMETER_BOOL_ARRAY
+            pv.bool_array_value = [bool(v) for v in items]
+        elif items and all(isinstance(v, str) for v in items):
+            pv.type = ParameterType.PARAMETER_STRING_ARRAY
+            pv.string_array_value = [str(v) for v in items]
+        elif items and all(isinstance(v, int) and not isinstance(v, bool) for v in items):
+            pv.type = ParameterType.PARAMETER_INTEGER_ARRAY
+            pv.integer_array_value = [int(v) for v in items]
+        else:
+            # Default numeric/empty/mixed-numeric lists to double array.
+            pv.type = ParameterType.PARAMETER_DOUBLE_ARRAY
+            pv.double_array_value = [float(v) for v in items]
+    else:
+        raise ValueError(f"unsupported parameter value type for {name}: {type(value).__name__}")
+    p.value = pv
+    return p
 
 _MAP_QOS = QoSProfile(
     depth=1,
@@ -84,6 +131,12 @@ class BridgeNode(Node):
         self._nav_goal_handle = None
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
+        self._nav_goal_token = 0
+
+        self._open_door = OpenDoorProxy(
+            self,
+            on_result=lambda state, message: self._door_mission.on_open_door_result(state, message),
+        )
 
         self._search_lock = threading.Lock()
         self._search_state: str = "idle"
@@ -107,6 +160,15 @@ class BridgeNode(Node):
 
         self._waypoints_lock = threading.Lock()
         self._waypoints: dict[str, dict[str, float]] = self._load_waypoints()
+        self._door_mission = DoorMissionCoordinator(
+            get_waypoint=self._get_waypoint,
+            send_nav_goal=self._send_door_mission_nav_goal,
+            cancel_nav_goal=self.cancel_nav_goal,
+            snapshot_nav=self.snapshot_nav,
+            send_open_door_goal=self.send_open_door_goal,
+            cancel_open_door_goal=self.cancel_open_door_goal,
+            snapshot_open_door=self.snapshot_open_door,
+        )
 
         self._arm_temp_lock = threading.Lock()
         self._arm_temperatures: list[float] = []
@@ -176,6 +238,10 @@ class BridgeNode(Node):
         # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
         # /cmd_vel output onto /base_controller/cmd_vel for the wheel driver.
         self._motion_cmd_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        # Drops any path motion_arbiter is currently tracking — used when a
+        # door mission is canceled mid-drive, since canceling the (already
+        # complete) Nav2 goal does not stop the pure-pursuit executor.
+        self._motion_clear_path_pub = self.create_publisher(Empty, "/motion/clear_path", 10)
         self._wheel_cmd_pub = self.create_publisher(TwistStamped, "/base_controller/cmd_vel", 10)
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
@@ -288,7 +354,13 @@ class BridgeNode(Node):
         self._wheel_cmd_pub.publish(msg)
 
     def _on_motion_state(self, msg) -> None:  # std_msgs/String
-        self._motion_state = str(getattr(msg, "data", ""))
+        state = str(getattr(msg, "data", ""))
+        self._motion_state = state
+        # Door mission waits in its "driving" phase for motion_arbiter to
+        # finish executing the plan — Nav2's plan-only stack returns SUCCEEDED
+        # at planning time, so this is the only signal that the robot is
+        # actually at the goal.
+        self._door_mission.on_motion_state(state)
 
     def _on_arm_temperatures(self, msg: Float64MultiArray) -> None:
         now = self.get_clock().now().nanoseconds / 1_000_000_000.0
@@ -617,6 +689,99 @@ class BridgeNode(Node):
         done.wait(timeout=3.0)
         return bool(result["ok"]), str(result["message"])
 
+    # ── Remote ROS parameter setting (live tuning) ────────────────────────────
+
+    def set_remote_parameters(
+        self, node_name: str, params: dict[str, Any]
+    ) -> tuple[bool, str]:
+        """Set parameters on another node via its /<node>/set_parameters service.
+
+        Used by the UI to live-tune detectors and controllers (e.g. open_door's
+        HSV thresholds) without redeploying. Values may be bool/int/float/str;
+        the type is inferred per call.
+        """
+        if not node_name:
+            return False, "node name required"
+        service_name = f"/{node_name.strip('/')}/set_parameters"
+        client = self.create_client(SetParameters, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=1.0):
+                return False, f"service {service_name} not available"
+
+            request = SetParameters.Request()
+            for name, value in params.items():
+                try:
+                    request.parameters.append(_make_parameter(name, value))
+                except ValueError as exc:
+                    return False, str(exc)
+
+            done = threading.Event()
+            outcome: dict[str, Any] = {"ok": False, "message": "set_parameters timed out"}
+            future = client.call_async(request)
+
+            def _finished(_future: Any) -> None:
+                try:
+                    response = _future.result()
+                    failures = [
+                        f"{p.name}: {r.reason or 'rejected'}"
+                        for p, r in zip(request.parameters, response.results)
+                        if not r.successful
+                    ]
+                    if failures:
+                        outcome["message"] = "; ".join(failures)
+                    else:
+                        outcome["ok"] = True
+                        outcome["message"] = (
+                            f"set {len(request.parameters)} parameter(s) on {node_name}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    outcome["message"] = f"set_parameters failed: {exc}"
+                finally:
+                    done.set()
+
+            future.add_done_callback(_finished)
+            done.wait(timeout=3.0)
+            return bool(outcome["ok"]), str(outcome["message"])
+        finally:
+            # Don't leak service clients across many tuning calls.
+            self.destroy_client(client)
+
+    # ── Open-door action (red-bar FSM trigger) ────────────────────────────────
+
+    def snapshot_open_door(self) -> dict[str, Any]:
+        return self._open_door.snapshot()
+
+    def send_open_door_goal(self, ready_distance_m: float = 0.0) -> tuple[bool, str]:
+        return self._open_door.send_goal(ready_distance_m)
+
+    def cancel_open_door_goal(self) -> tuple[bool, str]:
+        return self._open_door.cancel_goal()
+
+    # ── Door mission API proxy ───────────────────────────────────────────────
+
+    def start_door_mission(
+        self, waypoint: str = "door_approach", ready_distance_m: float = 0.0
+    ) -> tuple[bool, str]:
+        return self._door_mission.start(waypoint, ready_distance_m)
+
+    def cancel_door_mission(self) -> tuple[bool, str]:
+        # If the mission is mid-drive, the Nav2 goal is already complete and
+        # canceling it is a no-op; the actual stop signal motion_arbiter
+        # respects is /motion/clear_path.
+        phase = self._door_mission.snapshot().get("phase", "")
+        if phase == "driving":
+            self._motion_clear_path_pub.publish(Empty())
+        return self._door_mission.cancel()
+
+    def snapshot_door_mission(self) -> dict[str, Any]:
+        return self._door_mission.snapshot()
+
+    def save_open_door_poses(self) -> tuple[bool, str]:
+        return self._open_door.save_poses()
+
+    def call_open_door_step(self, step: str) -> tuple[bool, str]:
+        return self._open_door.call_step(step)
+
     # ── Waypoints (named map-frame poses, persisted to /maps) ─────────────────
 
     def _load_waypoints(self) -> dict[str, dict[str, float]]:
@@ -659,6 +824,11 @@ class BridgeNode(Node):
     def list_waypoints(self) -> dict[str, dict[str, float]]:
         with self._waypoints_lock:
             return {k: dict(v) for k, v in self._waypoints.items()}
+
+    def _get_waypoint(self, name: str) -> dict[str, float] | None:
+        with self._waypoints_lock:
+            wp = self._waypoints.get(str(name).strip())
+            return dict(wp) if wp else None
 
     def save_waypoint(
         self,
@@ -714,11 +884,22 @@ class BridgeNode(Node):
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
 
     def send_nav_goal(self, x: float, y: float, yaw: float) -> tuple[bool, str]:
+        ok, msg, _token = self._dispatch_nav_goal(x, y, yaw)
+        return ok, msg
+
+    def _send_door_mission_nav_goal(
+        self, x: float, y: float, yaw: float
+    ) -> tuple[bool, str, int | None]:
+        return self._dispatch_nav_goal(x, y, yaw)
+
+    def _dispatch_nav_goal(
+        self, x: float, y: float, yaw: float
+    ) -> tuple[bool, str, int | None]:
         if not self._nav_client.server_is_ready():
             if not self._nav_client.wait_for_server(timeout_sec=3.5):
                 hint = self._nav_diagnostic_hint()
                 self._update_nav_state("unavailable", hint)
-                return False, hint
+                return False, hint, None
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = "map"
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
@@ -728,12 +909,14 @@ class BridgeNode(Node):
         goal_msg.pose.pose.orientation.z = math.sin(half)
         goal_msg.pose.pose.orientation.w = math.cos(half)
         with self._nav_lock:
+            self._nav_goal_token += 1
+            goal_token = self._nav_goal_token
             self._nav_goal = {"x": float(x), "y": float(y), "yaw": float(yaw)}
             self._nav_feedback = {}
         self._update_nav_state("sending", "goal dispatched")
         future = self._nav_client.send_goal_async(goal_msg, feedback_callback=self._on_nav_feedback)
-        future.add_done_callback(self._on_nav_response)
-        return True, "goal dispatched"
+        future.add_done_callback(lambda done, token=goal_token: self._on_nav_response(done, token))
+        return True, "goal dispatched", goal_token
 
     def cancel_nav_goal(self) -> tuple[bool, str]:
         with self._nav_lock:
@@ -1204,26 +1387,37 @@ class BridgeNode(Node):
                 self._nav_state = "navigating"
                 self._nav_message = "executing"
 
-    def _on_nav_response(self, future: Any) -> None:
+    def _on_nav_response(self, future: Any, goal_token: int) -> None:
         try:
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("failed", f"send error: {exc}")
             return
         if not goal_handle.accepted:
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("rejected", "goal rejected by server")
             return
         with self._nav_lock:
+            if goal_token != self._nav_goal_token:
+                return
             self._nav_goal_handle = goal_handle
             self._nav_state = "accepted"
             self._nav_message = "goal accepted"
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_nav_result)
+        result_future.add_done_callback(lambda done, token=goal_token: self._on_nav_result(done, token))
 
-    def _on_nav_result(self, future: Any) -> None:
+    def _on_nav_result(self, future: Any, goal_token: int) -> None:
         try:
             wrapped = future.result()
         except Exception as exc:  # noqa: BLE001
+            with self._nav_lock:
+                if goal_token != self._nav_goal_token:
+                    return
             self._update_nav_state("failed", f"result error: {exc}")
             with self._nav_lock:
                 self._nav_goal_handle = None
@@ -1235,9 +1429,12 @@ class BridgeNode(Node):
         }
         state, message = status_map.get(wrapped.status, ("failed", f"status {wrapped.status}"))
         with self._nav_lock:
+            if goal_token != self._nav_goal_token:
+                return
             self._nav_state = state
             self._nav_message = message
             self._nav_goal_handle = None
+        self._door_mission.on_nav_result(goal_token, state, message)
 
     def _on_nav_cancel_response(self, future: Any) -> None:
         try:
@@ -1396,6 +1593,10 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_arm_temperatures())
             elif path == "/api/imu/calibration":
                 self._json(node.snapshot_imu_calibration())
+            elif path == "/api/open_door/status":
+                self._json(node.snapshot_open_door())
+            elif path == "/api/door_mission/status":
+                self._json(node.snapshot_door_mission())
             elif path == "/api/image/topics":
                 self._json({"topics": node.list_image_topics()})
             elif path == "/api/image/frame":
@@ -1533,6 +1734,39 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/imu/calibration/start":
                 node.start_imu_calibration()
                 self._json({"ok": True, "action": "imu_calibration_start", "message": "IMU calibration window started"})
+            elif path == "/api/params/set":
+                target_node = str(body.get("node", "")).strip()
+                params = body.get("params") or {}
+                if not target_node or not isinstance(params, dict) or not params:
+                    self.send_response(400)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(b"node and non-empty params dict required")
+                    return
+                ok, msg = node.set_remote_parameters(target_node, params)
+                self._json({"ok": ok, "action": "params_set", "message": msg})
+            elif path == "/api/open_door/start":
+                ok, msg = node.send_open_door_goal(float(body.get("ready_distance_m", 0.0)))
+                self._json({"ok": ok, "action": "open_door_start", "message": msg})
+            elif path == "/api/open_door/cancel":
+                ok, msg = node.cancel_open_door_goal()
+                self._json({"ok": ok, "action": "open_door_cancel", "message": msg})
+            elif path == "/api/open_door/save_poses":
+                ok, msg = node.save_open_door_poses()
+                self._json({"ok": ok, "action": "open_door_save_poses", "message": msg})
+            elif path == "/api/open_door/step":
+                step = str(body.get("step", ""))
+                ok, msg = node.call_open_door_step(step)
+                self._json({"ok": ok, "action": f"open_door_{step}", "message": msg})
+            elif path == "/api/door_mission/start":
+                ok, msg = node.start_door_mission(
+                    waypoint=str(body.get("waypoint", "door_approach")),
+                    ready_distance_m=float(body.get("ready_distance_m", 0.0)),
+                )
+                self._json({"ok": ok, "action": "door_mission_start", "message": msg})
+            elif path == "/api/door_mission/cancel":
+                ok, msg = node.cancel_door_mission()
+                self._json({"ok": ok, "action": "door_mission_cancel", "message": msg})
             elif path == "/api/semantic_memory/clear":
                 ok, msg = node.clear_semantic_memory()
                 self._json({"ok": ok, "action": "semantic_memory_clear", "message": msg})

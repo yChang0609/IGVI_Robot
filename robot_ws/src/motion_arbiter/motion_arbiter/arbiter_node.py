@@ -1,10 +1,12 @@
 """Motion arbiter: unified controller for path tracking and manual override.
 
 Subscribes:
-  /plan        nav_msgs/Path                       — global plan from nav2 planner
-  /motion/cmd  geometry_msgs/Twist                 — manual override command
-  /amcl_pose   geometry_msgs/PoseWithCovarianceStamped  — map-frame pose (preferred)
-  /odom        nav_msgs/Odometry                   — fallback pose + velocity feedback
+  /plan             nav_msgs/Path        — global plan from nav2 planner (empty = clear)
+  /motion/cmd       geometry_msgs/Twist  — manual override command
+  /motion/clear_path std_msgs/Empty      — explicit "drop the stored path" signal
+  /estop            std_msgs/Bool        — latched emergency stop
+
+Pose is read from TF (path frame → base_link).
 
 Publishes:
   /cmd_vel              geometry_msgs/TwistStamped — final wheel velocity command
@@ -13,8 +15,10 @@ Publishes:
 State machine:
   IDLE          → no path, no manual cmd
   PATH_TRACKING → following stored path via pure pursuit
+  ALIGNING      → at goal position, correcting final heading / longitudinal drift
   OVERRIDE      → path retained, manual cmd active (suspends tracking)
   MANUAL        → no path, manual cmd active
+  ESTOP         → emergency stop engaged; output hard-zeroed
 
 A non-zero Twist on /motion/cmd while PATH_TRACKING → OVERRIDE.
 After `override_timeout` seconds without a new cmd (or a zero Twist), OVERRIDE → PATH_TRACKING.
@@ -38,7 +42,7 @@ from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Empty, String
 
 # Latched QoS matching the bridge's /estop publisher so we receive the current
 # state immediately on subscribe, even if the arbiter starts after the bridge.
@@ -108,6 +112,7 @@ class MotionArbiter(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
+        self.create_subscription(Empty, "/motion/clear_path", self._on_clear_path, 10)
         self.create_subscription(Bool, "/estop", self._on_estop, _ESTOP_QOS)
 
         self._tf_buffer = tf2_ros.Buffer()
@@ -184,6 +189,25 @@ class MotionArbiter(Node):
             else:
                 self._state = State.OVERRIDE if self._path else State.MANUAL
 
+    def _on_clear_path(self, _msg: Empty) -> None:
+        # External "abort tracking" signal on a dedicated topic (e.g. open_door
+        # taking control, or a canceled door mission). Equivalent to receiving
+        # an empty Path on /plan, but lets a node that doesn't publish /plan
+        # (the bridge) drop a stale path. Without this, a stored plan resumes
+        # via PATH_TRACKING once override_timeout elapses between commands.
+        with self._lock:
+            had_path = bool(self._path)
+            self._path = []
+            self._path_index = 0
+            if self._estop:
+                self._state = State.ESTOP
+            elif self._state in (State.PATH_TRACKING, State.ALIGNING, State.OVERRIDE):
+                self._state = (
+                    State.MANUAL if self._state == State.OVERRIDE else State.IDLE
+                )
+        if had_path:
+            self.get_logger().info("Path cleared via /motion/clear_path")
+
     def _on_estop(self, msg: Bool) -> None:
         engaged = bool(msg.data)
         with self._lock:
@@ -245,7 +269,7 @@ class MotionArbiter(Node):
                 )
             except TransformException as ex:
                 self.get_logger().warn(f"Could not get transform to base_link: {ex}")
-            
+
             if pose is None:
                 desired_vx, desired_wz = 0.0, 0.0
             else:
@@ -318,11 +342,11 @@ class MotionArbiter(Node):
         gx, gy, gyaw = path[-1]
         goal_tol = float(self.get_parameter("goal_tolerance").value)
         dist_to_goal = math.hypot(gx - x, gy - y)
-        
+
         is_at_goal = dist_to_goal < goal_tol
         if current_state == State.ALIGNING and dist_to_goal < goal_tol * 2.5:
             is_at_goal = True
-            
+
         if is_at_goal:
             yaw_tol = float(self.get_parameter("yaw_tolerance").value)
             heading_error = _wrap_angle(gyaw - yaw)

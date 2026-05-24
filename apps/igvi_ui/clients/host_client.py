@@ -166,6 +166,53 @@ class HostClient:
             raise HostClientError(str(exc)) from exc
 
 
+    def set_params(self, node: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/params/set", {"node": node, "params": params}
+        )
+
+    def open_door_start(self, ready_distance_m: float = 0.0) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/open_door/start", {"ready_distance_m": ready_distance_m}
+        )
+
+    def open_door_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/cancel", {})
+
+    def open_door_save_poses(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/save_poses", {}, timeout=6.0)
+
+    def open_door_step(self, step: str) -> dict[str, Any]:
+        # run_press / run_push / go_home block server-side; allow the push its
+        # full duration plus headroom before the HTTP call gives up.
+        return self.request(
+            "POST", f"/api/ros/open_door/step/{step}", {}, timeout=40.0
+        )
+
+    def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
+
+    # ── Door mission: integrated nav → open_door (single task) ──────────────
+    # The surface a UI uses to fire the whole door task at once. `start`
+    # dispatches nav to the named waypoint (default "door_approach"); when nav
+    # succeeds the bridge automatically kicks off open_door. Poll `status` for
+    # phase = idle | navigating | opening | succeeded | failed | canceled.
+
+    def door_mission_start(
+        self, waypoint: str = "door_approach", ready_distance_m: float = 0.0
+    ) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/door_mission/start",
+            {"waypoint": waypoint, "ready_distance_m": ready_distance_m},
+            timeout=6.0,
+        )
+
+    def door_mission_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/door_mission/cancel", {}, timeout=4.0)
+
+    def door_mission_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/door_mission/status", timeout=timeout)
+
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
 

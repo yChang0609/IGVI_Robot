@@ -7,6 +7,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GrabObject.action"
+  "action/OpenDoor.action"
   "action/SearchAndRetrieve.action"
   "action/BridgeRetrieve.action"
 )
@@ -17,6 +18,8 @@ install(PROGRAMS
   scripts/grab_object_server
   scripts/gripper_command
   scripts/arm_safeguard_node
+  scripts/open_door_server
+  scripts/tune_open_door
   scripts/search_retrieve_server
   scripts/search_retrieve_launch
   scripts/bridge_retrieve_server

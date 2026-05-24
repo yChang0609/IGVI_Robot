@@ -43,6 +43,11 @@ from .models import (
     LogsResponse,
     NavGoalRequest,
     NavStatusResponse,
+    DoorMissionStartRequest,
+    DoorMissionStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -463,6 +468,44 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
             return Response(status_code=204, headers=headers)
         return Response(content=payload, media_type="image/jpeg", headers=headers)
 
+
+    @app.post("/api/ros/params/set", response_model=RosActionResponse)
+    async def ros_params_set(request: ParamsSetRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.set_ros_parameters(request))
+
+    @app.post("/api/ros/open_door/start", response_model=RosActionResponse)
+    async def ros_open_door_start(request: OpenDoorGoalRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_start(request))
+
+    @app.post("/api/ros/open_door/cancel", response_model=RosActionResponse)
+    async def ros_open_door_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_cancel())
+
+    @app.post("/api/ros/open_door/save_poses", response_model=RosActionResponse)
+    async def ros_open_door_save_poses() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_save_poses())
+
+    @app.post("/api/ros/open_door/step/{step}", response_model=RosActionResponse)
+    async def ros_open_door_step(step: str) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_step(step))
+
+    @app.get("/api/ros/open_door/status", response_model=OpenDoorStatusResponse)
+    async def ros_open_door_status() -> OpenDoorStatusResponse:
+        return await RobotBridgeClient(current_settings()).open_door_status()
+
+    # Integrated door mission: drive to a waypoint, then run open_door.
+    # Future UIs can drive the whole task with these three endpoints alone.
+    @app.post("/api/ros/door_mission/start", response_model=RosActionResponse)
+    async def ros_door_mission_start(request: DoorMissionStartRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.door_mission_start(request))
+
+    @app.post("/api/ros/door_mission/cancel", response_model=RosActionResponse)
+    async def ros_door_mission_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.door_mission_cancel())
+
+    @app.get("/api/ros/door_mission/status", response_model=DoorMissionStatusResponse)
+    async def ros_door_mission_status() -> DoorMissionStatusResponse:
+        return await RobotBridgeClient(current_settings()).door_mission_status()
 
     @app.get("/api/ros/arm/temperatures", response_model=ArmTemperaturesResponse)
     async def ros_arm_temperatures() -> ArmTemperaturesResponse:

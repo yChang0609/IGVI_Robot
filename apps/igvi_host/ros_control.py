@@ -12,10 +12,15 @@ from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
     CmdVelRequest,
+    DoorMissionStartRequest,
+    DoorMissionStatusResponse,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
     NavGoalRequest,
     NavStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -468,4 +473,132 @@ class RobotBridgeClient:
             ok=bool(result.get("ok", False)),
             action=str(result.get("action", "imu_calibration_start")),
             message=str(result.get("message", "")),
+        )
+
+    async def set_ros_parameters(self, request: ParamsSetRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/params/set",
+            {"node": request.node, "params": request.params},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "params_set")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_start(self, request: OpenDoorGoalRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/open_door/start",
+            {"ready_distance_m": request.ready_distance_m},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/cancel", {}, 3.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_save_poses(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/save_poses", {}, 5.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_save_poses")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_step(self, step: str) -> RosActionResponse:
+        # run_press / run_push / go_home block server-side (push drives the base
+        # for push_duration_sec); give the bridge call generous headroom.
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/step", {"step": step}, 35.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", f"open_door_{step}")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_status(self) -> OpenDoorStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/open_door/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return OpenDoorStatusResponse(
+                ok=False, available=False, state="unavailable", message=f"bridge unavailable: {exc}"
+            )
+        return OpenDoorStatusResponse(
+            ok=True,
+            available=bool(data.get("available", False)),
+            state=str(data.get("state", "unavailable")),
+            stage=str(data.get("stage", "")),
+            message=str(data.get("message", "")),
+            progress=float(data.get("progress", 0.0)),
+        )
+
+    # ── Door mission: chained nav → open_door, single task surface ──────────
+
+    async def door_mission_start(self, request: DoorMissionStartRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/door_mission/start",
+            {"waypoint": request.waypoint, "ready_distance_m": request.ready_distance_m},
+            5.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/door_mission/cancel", {}, 3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_status(self) -> DoorMissionStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/door_mission/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return DoorMissionStatusResponse(
+                ok=False, active=False, phase="unavailable",
+                message=f"bridge unavailable: {exc}",
+            )
+        return DoorMissionStatusResponse(
+            ok=True,
+            active=bool(data.get("active", False)),
+            phase=str(data.get("phase", "idle")),
+            waypoint=str(data.get("waypoint", "")),
+            ready_distance_m=float(data.get("ready_distance_m", 0.0)),
+            message=str(data.get("message", "")),
+            nav=dict(data.get("nav") or {}),
+            open_door=dict(data.get("open_door") or {}),
         )

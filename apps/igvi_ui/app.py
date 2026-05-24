@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 
 from igvi_ui.clients.host_client import HostClient, HostClientError
 from igvi_ui.pages.docker_page import DockerPage
+from igvi_ui.pages.door_page import DoorPage
 from igvi_ui.pages.robot_page import RobotPage
 from igvi_ui.pages.settings_page import SettingsPage
 from igvi_ui.theme import build_style_sheet
@@ -108,9 +109,12 @@ class MainWindow(QMainWindow):
         self.buttons: list[QPushButton] = []
         docker_page = DockerPage(self.client)
         docker_page.log_message.connect(self.set_status_message)
+        door_page = DoorPage(self.client)
+        door_page.log_message.connect(self.set_status_message)
         pages = [
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
+            ("Door", door_page),
             ("Settings", SettingsPage(self.client)),
         ]
         for index, (label, page) in enumerate(pages):

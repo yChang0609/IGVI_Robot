@@ -151,3 +151,5 @@ video.txt
 slam/*
 migraphx_cache/*
 maps/waypoints.yaml
+
+models/eto_eye/best.onnx
