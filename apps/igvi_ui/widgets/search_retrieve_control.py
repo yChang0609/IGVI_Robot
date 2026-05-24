@@ -292,7 +292,7 @@ class SearchRetrieveControl(QWidget):
             else:
                 self.arena_status_label.setText(f"Arena State: {state}\n{msg}")
                 
-            if state == "idle":
+            if state in ("idle", "error"):
                 self.start_arena_btn.setEnabled(True)
                 self.cancel_arena_btn.setEnabled(False)
         except HostClientError:

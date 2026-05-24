@@ -1371,7 +1371,7 @@ class BridgeNode(Node):
 
     def send_arena_mission_goal(self) -> tuple[bool, str]:
         with self._arena_mission_lock:
-            if self._arena_mission_state not in ("idle", "unavailable"):
+            if self._arena_mission_state not in ("idle", "unavailable", "error"):
                 return False, f"Cannot start: already in state '{self._arena_mission_state}'"
 
         if not self._arena_mission_client.server_is_ready():
@@ -1428,7 +1428,7 @@ class BridgeNode(Node):
             goal_handle = future.result()
             with self._arena_mission_lock:
                 if not goal_handle.accepted:
-                    self._update_arena_mission_state("error", "goal rejected by server")
+                    self._update_arena_mission_state("idle", "goal rejected by server; retry allowed")
                     return
                 self._arena_mission_goal_handle = goal_handle
             self._update_arena_mission_state("active", "goal accepted")
@@ -1448,6 +1448,8 @@ class BridgeNode(Node):
                     f"finished (status {status}): {result.message} (success={result.success})"
                 )
         except Exception as exc:
+            with self._arena_mission_lock:
+                self._arena_mission_goal_handle = None
             self._update_arena_mission_state("error", f"result processing failed: {exc}")
 
     # ── Semantic Memory ──────────────────────────────────────────────────────
