@@ -36,6 +36,7 @@ class BridgeRetrieveControl(QWidget):
         self._bridge_pick_armed = False
         self._door_pick_armed = False
         self._return_pick_armed = False
+        self._home_pick_armed = False
         self._active_bridge_task: str | None = None
         self.map_2d.waypoint_point_picked.connect(self._on_point_picked)
         self._status_timer = QTimer(self)
@@ -48,6 +49,7 @@ class BridgeRetrieveControl(QWidget):
         self._disarm_bridge_pick()
         self._disarm_door_pick()
         self._disarm_return_pick()
+        self._disarm_home_pick()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -74,32 +76,37 @@ class BridgeRetrieveControl(QWidget):
         self.target_label = QLabel("xiong_qiao")
         self.target_label.setObjectName("Muted")
         target_grid.addWidget(self.target_label, 0, 1)
-        target_grid.addWidget(QLabel("Bridge point:"), 1, 0)
+        target_grid.addWidget(QLabel("Home point:"), 1, 0)
+        self.home_point_label = QLabel("not set")
+        self.home_point_label.setObjectName("Muted")
+        target_grid.addWidget(self.home_point_label, 1, 1)
+        target_grid.addWidget(QLabel("Bridge point:"), 2, 0)
         self.bridge_point_label = QLabel("not set")
         self.bridge_point_label.setObjectName("Muted")
-        target_grid.addWidget(self.bridge_point_label, 1, 1)
-        target_grid.addWidget(QLabel("Door ref point:"), 2, 0)
+        target_grid.addWidget(self.bridge_point_label, 2, 1)
+        target_grid.addWidget(QLabel("Door ref point:"), 3, 0)
         self.door_ref_label = QLabel("not set")
         self.door_ref_label.setObjectName("Muted")
-        target_grid.addWidget(self.door_ref_label, 2, 1)
-        target_grid.addWidget(QLabel("Return path:"), 3, 0)
+        target_grid.addWidget(self.door_ref_label, 3, 1)
+        target_grid.addWidget(QLabel("Return path:"), 4, 0)
         self.return_path_label = QLabel("none")
         self.return_path_label.setObjectName("Muted")
-        target_grid.addWidget(self.return_path_label, 3, 1)
+        target_grid.addWidget(self.return_path_label, 4, 1)
         layout.addLayout(target_grid)
 
         # Group: Home + return-path setup.
         home_group = QGroupBox("Home & Return Path")
         home_layout = QGridLayout(home_group)
         home_layout.setSpacing(8)
-        self.home_btn = QPushButton("Home")
-        self.home_btn.clicked.connect(self._save_home)
+        self.home_pick_btn = QPushButton("Set Home Point")
+        self.home_pick_btn.setCheckable(True)
+        self.home_pick_btn.clicked.connect(self._toggle_home_pick)
         self.return_pick_btn = QPushButton("Add Return Point")
         self.return_pick_btn.setCheckable(True)
         self.return_pick_btn.clicked.connect(self._toggle_return_pick)
         self.return_clear_btn = QPushButton("Clear Return Path")
         self.return_clear_btn.clicked.connect(self._clear_return_path)
-        home_layout.addWidget(self.home_btn, 0, 0, 1, 2)
+        home_layout.addWidget(self.home_pick_btn, 0, 0, 1, 2)
         home_layout.addWidget(self.return_pick_btn, 1, 0)
         home_layout.addWidget(self.return_clear_btn, 1, 1)
         layout.addWidget(home_group)
@@ -144,6 +151,14 @@ class BridgeRetrieveControl(QWidget):
             return
 
         self.map_2d.update_waypoints(waypoints)
+        home_wp = waypoints.get(HOME_WAYPOINT_NAME)
+        if home_wp:
+            self.home_point_label.setText(
+                f"x {home_wp.get('x', 0.0):.2f}  y {home_wp.get('y', 0.0):.2f}  yaw {home_wp.get('yaw', 0.0):.2f}"
+            )
+        else:
+            self.home_point_label.setText("not set")
+
         bridge_wp = waypoints.get(BRIDGE_WAYPOINT_NAME)
         if bridge_wp:
             self.bridge_point_label.setText(
@@ -193,19 +208,24 @@ class BridgeRetrieveControl(QWidget):
         value = self.waypoint_combo.currentData()
         return str(value or "")
 
-    def _save_home(self) -> None:
-        try:
-            result = self.client.save_waypoint(HOME_WAYPOINT_NAME)
-        except HostClientError as exc:
-            QMessageBox.warning(self, "Home failed", str(exc))
-            return
-
-        msg = str(result.get("message", ""))
-        if result.get("ok"):
-            self.status_label.setText(f"Home saved: {msg}")
-            self.refresh_waypoints()
+    def _toggle_home_pick(self) -> None:
+        if self.home_pick_btn.isChecked():
+            self._disarm_bridge_pick()
+            self._disarm_door_pick()
+            self._disarm_return_pick()
+            self._home_pick_armed = True
+            self.map_2d.set_pick_mode(True)
+            self.home_pick_btn.setText("Click Map for Home...")
+            self.status_label.setText("Click the map to save home point (drag for yaw).")
         else:
-            QMessageBox.warning(self, "Home rejected", msg or "unknown error")
+            self._disarm_home_pick()
+
+    def _disarm_home_pick(self) -> None:
+        if self._home_pick_armed:
+            self._home_pick_armed = False
+            self.map_2d.set_pick_mode(False)
+        self.home_pick_btn.setChecked(False)
+        self.home_pick_btn.setText("Set Home Point")
 
     def _toggle_bridge_pick(self) -> None:
         if self.bridge_pick_btn.isChecked():
@@ -305,6 +325,11 @@ class BridgeRetrieveControl(QWidget):
     def _on_point_picked(self, x: float, y: float, yaw: float) -> None:
         if self._return_pick_armed:
             self._append_return_point(x, y, yaw)
+        elif self._home_pick_armed:
+            self._disarm_home_pick()
+            self._save_picked_waypoint(
+                HOME_WAYPOINT_NAME, x, y, yaw, "Home point", select=False
+            )
         elif self._door_pick_armed:
             self._disarm_door_pick()
             self._save_picked_waypoint(
@@ -442,5 +467,6 @@ class BridgeRetrieveControl(QWidget):
         self._disarm_bridge_pick()
         self._disarm_door_pick()
         self._disarm_return_pick()
+        self._disarm_home_pick()
         self._active_bridge_task = None
         self._status_timer.stop()
