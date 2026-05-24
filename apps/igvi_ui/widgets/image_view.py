@@ -143,6 +143,7 @@ class ImageView(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._start_poller()
         # Refresh topic list immediately when the tab becomes visible.
         self.refresh_topics()
 

@@ -506,12 +506,17 @@ class BridgeNode(Node):
         topics = self.get_topic_names_and_types()
         out: list[str] = []
         for name, types in topics:
-            if "sensor_msgs/msg/Image" in types:
-                out.append(name)
-            elif (
-                name == ANNOTATED_IMAGE_TOPIC
-                and "sensor_msgs/msg/CompressedImage" in types
-            ):
+            try:
+                if "sensor_msgs/msg/Image" in types:
+                    if self.count_publishers(name) > 0:
+                        out.append(name)
+                elif (
+                    name == ANNOTATED_IMAGE_TOPIC
+                    and "sensor_msgs/msg/CompressedImage" in types
+                ):
+                    if self.count_publishers(name) > 0:
+                        out.append(name)
+            except Exception:
                 out.append(name)
         return sorted(out)
 

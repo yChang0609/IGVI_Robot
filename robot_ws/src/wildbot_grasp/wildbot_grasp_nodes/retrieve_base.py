@@ -39,6 +39,7 @@ class RetrieveBase(Node):
         self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
         self.declare_parameter("arrival_tolerance", 0.1)
+        self.declare_parameter("yaw_tolerance", 0.1)
         self.declare_parameter("arrival_timeout", 45.0)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
@@ -238,8 +239,15 @@ class RetrieveBase(Node):
 
     def wait_until_arrived(self, goal_handle, pose: PoseStamped):
         tolerance = float(self.get_parameter("arrival_tolerance").value)
+        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
         goal_x = float(pose.pose.position.x)
         goal_y = float(pose.pose.position.y)
+
+        q = pose.pose.orientation
+        goal_yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
 
         # Wait loop
         start_time = time.time()
@@ -254,8 +262,16 @@ class RetrieveBase(Node):
             robot_pose = self.get_robot_pose()
             if robot_pose is not None:
                 dist = math.hypot(goal_x - robot_pose[0], goal_y - robot_pose[1])
-                if dist <= tolerance:
-                    return True, f"arrived within {dist:.2f}m"
+                
+                # Check wrap-around angle difference
+                angle_diff = goal_yaw - robot_pose[2]
+                while angle_diff > math.pi:
+                    angle_diff -= 2.0 * math.pi
+                while angle_diff < -math.pi:
+                    angle_diff += 2.0 * math.pi
+
+                if dist <= tolerance and abs(angle_diff) <= yaw_tolerance:
+                    return True, f"arrived within {dist:.2f}m and yaw difference {abs(angle_diff):.2f} rad"
 
             time.sleep(0.1)
 

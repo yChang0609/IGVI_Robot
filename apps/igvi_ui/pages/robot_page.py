@@ -140,8 +140,8 @@ class _DriveControl(QWidget):
         drive_grid.addWidget(back, 2, 1)
         layout.addLayout(drive_grid)
 
-        self.linear_slider = self._slider("Linear", layout, 36)
-        self.angular_slider = self._slider("Angular", layout, 42)
+        self.linear_slider = self._slider("Linear", layout, 25)
+        self.angular_slider = self._slider("Angular", layout, 33)
 
         actions = QGridLayout()
         goal_btn = QPushButton("Set Goal")

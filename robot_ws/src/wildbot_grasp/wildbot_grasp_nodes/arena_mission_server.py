@@ -251,11 +251,22 @@ class ArenaMissionServer(RetrieveBase):
                         self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
                         break
                         
-                    # Check distance
-                    robot_xy = self.get_robot_xy()
-                    dist_to_patrol = self._dist(robot_xy[0], robot_xy[1], patrol_wp["x"], patrol_wp["y"])
-                    if dist_to_patrol <= arrival_tolerance:
-                        break  # Arrived!
+                    # Check distance and orientation
+                    robot_pose = self.get_robot_pose()
+                    if robot_pose is not None:
+                        dist_to_patrol = self._dist(robot_pose[0], robot_pose[1], patrol_wp["x"], patrol_wp["y"])
+                        
+                        # Check wrap-around angle difference
+                        angle_diff = patrol_wp["yaw"] - robot_pose[2]
+                        while angle_diff > math.pi:
+                            angle_diff -= 2.0 * math.pi
+                        while angle_diff < -math.pi:
+                            angle_diff += 2.0 * math.pi
+                        
+                        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
+                        
+                        if dist_to_patrol <= arrival_tolerance and abs(angle_diff) <= yaw_tolerance:
+                            break  # Arrived!
                         
                     # Memory interrupt check
                     with self.memory_lock:
