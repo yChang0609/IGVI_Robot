@@ -43,6 +43,11 @@ class RetrieveBase(Node):
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_timeout_sec", 20.0)
+        # After a successful grab, reverse by however far the visual approach
+        # drove the robot in, so it doesn't drag the held object through whatever
+        # it approached when navigating away.
+        self.declare_parameter("post_grab_backup_speed", 0.10)
+        self.declare_parameter("post_grab_backup_timeout_sec", 10.0)
         # Grab only once the bbox is centered within this many px of image_center_x.
         self.declare_parameter("approach_center_tolerance_px", 25.0)
         # Bridge: locate target near the bridge waypoint / scan-rotate to find it.
@@ -56,7 +61,7 @@ class RetrieveBase(Node):
         # face_point: standoff distance to back up to (for camera visibility).
         self.declare_parameter("face_point_distance_m", 0.3)
         # face_point: angular P controller for rotating to face the point.
-        self.declare_parameter("face_point_ang_kp", 2.0)
+        self.declare_parameter("face_point_ang_kp", 1.5)
         self.declare_parameter("face_point_ang_max", 0.9)
         self.declare_parameter("face_point_ang_floor", 0.30)
         # face_point: alignment threshold — start adding reverse motion once
@@ -738,7 +743,10 @@ class RetrieveBase(Node):
 
     def approach_and_grab(self, goal_handle, target_class: str):
         """Shared grasp state: YOLO visual approach (center + drive to grab
-        distance) then call the grab_object action server."""
+        distance) then call the grab_object action server. On success, reverse
+        by however far the approach drove us in so we don't drag the held object
+        back through whatever we approached."""
+        start_pose = self.get_robot_pose()  # remember where the approach began
         ok, message = self.visual_approach(goal_handle, target_class)
         if not ok:
             return False, message
@@ -748,7 +756,61 @@ class RetrieveBase(Node):
         # along the old bridge_center path while the arm is trying to grasp.
         self._plan_pub.publish(Path())
         time.sleep(0.1)
-        return self.call_grab_object(goal_handle, target_class)
+        ok, message = self.call_grab_object(goal_handle, target_class)
+        if not ok:
+            return False, message
+
+        # Best-effort retreat to the (already-navigable) approach start pose.
+        if start_pose is not None:
+            cur = self.get_robot_pose()
+            if cur is not None:
+                forward = math.hypot(cur[0] - start_pose[0], cur[1] - start_pose[1])
+                bok, bmsg = self.back_up(goal_handle, forward)
+                if not bok and goal_handle.is_cancel_requested:
+                    return False, bmsg
+                self.publish_feedback(goal_handle, "post_grab_backup", 0.8, bmsg)
+        return True, message
+
+    def back_up(self, goal_handle, distance: float, speed: float = None):
+        """Drive straight backward by `distance` meters, tracking actual TF
+        displacement so it works regardless of small heading changes during the
+        approach. Returns (ok, message)."""
+        distance = abs(float(distance))
+        if distance < 1e-3:
+            return True, "no back-up needed"
+        speed = (float(self.get_parameter("post_grab_backup_speed").value)
+                 if speed is None else abs(float(speed)))
+        timeout = float(self.get_parameter("post_grab_backup_timeout_sec").value)
+
+        # Clear nav2 path so motion_arbiter doesn't override our reverse cmd_vel.
+        self._plan_pub.publish(Path())
+        self.cmd_vel_pub.publish(Twist())
+        time.sleep(0.1)
+
+        start = self.get_robot_pose()
+        if start is None:
+            return False, "back-up: could not read robot pose"
+
+        deadline = time.monotonic() + timeout
+        twist = Twist()
+        moved = 0.0
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                self.cmd_vel_pub.publish(Twist())
+                return False, "mission canceled"
+            cur = self.get_robot_pose()
+            if cur is not None:
+                moved = math.hypot(cur[0] - start[0], cur[1] - start[1])
+                if moved >= distance:
+                    break
+            twist.linear.x = -speed
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        if moved >= distance:
+            return True, f"backed up {moved:.2f}m"
+        return False, f"back-up timed out after {moved:.2f}m of {distance:.2f}m"
 
     def call_grab_object(self, goal_handle, target_class: str):
         if not self.grab_client.wait_for_server(timeout_sec=5.0):

@@ -128,14 +128,23 @@ class BridgeRetrieveServer(RetrieveBase):
         # 5. Return along the fixed return path: visit each via-point in order,
         #    then finish at home. This forces a deterministic route across the
         #    bridge instead of letting Nav2 plan a direct (possibly invalid) path.
-        #    Each via-point is approached facing the next point (travel direction)
-        #    so the robot flows through without spinning at every stop.
+        #    Each via-point uses its own stored yaw (the heading set in the UI)
+        #    when one is given; a yaw of 0.0 means "no heading set" (the UI sends
+        #    0.0 for a click without a heading drag), so we fall back to facing
+        #    the next point (travel direction) and flow through without spinning.
         self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
-        via_pts = list(zip(goal.return_path_x, goal.return_path_y))
+        via_x = list(goal.return_path_x)
+        via_y = list(goal.return_path_y)
+        via_yaw = list(goal.return_path_yaw)
         return_legs = []
-        for j, (px, py) in enumerate(via_pts):
-            nx, ny = via_pts[j + 1] if j + 1 < len(via_pts) else (goal.home_pose_x, goal.home_pose_y)
-            yaw = math.atan2(ny - py, nx - px)
+        for j in range(len(via_x)):
+            px, py = via_x[j], via_y[j]
+            stored_yaw = via_yaw[j] if j < len(via_yaw) else 0.0
+            if abs(stored_yaw) > 1e-6:
+                yaw = stored_yaw
+            else:
+                nx, ny = (via_x[j + 1], via_y[j + 1]) if j + 1 < len(via_x) else (goal.home_pose_x, goal.home_pose_y)
+                yaw = math.atan2(ny - py, nx - px)
             return_legs.append((f"return_via_{j + 1}", self.make_pose(px, py, yaw)))
         return_legs.append(("returning_home", home_pose))
 
