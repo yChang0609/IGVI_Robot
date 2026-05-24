@@ -356,16 +356,22 @@ class RetrieveBase(Node):
             req.start = start_pose
             req.goal = goal_pose
             future = self.path_client.send_goal_async(req)
-            while rclpy.ok() and not future.done():
+            deadline = time.monotonic() + 3.0
+            while rclpy.ok() and not future.done() and time.monotonic() < deadline:
                 time.sleep(0.01)
+            if not future.done():
+                continue
 
             path_goal_handle = future.result()
             if path_goal_handle is None or not path_goal_handle.accepted:
                 continue
 
             result_future = path_goal_handle.get_result_async()
-            while rclpy.ok() and not result_future.done():
+            deadline = time.monotonic() + 5.0
+            while rclpy.ok() and not result_future.done() and time.monotonic() < deadline:
                 time.sleep(0.01)
+            if not result_future.done():
+                continue
 
             result = result_future.result()
             resp = result.result if result is not None else None

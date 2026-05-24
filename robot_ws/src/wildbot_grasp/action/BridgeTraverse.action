@@ -1,0 +1,27 @@
+# Bridge traversal mission.
+# Navigate to a bridge-center waypoint, then immediately traverse back through
+# the configured return path and finish at home. No target search, scan, grasp,
+# arm motion, or release step is performed.
+
+float64 bridge_pose_x
+float64 bridge_pose_y
+float64 bridge_pose_yaw
+# Return target. When home_pose_valid is false the server falls back to the
+# robot's pose at mission start.
+bool home_pose_valid
+float64 home_pose_x
+float64 home_pose_y
+float64 home_pose_yaw
+# Ordered return via-points (map frame). After reaching bridge center, the
+# mission visits these in order and then finishes at home_pose. Empty means
+# return straight to home.
+float64[] return_path_x
+float64[] return_path_y
+float64[] return_path_yaw
+---
+bool success
+string message
+---
+string stage
+float32 progress
+string detail

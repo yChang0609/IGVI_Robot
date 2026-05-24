@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+append_param() {
+  local -n _ref="$1"
+  local env_name="$2"
+  local param_name="$3"
+  local value="${!env_name:-}"
+  if [[ -n "${value}" ]]; then
+    _ref+=(-p "${param_name}:=${value}")
+  fi
+}
+
+ros_args=(--ros-args)
+append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
+append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
+append_param ros_args RETRIEVE_YAW_TOLERANCE        yaw_tolerance
+
+exec ros2 run wildbot_grasp bridge_traverse_server "${ros_args[@]}"

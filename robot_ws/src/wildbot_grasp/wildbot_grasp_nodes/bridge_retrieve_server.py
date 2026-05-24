@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import threading
 
 import rclpy
 from rclpy.action import ActionServer, GoalResponse
@@ -48,6 +49,10 @@ class BridgeRetrieveServer(RetrieveBase):
         )
         return GoalResponse.ACCEPT
 
+    def _finish_goal(self):
+        with self._goal_lock:
+            self._active_goal = False
+
     def execute_callback(self, goal_handle):
         result = BridgeRetrieve.Result()
         goal = goal_handle.request
@@ -65,6 +70,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = "No door reference point set — set a door_ref point first"
             goal_handle.abort()
+            self._finish_goal()
             return result
 
         # 1. Navigate to bridge center. Ignore the waypoint's stored yaw: arrive
@@ -83,6 +89,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
             return result
 
         # 2. Locate the target on the map. If semantic memory doesn't know where
@@ -99,6 +106,7 @@ class BridgeRetrieveServer(RetrieveBase):
                 result.success = False
                 result.message = message
                 goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                self._finish_goal()
                 return result
 
         # Face the bear's map position, then hand off to centering.
@@ -112,6 +120,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
             return result
 
         # 3. Center: rotate in place to align bear with image center
@@ -122,6 +131,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
             return result
 
         # 4. Approach and grab
@@ -132,6 +142,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
             return result
         
         # Immediately remove object from semantic memory after successful grasp
@@ -169,6 +180,7 @@ class BridgeRetrieveServer(RetrieveBase):
                 result.success = False
                 result.message = message
                 goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+                self._finish_goal()
                 return result
 
         # 6. Release
@@ -178,6 +190,7 @@ class BridgeRetrieveServer(RetrieveBase):
             result.success = False
             result.message = message
             goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
             return result
 
         self.clear_costmaps()  # clear marks left by the bear during carry
@@ -187,6 +200,7 @@ class BridgeRetrieveServer(RetrieveBase):
             "returned to home pose and released"
         )
         goal_handle.succeed()
+        self._finish_goal()
         return result
 
 

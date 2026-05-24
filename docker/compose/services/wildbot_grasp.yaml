@@ -41,6 +41,19 @@ services:
     command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp bridge_retrieve_launch"]
     restart: unless-stopped
 
+  bridge_traverse:
+    <<: *base_service
+    profiles: ["task_server"]
+    x-description: "Bridge-center waypoint traversal mission: go up, return path, home"
+    image: wildbot_grasp:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - *grasp_source_volume
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp bridge_traverse_launch"]
+    restart: unless-stopped
+
   search_retrieve_server:
     <<: *base_service
     profiles: ["task_server"]
