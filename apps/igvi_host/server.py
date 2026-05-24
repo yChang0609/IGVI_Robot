@@ -27,6 +27,8 @@ from .models import (
     BatteryStatusResponse,
     BridgeRetrieveRequest,
     BridgeRetrieveStatusResponse,
+    BridgeTraverseRequest,
+    BridgeTraverseStatusResponse,
     ClearCostmapRequest,
     CalibrationModel,
     CmdVelRequest,
@@ -570,6 +572,29 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_bridge_retrieve_status() -> BridgeRetrieveStatusResponse:
         result = await run_ros(lambda client: client.get_bridge_retrieve_status())
         return BridgeRetrieveStatusResponse(**result)
+
+    @app.post("/api/ros/bridge_traverse/start", response_model=RosActionResponse)
+    async def ros_bridge_traverse_start(request: BridgeTraverseRequest) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_bridge_traverse(request))
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_traverse_start",
+            message=str(result.get("message", "bridge traverse task started")),
+        )
+
+    @app.post("/api/ros/bridge_traverse/cancel", response_model=RosActionResponse)
+    async def ros_bridge_traverse_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_bridge_traverse())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_traverse_cancel",
+            message=str(result.get("message", "bridge traverse task canceled")),
+        )
+
+    @app.get("/api/ros/bridge_traverse/status", response_model=BridgeTraverseStatusResponse)
+    async def ros_bridge_traverse_status() -> BridgeTraverseStatusResponse:
+        result = await run_ros(lambda client: client.get_bridge_traverse_status())
+        return BridgeTraverseStatusResponse(**result)
 
     @app.post("/api/ros/arena_mission/start", response_model=RosActionResponse)
     async def ros_arena_mission_start() -> RosActionResponse:

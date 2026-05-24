@@ -28,7 +28,7 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from wildbot_grasp.action import BridgeRetrieve, SearchAndRetrieve
+from wildbot_grasp.action import BridgeRetrieve, BridgeTraverse, SearchAndRetrieve
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, Imu, JointState
 from std_msgs.msg import Bool, Empty, Float64MultiArray, String
@@ -150,6 +150,12 @@ class BridgeNode(Node):
         self._bridge_mission_goal_handle = None
         self._bridge_mission_goal: dict[str, Any] | None = None
         self._bridge_mission_feedback: dict[str, Any] = {}
+        self._bridge_traverse_lock = threading.Lock()
+        self._bridge_traverse_state: str = "idle"
+        self._bridge_traverse_message: str = ""
+        self._bridge_traverse_goal_handle = None
+        self._bridge_traverse_goal: dict[str, Any] | None = None
+        self._bridge_traverse_feedback: dict[str, Any] = {}
         self._arena_mission_lock = threading.Lock()
         self._arena_mission_state: str = "idle"
         self._arena_mission_message: str = ""
@@ -267,6 +273,7 @@ class BridgeNode(Node):
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self._search_client = ActionClient(self, SearchAndRetrieve, "search_retrieve")
         self._bridge_mission_client = ActionClient(self, BridgeRetrieve, "bridge_retrieve")
+        self._bridge_traverse_client = ActionClient(self, BridgeTraverse, "bridge_traverse")
         self._arena_mission_client = ActionClient(self, SearchAndRetrieve, "arena_mission")
         self._semantic_memory: dict = {}
         self.create_subscription(String, "/semantic_memory", self._on_semantic_memory, 10)
@@ -458,6 +465,14 @@ class BridgeNode(Node):
             bridge_future = bridge_handle.cancel_goal_async()
             bridge_future.add_done_callback(self._on_bridge_mission_cancel_response)
             canceled.append("bridge mission")
+
+        with self._bridge_traverse_lock:
+            traverse_handle = self._bridge_traverse_goal_handle
+        if traverse_handle is not None:
+            self._update_bridge_traverse_state("canceling", "emergency stop requested")
+            traverse_future = traverse_handle.cancel_goal_async()
+            traverse_future.add_done_callback(self._on_bridge_traverse_cancel_response)
+            canceled.append("bridge traverse")
 
         with self._search_lock:
             search_handle = self._search_goal_handle
@@ -1062,6 +1077,9 @@ class BridgeNode(Node):
         with self._bridge_mission_lock:
             if self._bridge_mission_state not in ("idle", "unavailable"):
                 return False, f"Cannot start: already in state '{self._bridge_mission_state}'"
+        with self._bridge_traverse_lock:
+            if self._bridge_traverse_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: bridge traverse is in state '{self._bridge_traverse_state}'"
                 
         if not self._bridge_mission_client.server_is_ready():
             if not self._bridge_mission_client.wait_for_server(timeout_sec=2.0):
@@ -1199,6 +1217,150 @@ class BridgeNode(Node):
             self._update_bridge_mission_state("idle", "cancel accepted")
         else:
             self._update_bridge_mission_state("active", "cancel rejected")
+
+    # ── Bridge Traverse Mission ─────────────────────────────────────────────
+
+    def _update_bridge_traverse_state(self, state: str, message: str) -> None:
+        with self._bridge_traverse_lock:
+            self._bridge_traverse_state = state
+            self._bridge_traverse_message = message
+        self.get_logger().info(f"Bridge traverse state: {state} — {message}")
+
+    def send_bridge_traverse_goal(
+        self,
+        bridge_x: float,
+        bridge_y: float,
+        bridge_yaw: float,
+    ) -> tuple[bool, str]:
+        with self._bridge_traverse_lock:
+            if self._bridge_traverse_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: already in state '{self._bridge_traverse_state}'"
+        with self._bridge_mission_lock:
+            if self._bridge_mission_state not in ("idle", "unavailable"):
+                return False, f"Cannot start: bridge mission is in state '{self._bridge_mission_state}'"
+
+        if not self._bridge_traverse_client.server_is_ready():
+            if not self._bridge_traverse_client.wait_for_server(timeout_sec=2.0):
+                self._update_bridge_traverse_state("unavailable", "Bridge traverse server offline")
+                return False, "Bridge traverse server offline"
+
+        with self._waypoints_lock:
+            home_wp = self._waypoints.get("home")
+            home_wp = dict(home_wp) if home_wp else None
+            return_wps = [
+                dict(self._waypoints[name])
+                for name in sorted(
+                    (n for n in self._waypoints if re.fullmatch(r"return_\d+", n)),
+                    key=lambda n: int(n.split("_")[1]),
+                )
+            ]
+        if home_wp is None:
+            self._update_bridge_traverse_state("error", "No home waypoint set — press Home first")
+            return False, "No home waypoint set — press Home first"
+
+        goal_msg = BridgeTraverse.Goal()
+        goal_msg.bridge_pose_x = float(bridge_x)
+        goal_msg.bridge_pose_y = float(bridge_y)
+        goal_msg.bridge_pose_yaw = float(bridge_yaw)
+        goal_msg.home_pose_valid = True
+        goal_msg.home_pose_x = float(home_wp["x"])
+        goal_msg.home_pose_y = float(home_wp["y"])
+        goal_msg.home_pose_yaw = float(home_wp.get("yaw", 0.0))
+        goal_msg.return_path_x = [float(wp["x"]) for wp in return_wps]
+        goal_msg.return_path_y = [float(wp["y"]) for wp in return_wps]
+        goal_msg.return_path_yaw = [float(wp.get("yaw", 0.0)) for wp in return_wps]
+
+        with self._bridge_traverse_lock:
+            self._bridge_traverse_goal = {
+                "bridge_pose_x": bridge_x,
+                "bridge_pose_y": bridge_y,
+                "bridge_pose_yaw": bridge_yaw,
+                "home_pose": {"x": home_wp["x"], "y": home_wp["y"], "yaw": home_wp.get("yaw", 0.0)},
+                "return_path": [{"x": wp["x"], "y": wp["y"]} for wp in return_wps],
+            }
+            self._bridge_traverse_feedback = {}
+        self._update_bridge_traverse_state("sending", "goal dispatched")
+        future = self._bridge_traverse_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._on_bridge_traverse_feedback,
+        )
+        future.add_done_callback(self._on_bridge_traverse_response)
+        return True, "goal dispatched"
+
+    def send_bridge_traverse_waypoint_goal(
+        self,
+        waypoint_name: str,
+    ) -> tuple[bool, str]:
+        name = str(waypoint_name).strip()
+        with self._waypoints_lock:
+            wp = self._waypoints.get(name)
+            wp = dict(wp) if wp else None
+        if wp is None:
+            return False, f"no waypoint named '{name}'"
+        return self.send_bridge_traverse_goal(wp["x"], wp["y"], wp["yaw"])
+
+    def cancel_bridge_traverse_goal(self) -> tuple[bool, str]:
+        with self._bridge_traverse_lock:
+            handle = self._bridge_traverse_goal_handle
+        if handle is None:
+            return False, "no active goal"
+        self._update_bridge_traverse_state("canceling", "cancel requested")
+        future = handle.cancel_goal_async()
+        future.add_done_callback(self._on_bridge_traverse_cancel_response)
+        return True, "cancel requested"
+
+    def snapshot_bridge_traverse(self) -> dict[str, Any]:
+        with self._bridge_traverse_lock:
+            return {
+                "state": self._bridge_traverse_state,
+                "message": self._bridge_traverse_message,
+                "goal": dict(self._bridge_traverse_goal) if self._bridge_traverse_goal else None,
+                "feedback": dict(self._bridge_traverse_feedback),
+                "server_ready": self._bridge_traverse_client.server_is_ready(),
+            }
+
+    def _on_bridge_traverse_feedback(self, feedback_msg) -> None:
+        fb = feedback_msg.feedback
+        with self._bridge_traverse_lock:
+            self._bridge_traverse_feedback = {
+                "stage": fb.stage,
+                "progress": float(fb.progress),
+                "detail": fb.detail,
+            }
+
+    def _on_bridge_traverse_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._update_bridge_traverse_state("idle", "goal rejected")
+            return
+        with self._bridge_traverse_lock:
+            self._bridge_traverse_goal_handle = goal_handle
+        self._update_bridge_traverse_state("active", "goal accepted")
+        res_future = goal_handle.get_result_async()
+        res_future.add_done_callback(self._on_bridge_traverse_result)
+
+    def _on_bridge_traverse_result(self, future) -> None:
+        result = future.result()
+        status = result.status
+        with self._bridge_traverse_lock:
+            self._bridge_traverse_goal_handle = None
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            msg = result.result.message if hasattr(result.result, "message") else "succeeded"
+            self._update_bridge_traverse_state("idle", f"success: {msg}")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self._update_bridge_traverse_state("idle", "canceled")
+        elif status == GoalStatus.STATUS_ABORTED:
+            msg = result.result.message if hasattr(result.result, "message") else "aborted"
+            self._update_bridge_traverse_state("idle", f"aborted: {msg}")
+        else:
+            self._update_bridge_traverse_state("idle", f"completed with status {status}")
+
+    def _on_bridge_traverse_cancel_response(self, future) -> None:
+        response = future.result()
+        if len(response.goals_canceling) > 0:
+            self._update_bridge_traverse_state("idle", "cancel accepted")
+        else:
+            self._update_bridge_traverse_state("active", "cancel rejected")
 
     # ── Arena Mission ─────────────────────────────────────────────────────────
 
@@ -1580,6 +1742,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 self._json(node.snapshot_search())
             elif path == "/api/bridge_retrieve/status":
                 self._json(node.snapshot_bridge_mission())
+            elif path == "/api/bridge_traverse/status":
+                self._json(node.snapshot_bridge_traverse())
             elif path == "/api/arena_mission/status":
                 self._json(node.snapshot_arena_mission())
 
@@ -1700,6 +1864,20 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/bridge_retrieve/cancel":
                 ok, msg = node.cancel_bridge_mission_goal()
                 self._json({"ok": ok, "action": "bridge_retrieve_cancel", "message": msg})
+            elif path == "/api/bridge_traverse/start":
+                waypoint_name = str(body.get("bridge_waypoint_name", ""))
+                if waypoint_name:
+                    ok, msg = node.send_bridge_traverse_waypoint_goal(waypoint_name)
+                else:
+                    ok, msg = node.send_bridge_traverse_goal(
+                        float(body.get("bridge_pose_x", 0.0)),
+                        float(body.get("bridge_pose_y", 0.0)),
+                        float(body.get("bridge_pose_yaw", 0.0)),
+                    )
+                self._json({"ok": ok, "action": "bridge_traverse_start", "message": msg})
+            elif path == "/api/bridge_traverse/cancel":
+                ok, msg = node.cancel_bridge_traverse_goal()
+                self._json({"ok": ok, "action": "bridge_traverse_cancel", "message": msg})
             elif path == "/api/arena_mission/start":
                 ok, msg = node.send_arena_mission_goal()
                 self._json({"ok": ok, "action": "arena_mission_start", "message": msg})

@@ -259,6 +259,21 @@ class BridgeRetrieveStatusResponse(BaseModel):
     feedback: dict = Field(default_factory=dict)
 
 
+class BridgeTraverseRequest(BaseModel):
+    bridge_waypoint_name: str = "bridge_center"
+    bridge_pose_x: float | None = None
+    bridge_pose_y: float | None = None
+    bridge_pose_yaw: float = 0.0
+
+
+class BridgeTraverseStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
 class ArenaMissionStatusResponse(BaseModel):
     state: str = "idle"
     message: str = ""

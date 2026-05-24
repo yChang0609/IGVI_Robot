@@ -36,6 +36,7 @@ class BridgeRetrieveControl(QWidget):
         self._bridge_pick_armed = False
         self._door_pick_armed = False
         self._return_pick_armed = False
+        self._active_bridge_task: str | None = None
         self.map_2d.waypoint_point_picked.connect(self._on_point_picked)
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
@@ -112,9 +113,12 @@ class BridgeRetrieveControl(QWidget):
         self.bridge_pick_btn = QPushButton("Set Bridge Waypoint")
         self.bridge_pick_btn.setCheckable(True)
         self.bridge_pick_btn.clicked.connect(self._toggle_bridge_pick)
-        self.start_btn = QPushButton("Start Bridge Mission")
+        self.start_btn = QPushButton("Start Bear Retrieve")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self._start_task)
+        self.traverse_btn = QPushButton("Start Bridge Traverse")
+        self.traverse_btn.setObjectName("Primary")
+        self.traverse_btn.clicked.connect(self._start_traverse_task)
         # Cancel doubles as the stop control: cancels every mission, stops the
         # robot and clears costmaps. Always available.
         self.cancel_btn = QPushButton("Cancel")
@@ -123,7 +127,8 @@ class BridgeRetrieveControl(QWidget):
         buttons.addWidget(self.door_pick_btn, 0, 0, 1, 2)
         buttons.addWidget(self.bridge_pick_btn, 1, 0, 1, 2)
         buttons.addWidget(self.start_btn, 2, 0)
-        buttons.addWidget(self.cancel_btn, 2, 1)
+        buttons.addWidget(self.traverse_btn, 2, 1)
+        buttons.addWidget(self.cancel_btn, 3, 0, 1, 2)
         layout.addLayout(buttons)
 
         self.status_label = QLabel("Ready")
@@ -350,16 +355,41 @@ class BridgeRetrieveControl(QWidget):
             QMessageBox.warning(self, "Start failed", str(exc))
             return
         if result.get("ok"):
+            self._active_bridge_task = "retrieve"
             self.start_btn.setEnabled(False)
+            self.traverse_btn.setEnabled(False)
             self.status_label.setText("Bridge mission started...")
+            self._status_timer.start()
+        else:
+            QMessageBox.warning(self, "Start rejected", str(result.get("message", "unknown error")))
+
+    def _start_traverse_task(self) -> None:
+        waypoint = self._selected_waypoint()
+        if not waypoint:
+            QMessageBox.warning(
+                self,
+                "Missing waypoint",
+                "Please save a bridge-center waypoint first, preferably named bridge_center.",
+            )
+            return
+        try:
+            result = self.client.bridge_traverse_start(waypoint)
+        except HostClientError as exc:
+            QMessageBox.warning(self, "Start failed", str(exc))
+            return
+        if result.get("ok"):
+            self._active_bridge_task = "traverse"
+            self.start_btn.setEnabled(False)
+            self.traverse_btn.setEnabled(False)
+            self.status_label.setText("Bridge traverse started...")
             self._status_timer.start()
         else:
             QMessageBox.warning(self, "Start rejected", str(result.get("message", "unknown error")))
 
     def _cancel_task(self) -> None:
         """Stop everything: cancel all missions + stop the robot (ros_stop already
-        cancels bridge/search/nav and halts wheels + holds the arm), then clear
-        both costmaps so the next plan starts clean."""
+        cancels bridge/search/traverse/nav and halts wheels + holds the arm),
+        then clear both costmaps so the next plan starts clean."""
         errors: list[str] = []
         for label, action in (
             ("stop & cancel", self.client.ros_stop),
@@ -372,6 +402,8 @@ class BridgeRetrieveControl(QWidget):
                 errors.append(f"{label}: {exc}")
 
         self.start_btn.setEnabled(True)
+        self.traverse_btn.setEnabled(True)
+        self._active_bridge_task = None
         self._status_timer.stop()
         if errors:
             QMessageBox.warning(self, "Cancel partially failed", "\n".join(errors))
@@ -380,7 +412,12 @@ class BridgeRetrieveControl(QWidget):
 
     def _poll_status(self) -> None:
         try:
-            status = self.client.bridge_retrieve_status()
+            if self._active_bridge_task == "traverse":
+                status = self.client.bridge_traverse_status()
+                task_label = "Bridge traverse"
+            else:
+                status = self.client.bridge_retrieve_status()
+                task_label = "Bridge retrieve"
         except HostClientError:
             return
         state = status.get("state", "idle")
@@ -389,18 +426,21 @@ class BridgeRetrieveControl(QWidget):
         if fb and state == "active":
             progress = float(fb.get("progress", 0.0)) * 100.0
             self.status_label.setText(
-                f"State: {state}\nProgress: {progress:.0f}%\n"
+                f"{task_label}\nState: {state}\nProgress: {progress:.0f}%\n"
                 f"{fb.get('stage', '')}: {fb.get('detail', '')}"
             )
         else:
-            self.status_label.setText(f"State: {state}\n{msg}")
+            self.status_label.setText(f"{task_label}\nState: {state}\n{msg}")
 
         if state == "idle":
             self.start_btn.setEnabled(True)
+            self.traverse_btn.setEnabled(True)
+            self._active_bridge_task = None
             self._status_timer.stop()
 
     def shutdown(self) -> None:
         self._disarm_bridge_pick()
         self._disarm_door_pick()
         self._disarm_return_pick()
+        self._active_bridge_task = None
         self._status_timer.stop()
