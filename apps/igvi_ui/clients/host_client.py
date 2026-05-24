@@ -280,8 +280,8 @@ class HostClient:
     def bridge_traverse_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/bridge_traverse/status")
 
-    def arena_mission_start(self) -> dict[str, Any]:
-        return self.request("POST", "/api/ros/arena_mission/start", {}, timeout=8.0)
+    def arena_mission_start(self, start_patrol_idx: int = 0) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/arena_mission/start", {"start_patrol_idx": start_patrol_idx}, timeout=8.0)
 
     def arena_mission_cancel(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/arena_mission/cancel", {}, timeout=5.0)

@@ -35,6 +35,9 @@ class SearchRetrieveControl(QWidget):
         self._arena_patrol_count: int = 0
         self._target_id: str = ""
         self._current_objects: list = []
+        self._patrol_names: list[str] = []
+        self._patrol_start_idx: int = 0
+        self._last_feedback_patrol: str = ""
         
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
@@ -49,6 +52,9 @@ class SearchRetrieveControl(QWidget):
                 hw = waypoints["home"]
                 self._home_pose = (hw.get("x", 0.0), hw.get("y", 0.0), hw.get("yaw", 0.0))
                 self.home_label.setText(f"x: {self._home_pose[0]:.2f}, y: {self._home_pose[1]:.2f}, yaw: {self._home_pose[2]:.2f}")
+            self._patrol_names = sorted(k for k in waypoints if k.startswith("patrol_"))
+            for name in self._patrol_names:
+                self.patrol_start_combo.addItem(name, name)
         except HostClientError:
             pass
 
@@ -140,6 +146,14 @@ class SearchRetrieveControl(QWidget):
         btn_layout2.addWidget(self.arena_clear_btn)
         arena_layout.addLayout(btn_layout2)
         
+        patrol_start_layout = QHBoxLayout()
+        patrol_start_layout.addWidget(QLabel("Start from:"))
+        self.patrol_start_combo = QComboBox()
+        self.patrol_start_combo.setToolTip("Select which patrol waypoint to start from")
+        self.patrol_start_combo.currentIndexChanged.connect(self._on_patrol_start_changed)
+        patrol_start_layout.addWidget(self.patrol_start_combo, 1)
+        arena_layout.addLayout(patrol_start_layout)
+
         arena_actions = QHBoxLayout()
         self.start_arena_btn = QPushButton("Start Arena")
         self.start_arena_btn.setObjectName("Primary")
@@ -289,9 +303,11 @@ class SearchRetrieveControl(QWidget):
                 stage = fb.get("stage", "")
                 detail = fb.get("detail", "")
                 self.arena_status_label.setText(f"Arena State: {state}\n{stage}: {detail}")
+                if stage == "patrolling" and detail:
+                    self._update_patrol_start_from_feedback(detail)
             else:
                 self.arena_status_label.setText(f"Arena State: {state}\n{msg}")
-                
+
             if state in ("idle", "error"):
                 self.start_arena_btn.setEnabled(True)
                 self.cancel_arena_btn.setEnabled(False)
@@ -377,10 +393,12 @@ class SearchRetrieveControl(QWidget):
             QMessageBox.warning(self, "Error", str(e))
 
     def _start_arena(self) -> None:
+        self._refresh_patrol_list()
         self.start_arena_btn.setEnabled(False)
+        self._last_feedback_patrol = ""
         self.arena_status_label.setText("Starting Arena...")
         try:
-            res = self.client.arena_mission_start()
+            res = self.client.arena_mission_start(self._patrol_start_idx)
             if res.get("ok"):
                 self.cancel_arena_btn.setEnabled(True)
                 self.arena_status_label.setText("Arena started...")
@@ -390,6 +408,47 @@ class SearchRetrieveControl(QWidget):
         except HostClientError as e:
             self.start_arena_btn.setEnabled(True)
             QMessageBox.warning(self, "Error", str(e))
+
+    def _refresh_patrol_list(self) -> None:
+        try:
+            waypoints = self.client.list_waypoints()
+            names = sorted(k for k in waypoints if k.startswith("patrol_"))
+            if names == self._patrol_names:
+                return
+            self._patrol_names = names
+            current = self.patrol_start_combo.currentData()
+            self.patrol_start_combo.blockSignals(True)
+            self.patrol_start_combo.clear()
+            for name in names:
+                self.patrol_start_combo.addItem(name, name)
+            if current in names:
+                self.patrol_start_combo.setCurrentIndex(names.index(current))
+            else:
+                self.patrol_start_combo.setCurrentIndex(0)
+            self._patrol_start_idx = max(0, self.patrol_start_combo.currentIndex())
+            self.patrol_start_combo.blockSignals(False)
+        except HostClientError:
+            pass
+
+    def _on_patrol_start_changed(self, index: int = -1) -> None:
+        if index < 0:
+            index = self.patrol_start_combo.currentIndex()
+        self._patrol_start_idx = max(0, index)
+
+    def _update_patrol_start_from_feedback(self, detail: str) -> None:
+        try:
+            # detail format: "Patrolling to patrol_N (x.xx, y.yy)"
+            patrol_name = detail.split("Patrolling to ")[1].split(" (")[0]
+        except (IndexError, ValueError):
+            return
+        if patrol_name not in self._patrol_names or patrol_name == self._last_feedback_patrol:
+            return
+        self._last_feedback_patrol = patrol_name
+        idx = self._patrol_names.index(patrol_name)
+        self.patrol_start_combo.blockSignals(True)
+        self.patrol_start_combo.setCurrentIndex(idx)
+        self._patrol_start_idx = idx
+        self.patrol_start_combo.blockSignals(False)
 
     def _cancel_arena(self) -> None:
         try:

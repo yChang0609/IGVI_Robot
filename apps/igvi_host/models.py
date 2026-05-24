@@ -266,6 +266,10 @@ class BridgeTraverseRequest(BaseModel):
     bridge_pose_yaw: float = 0.0
 
 
+class ArenaMissionStartRequest(BaseModel):
+    start_patrol_idx: int = 0
+
+
 class BridgeTraverseStatusResponse(BaseModel):
     state: str = "idle"
     message: str = ""

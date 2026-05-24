@@ -182,8 +182,8 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
-    async def start_arena_mission(self) -> dict[str, Any]:
-        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/start", {})
+    async def start_arena_mission(self, start_patrol_idx: int = 0) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/start", {"start_patrol_idx": start_patrol_idx})
 
     async def cancel_arena_mission(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/cancel", {})

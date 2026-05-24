@@ -86,7 +86,17 @@ class ArenaMissionServer(RetrieveBase):
         result = SearchAndRetrieve.Result()
         blacklist = {} # target_id -> timestamp (monotonic)
 
+        # Parse starting patrol index from target_id ("arena_mode" or "arena_mode:N")
+        start_idx = 0
         try:
+            parts = goal_handle.request.target_id.split(":")
+            if len(parts) > 1:
+                start_idx = int(parts[1])
+        except (ValueError, AttributeError, IndexError):
+            pass
+
+        try:
+            self._patrol_idx = start_idx
             self.clear_costmaps()  # Clear costmap at start of mission to ensure clean slate
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:

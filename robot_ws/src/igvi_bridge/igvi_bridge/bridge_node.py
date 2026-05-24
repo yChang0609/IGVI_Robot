@@ -1369,7 +1369,7 @@ class BridgeNode(Node):
             self._arena_mission_state = state
             self._arena_mission_message = message
 
-    def send_arena_mission_goal(self) -> tuple[bool, str]:
+    def send_arena_mission_goal(self, start_patrol_idx: int = 0) -> tuple[bool, str]:
         with self._arena_mission_lock:
             if self._arena_mission_state not in ("idle", "unavailable", "error"):
                 return False, f"Cannot start: already in state '{self._arena_mission_state}'"
@@ -1380,7 +1380,7 @@ class BridgeNode(Node):
                 return False, "Arena mission server offline"
 
         goal_msg = SearchAndRetrieve.Goal()
-        goal_msg.target_id = "arena_mode"
+        goal_msg.target_id = f"arena_mode:{start_patrol_idx}"
 
         with self._arena_mission_lock:
             self._arena_mission_goal_handle = None
@@ -1881,7 +1881,8 @@ def _make_handler(node: BridgeNode) -> type[BaseHTTPRequestHandler]:
                 ok, msg = node.cancel_bridge_traverse_goal()
                 self._json({"ok": ok, "action": "bridge_traverse_cancel", "message": msg})
             elif path == "/api/arena_mission/start":
-                ok, msg = node.send_arena_mission_goal()
+                start_idx = int(body.get("start_patrol_idx", 0))
+                ok, msg = node.send_arena_mission_goal(start_patrol_idx=start_idx)
                 self._json({"ok": ok, "action": "arena_mission_start", "message": msg})
             elif path == "/api/arena_mission/cancel":
                 ok, msg = node.cancel_arena_mission_goal()

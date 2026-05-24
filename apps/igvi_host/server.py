@@ -23,6 +23,7 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    ArenaMissionStartRequest,
     ArenaMissionStatusResponse,
     BatteryStatusResponse,
     BridgeRetrieveRequest,
@@ -597,8 +598,8 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         return BridgeTraverseStatusResponse(**result)
 
     @app.post("/api/ros/arena_mission/start", response_model=RosActionResponse)
-    async def ros_arena_mission_start() -> RosActionResponse:
-        result = await run_ros(lambda client: client.start_arena_mission())
+    async def ros_arena_mission_start(req: ArenaMissionStartRequest = ArenaMissionStartRequest()) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_arena_mission(req.start_patrol_idx))
         return RosActionResponse(
             ok=bool(result.get("ok")),
             action="arena_mission_start",
