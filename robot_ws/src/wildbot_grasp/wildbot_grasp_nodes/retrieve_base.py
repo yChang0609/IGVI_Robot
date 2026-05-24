@@ -62,13 +62,13 @@ class RetrieveBase(Node):
         self.declare_parameter("face_point_distance_m", 0.3)
         # face_point: angular P controller for rotating to face the point.
         self.declare_parameter("face_point_ang_kp", 1.5)
-        self.declare_parameter("face_point_ang_max", 0.9)
+        self.declare_parameter("face_point_ang_max", 0.45)
         self.declare_parameter("face_point_ang_floor", 0.30)
         # face_point: alignment threshold — start adding reverse motion once
         # |yaw_err| drops below this (deg). Until then, rotate only.
         self.declare_parameter("face_point_align_deg", 30.0)
         # face_point: reverse speed once aligned, and final stop yaw tolerance.
-        self.declare_parameter("face_point_reverse_speed", 0.10)
+        self.declare_parameter("face_point_reverse_speed", 1.0)
         self.declare_parameter("face_point_yaw_tol_deg", 8.0)
         self.declare_parameter("face_point_timeout_sec", 10.0)
 

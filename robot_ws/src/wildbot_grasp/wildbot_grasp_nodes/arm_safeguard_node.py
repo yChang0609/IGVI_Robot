@@ -37,7 +37,7 @@ class ArmSafeguardNode(Node):
         self.action_lock = threading.Lock()
         self.last_cmd_time = self.get_clock().now()
         self.current_duration = 0.0
-        self.position_history = deque(maxlen=100)
+        self.position_history = deque(maxlen=10)
         self.last_measured = None  # latest measured joint positions (for E-stop hold)
 
         # 4. 訂閱馬達真實狀態
@@ -120,7 +120,7 @@ class ArmSafeguardNode(Node):
             
             # 🌟 把你原本加的 2 秒延遲移到這裡：
             # 意思是：抵達目標後，再多等 2 秒鐘蒐集純淨數據，然後才放鬆
-            if dt > (self.current_duration + 1.0) and self.position_history:
+            if dt > (self.current_duration + 2.0) and self.position_history:
                 history_len = len(self.position_history)
                 avg_rad = [
                     sum(pos[i] for pos in self.position_history) / history_len
