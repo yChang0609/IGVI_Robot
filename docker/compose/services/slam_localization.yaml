@@ -13,7 +13,7 @@ x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/wor
 services:
   slam_localization:
     <<: *base_service
-    profiles: ["localization"]
+    profiles: ["slam_system"]
 
     build:
       context: ../../..

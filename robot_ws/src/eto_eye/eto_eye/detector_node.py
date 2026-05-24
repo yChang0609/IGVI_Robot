@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 import cv2
+import message_filters
 import numpy as np
 import onnxruntime as ort
 import rclpy
@@ -67,10 +68,11 @@ class DetectorNode(Node):
             "depth_min_valid_pixels",
             int(os.getenv("DEPTH_MIN_VALID_PIXELS", "20")),
         )
-        self.declare_parameter("depth_max_age_sec", float(os.getenv("DEPTH_MAX_AGE_SEC", "0.5")))
+        self.declare_parameter("depth_max_age_sec", float(os.getenv("DEPTH_MAX_AGE_SEC", "0.05")))
         self.declare_parameter("input_size", 640)
         self.declare_parameter("conf_threshold", 0.25)
         self.declare_parameter("iou_threshold", 0.45)
+        self.declare_parameter("class_filter", os.getenv("CLASS_FILTER", ""))
 
         model_path = Path(self.get_parameter("model_path").value)
         if not model_path.is_file():
@@ -83,6 +85,9 @@ class DetectorNode(Node):
         self.input_size = int(self.get_parameter("input_size").value)
         self.conf_threshold = float(self.get_parameter("conf_threshold").value)
         self.iou_threshold = float(self.get_parameter("iou_threshold").value)
+        self.class_filter = self._parse_class_filter(
+            self.get_parameter("class_filter").value
+        )
         self.output_format = self.get_parameter("output_format").value
         self.enable_annotated_image = bool(
             self.get_parameter("enable_annotated_image").value
@@ -132,6 +137,13 @@ class DetectorNode(Node):
         self.get_logger().info(f"Active providers: {active}")
         if self.class_names:
             self.get_logger().info(f"Class names: {self.class_names}")
+        if self.class_filter:
+            filtered_names = [
+                self._class_name(class_id) for class_id in sorted(self.class_filter)
+            ]
+            self.get_logger().info(
+                f"Class filter enabled: {sorted(self.class_filter)} ({filtered_names})"
+            )
 
         self.bridge = CvBridge()
         self.latest_depth = None
@@ -141,19 +153,27 @@ class DetectorNode(Node):
 
         image_topic = self.get_parameter("image_topic").value
         detection_topic = self.get_parameter("detection_topic").value
-        self.subscription = self.create_subscription(
-            Image, image_topic, self.image_callback, 10
-        )
+
         if self.enable_depth:
             depth_topic = self.get_parameter("depth_topic").value
-            self.depth_subscription = self.create_subscription(
-                Image, depth_topic, self.depth_callback, 10
+            # 使用 message_filters 來同步影像與深度
+            self.image_sub = message_filters.Subscriber(self, Image, image_topic)
+            self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+            
+            # slop 參數設定容許的時間差 (例如 0.05 秒內視為同一幀)
+            self.ts = message_filters.ApproximateTimeSynchronizer(
+                [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
             )
+            self.ts.registerCallback(self.sync_callback)
+            
             self.get_logger().info(
-                f"Subscribed to depth topic {depth_topic} "
+                f"Subscribed to synchronized {image_topic} and {depth_topic} "
                 f"scale={self.depth_unit_scale} roi_scale={self.depth_roi_scale}"
             )
         else:
+            self.subscription = self.create_subscription(
+                Image, image_topic, self.image_callback, 10
+            )
             self.depth_subscription = None
         if self.output_format == "vision_msgs":
             from vision_msgs.msg import (
@@ -208,6 +228,28 @@ class DetectorNode(Node):
     def _class_name(self, class_id):
         return self.class_names.get(int(class_id), str(class_id))
 
+    def _parse_class_filter(self, value):
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            raw_items = [item.strip() for item in value.split(",")]
+        elif isinstance(value, (list, tuple)):
+            raw_items = value
+        else:
+            raw_items = [value]
+
+        class_ids = set()
+        for item in raw_items:
+            if item == "":
+                continue
+            try:
+                class_ids.add(int(item))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"class_filter must be comma-separated class IDs, got {value!r}"
+                ) from exc
+        return class_ids
+
     def _resolve_providers(self, ep):
         requested = PROVIDERS_MAP[ep]
         available = ort.get_available_providers()
@@ -220,12 +262,17 @@ class DetectorNode(Node):
             )
         return requested
 
-    def depth_callback(self, msg: Image):
-        depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+    def sync_callback(self, image_msg: Image, depth_msg: Image):
+        """處理同步後的影像與深度"""
+        # 1. 更新深度資訊 (取代原本的 depth_callback)
+        depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
         self.latest_depth = np.asarray(depth)
-        self.latest_depth_stamp_sec = self._stamp_to_sec(msg.header.stamp)
-        self.latest_depth_encoding = msg.encoding
-        self.latest_depth_frame_id = msg.header.frame_id
+        self.latest_depth_stamp_sec = self._stamp_to_sec(depth_msg.header.stamp)
+        self.latest_depth_encoding = depth_msg.encoding
+        self.latest_depth_frame_id = depth_msg.header.frame_id
+
+        # 2. 執行 YOLO 偵測，此時 _attach_depth 拿到的深度圖絕對會與影像完美對齊
+        self.image_callback(image_msg)
 
     def image_callback(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -287,6 +334,14 @@ class DetectorNode(Node):
         class_ids = class_ids[keep]
         if mask_coeffs is not None:
             mask_coeffs = mask_coeffs[keep]
+
+        if self.class_filter:
+            keep_classes = np.isin(class_ids, list(self.class_filter))
+            boxes_cxcywh = boxes_cxcywh[keep_classes]
+            max_scores = max_scores[keep_classes]
+            class_ids = class_ids[keep_classes]
+            if mask_coeffs is not None:
+                mask_coeffs = mask_coeffs[keep_classes]
 
         if len(boxes_cxcywh) == 0:
             return []
@@ -471,6 +526,8 @@ class DetectorNode(Node):
                     "nanosec": image_msg.header.stamp.nanosec,
                 },
                 "frame_id": image_msg.header.frame_id,
+                "image_width": int(image_msg.width),
+                "image_height": int(image_msg.height),
                 "detections": [self._json_detection(d) for d in detections],
             }
         )

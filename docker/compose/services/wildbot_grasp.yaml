@@ -13,8 +13,8 @@ x-tuner-output-volume: &tuner_output_volume ../../../tuner_output:/tuner_output
 services:
   wildbot_grasp:
     <<: *base_service
-    profiles: ["grasp"]
-    x-description: "High-level grasp action server for the arm/gripper"
+    profiles: ["robot"]
+    x-description: "Unified grasp stack: action server, arm safeguard, bear task, and nav topic interface"
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.grasp
@@ -24,27 +24,39 @@ services:
     volumes:
       - *config_volume
       - *grasp_source_volume
-      - *tuner_output_volume
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp grasp_stack"]
     restart: unless-stopped
 
-  arm_safeguard:
+  bridge_retrieve:
     <<: *base_service
-    profiles: ["grasp"]
-    x-description: "Hardware safety proxy and cooler for the arm/gripper"
+    profiles: ["task_server"]
+    x-description: "Bridge-center waypoint + YOLO xiong_qiao retrieval mission"
     image: wildbot_grasp:latest
     environment:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
     volumes:
       - *config_volume
       - *grasp_source_volume
-      - *tuner_output_volume
-    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp arm_safeguard_node"]
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp bridge_retrieve_launch"]
+    restart: unless-stopped
+
+  search_retrieve_server:
+    <<: *base_service
+    profiles: ["task_server"]
+    x-description: "Search and retrieve action server for Wildbot"
+    image: wildbot_grasp:latest
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml
+    volumes:
+      - *config_volume
+      - *grasp_source_volume
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp search_retrieve_launch"]
     restart: unless-stopped
 
   open_door_server:
     <<: *base_service
-    profiles: ["grasp", "open_door"]
-    x-description: "Vision-guided door-opening FSM (consumes /detections_json from eto_eye)"
+    profiles: ["open_door"]
+    x-description: "Vision-guided door-opening FSM (red-bar HSV detector on /rgb/image_raw + /depth_to_rgb)"
     image: wildbot_grasp:latest
     environment:
       FASTRTPS_DEFAULT_PROFILES_FILE: /configs/fastdds_shm.xml

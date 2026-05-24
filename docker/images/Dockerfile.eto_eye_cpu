@@ -17,6 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-opencv \
         ros-${ROS_DISTRO}-vision-msgs \
         ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-image-geometry \
+        ros-${ROS_DISTRO}-tf2-ros \
+        ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        ros-${ROS_DISTRO}-message-filters \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --break-system-packages \
@@ -32,4 +36,4 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc \
     && echo "source /workspaces/eto_eye_ws/install/setup.bash" >> /root/.bashrc
 
-CMD ["bash", "-c", "source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash && ros2 run eto_eye detector_node"]
+CMD ["bash", "-c", "source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash && ros2 launch eto_eye eto_eye.launch.py"]

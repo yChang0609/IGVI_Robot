@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
@@ -12,6 +14,7 @@ class Map2DView(QWidget):
     goal_requested = Signal(float, float, float)  # world x, y, yaw
     waypoint_point_picked = Signal(float, float, float)  # world x, y, yaw
     initial_pose_picked = Signal(float, float, float)  # world x, y, yaw
+    home_pose_picked = Signal(float, float, float)  # world x, y, yaw
 
     def __init__(self) -> None:
         super().__init__()
@@ -19,9 +22,14 @@ class Map2DView(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._map_data: dict[str, Any] | None = None
         self._map_pixmap: QPixmap | None = None
+        self._costmap_data: dict[str, Any] | None = None
+        self._costmap_image: QImage | None = None
         self._pose: dict[str, float] | None = None
         self._goal: tuple[float, float, float] | None = None  # x, y, yaw
+        self._home_pose: tuple[float, float, float] | None = None
         self._waypoints: dict[str, dict[str, float]] = {}
+        self._semantic_objects: list[dict[str, Any]] = []
+        self._selected_target_id: str = ""
         # Pick target controls what mouseRelease emits:
         #   ""             → nav goal (default)
         #   "waypoint"     → waypoint_point_picked
@@ -46,12 +54,33 @@ class Map2DView(QWidget):
         self._map_pixmap = QPixmap.fromImage(_build_image(data))
         self.update()
 
+    def update_costmap(self, data: dict[str, Any]) -> None:
+        if not data or not data.get("width") or not data.get("data"):
+            return
+        self._costmap_data = data
+        self._costmap_image = _build_costmap_image(data)
+        self.update()
+
+    def clear_costmap(self) -> None:
+        self._costmap_data = None
+        self._costmap_image = None
+        self.update()
+
     def update_pose(self, pose: dict[str, float]) -> None:
         self._pose = pose
         self.update()
 
     def update_waypoints(self, waypoints: dict[str, dict[str, float]]) -> None:
         self._waypoints = dict(waypoints or {})
+        self.update()
+
+    def set_home_pose(self, home_pose: tuple[float, float, float] | None) -> None:
+        self._home_pose = home_pose
+        self.update()
+
+    def update_semantic_objects(self, objects: list[dict[str, Any]], selected_id: str = "") -> None:
+        self._semantic_objects = list(objects or [])
+        self._selected_target_id = selected_id
         self.update()
 
     def set_pick_mode(self, enabled: bool) -> None:
@@ -61,6 +90,9 @@ class Map2DView(QWidget):
     def set_initial_pose_mode(self, enabled: bool) -> None:
         """When on, the next map click emits initial_pose_picked (for SLAM relocalize)."""
         self._set_pick_target("initial_pose" if enabled else "")
+
+    def set_home_pose_mode(self, enabled: bool) -> None:
+        self._set_pick_target("home_pose" if enabled else "")
 
     def _set_pick_target(self, target: str) -> None:
         self._pick_mode = target
@@ -88,6 +120,20 @@ class Map2DView(QWidget):
         painter.drawPixmap(ox, oy, scaled)
         map_rect = QRectF(ox, oy, scaled.width(), scaled.height())
 
+        if self._costmap_image and self._costmap_data and self._map_data:
+            cd = self._costmap_data
+            pt_bl = self._world_to_widget(cd["origin_x"], cd["origin_y"], map_rect)
+            pt_tr = self._world_to_widget(
+                cd["origin_x"] + cd["width"] * cd["resolution"],
+                cd["origin_y"] + cd["height"] * cd["resolution"],
+                map_rect,
+            )
+            if pt_bl and pt_tr and pt_tr.x() > pt_bl.x() and pt_bl.y() > pt_tr.y():
+                cm_rect = QRectF(pt_bl.x(), pt_tr.y(), pt_tr.x() - pt_bl.x(), pt_bl.y() - pt_tr.y())
+                painter.setOpacity(0.6)
+                painter.drawImage(cm_rect, self._costmap_image)
+                painter.setOpacity(1.0)
+
         if self._goal:
             gx, gy, gyaw = self._goal
             pt = self._world_to_widget(gx, gy, map_rect)
@@ -104,21 +150,75 @@ class Map2DView(QWidget):
                 painter.setPen(QPen(QColor("#f59e0b"), 2))
                 painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
 
+        if self._home_pose:
+            hx, hy, hyaw = self._home_pose
+            pt = self._world_to_widget(hx, hy, map_rect)
+            if pt:
+                painter.setPen(QPen(QColor("#9333ea"), 2)) # Purple for home pose
+                painter.setBrush(QColor("#c084fc"))
+                painter.drawEllipse(pt, 8, 8)
+                dx = math.cos(hyaw) * 22
+                dy = -math.sin(hyaw) * 22
+                painter.setPen(QPen(QColor("#9333ea"), 2))
+                painter.drawLine(pt, QPointF(pt.x() + dx, pt.y() + dy))
+                painter.setPen(QColor("#d8b4fe"))
+                painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Home")
+
         for name, wp in self._waypoints.items():
             pt = self._world_to_widget(wp.get("x", 0.0), wp.get("y", 0.0), map_rect)
             if pt is None:
                 continue
-            painter.setPen(QPen(QColor("#22c55e"), 2))
-            painter.setBrush(QColor(34, 197, 94, 90))
-            painter.drawEllipse(pt, 6, 6)
+            is_bridge = str(name) == "bridge_center"
+            pen_color = QColor("#38bdf8") if is_bridge else QColor("#22c55e")
+            fill_color = QColor(56, 189, 248, 120) if is_bridge else QColor(34, 197, 94, 90)
+            label_color = QColor("#bae6fd") if is_bridge else QColor("#bbf7d0")
+            radius = 8 if is_bridge else 6
+            painter.setPen(QPen(pen_color, 2))
+            painter.setBrush(fill_color)
+            painter.drawEllipse(pt, radius, radius)
+            if is_bridge:
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                cross = 12.0
+                painter.drawLine(QPointF(pt.x() - cross, pt.y()), QPointF(pt.x() + cross, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - cross), QPointF(pt.x(), pt.y() + cross))
             wyaw = wp.get("yaw", 0.0)
-            painter.setPen(QPen(QColor("#22c55e"), 2))
+            painter.setPen(QPen(pen_color, 2))
             painter.drawLine(
                 pt,
                 QPointF(pt.x() + math.cos(wyaw) * 16, pt.y() - math.sin(wyaw) * 16),
             )
-            painter.setPen(QColor("#bbf7d0"))
-            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), str(name))
+            painter.setPen(label_color)
+            painter.drawText(QPointF(pt.x() + 9, pt.y() - 7), "Bridge" if is_bridge else str(name))
+
+        for obj in self._semantic_objects:
+            pos = obj.get("position", {})
+            wx, wy = pos.get("x"), pos.get("y")
+            if wx is None or wy is None:
+                continue
+            pt = self._world_to_widget(wx, wy, map_rect)
+            if pt is None:
+                continue
+            obj_id = obj.get("id", "")
+            is_selected = obj_id == self._selected_target_id
+            name = obj.get("class_name", "?")
+            short_id = obj_id[:6] if len(obj_id) > 6 else obj_id
+            if is_selected:
+                painter.setPen(QPen(QColor("#f97316"), 2))
+                painter.setBrush(QColor(249, 115, 22, 200))
+                painter.drawEllipse(pt, 9, 9)
+                # Cross-hair on selected target
+                painter.setPen(QPen(QColor("#ffffff"), 1))
+                r = 15.0
+                painter.drawLine(QPointF(pt.x() - r, pt.y()), QPointF(pt.x() + r, pt.y()))
+                painter.drawLine(QPointF(pt.x(), pt.y() - r), QPointF(pt.x(), pt.y() + r))
+                painter.setPen(QColor("#fed7aa"))
+                painter.drawText(QPointF(pt.x() + 11, pt.y() - 8), f"{name} [{short_id}]")
+            else:
+                painter.setPen(QPen(QColor("#4ade80"), 1))
+                painter.setBrush(QColor(74, 222, 128, 140))
+                painter.drawEllipse(pt, 6, 6)
+                painter.setPen(QColor("#86efac"))
+                painter.drawText(QPointF(pt.x() + 8, pt.y() - 5), short_id)
 
         if self._drag_origin and self._drag_current:
             ox, oy = self._drag_origin
@@ -198,6 +298,9 @@ class Map2DView(QWidget):
             self.waypoint_point_picked.emit(gx, gy, yaw)
         elif self._pick_mode == "initial_pose":
             self.initial_pose_picked.emit(gx, gy, yaw)
+        elif self._pick_mode == "home_pose":
+            self.home_pose_picked.emit(gx, gy, yaw)
+            self._home_pose = (gx, gy, yaw)
         else:
             self._goal = (gx, gy, yaw)
             self.goal_requested.emit(gx, gy, yaw)
@@ -282,22 +385,41 @@ class Map3DView(QWidget):
 def _build_image(data: dict[str, Any]) -> QImage:
     width: int = data["width"]
     height: int = data["height"]
-    raw: list[int] = data["data"]
+    raw = np.asarray(data["data"], dtype=np.int8)
 
-    buf = bytearray(width * height * 3)
-    for i, val in enumerate(raw):
-        if val < 0:
-            r = g = b = 128
-        elif val < 50:
-            r = g = b = 210
-        else:
-            r = g = b = 30
-        off = i * 3
-        buf[off] = r
-        buf[off + 1] = g
-        buf[off + 2] = b
+    # unknown (-1) → gray 128, free (0-49) → light 210, occupied (50+) → dark 30
+    grey = np.full(len(raw), 128, dtype=np.uint8)
+    grey[raw >= 0] = 210
+    grey[raw >= 50] = 30
 
-    img = QImage(bytes(buf), width, height, width * 3, QImage.Format.Format_RGB888)
+    buf = np.stack([grey, grey, grey], axis=1).flatten().tobytes()
+    img = QImage(buf, width, height, width * 3, QImage.Format.Format_RGB888)
+    return img.mirrored(False, True)
+
+
+def _build_costmap_image(data: dict[str, Any]) -> QImage:
+    width: int = data["width"]
+    height: int = data["height"]
+    raw = np.asarray(data["data"], dtype=np.int8)
+
+    rgba = np.zeros((raw.size, 4), dtype=np.uint8)
+
+    # inflation (1–99) → orange, alpha scales with cost value
+    inf_mask = (raw >= 1) & (raw < 100)
+    rgba[inf_mask, 0] = 255
+    rgba[inf_mask, 1] = 140
+    rgba[inf_mask, 2] = 0
+    rgba[inf_mask, 3] = np.clip(raw[inf_mask].astype(np.int16) * 2, 30, 180).astype(np.uint8)
+
+    # lethal (100+) → red
+    let_mask = raw >= 100
+    rgba[let_mask, 0] = 220
+    rgba[let_mask, 1] = 40
+    rgba[let_mask, 2] = 40
+    rgba[let_mask, 3] = 200
+
+    buf = rgba.tobytes()
+    img = QImage(buf, width, height, width * 4, QImage.Format.Format_RGBA8888)
     return img.mirrored(False, True)
 
 

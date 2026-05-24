@@ -94,16 +94,23 @@ class HostClient:
         service: str | None = None,
         services: list[str] | None = None,
         profile: str | None = None,
+        no_cache: bool = False,
     ) -> dict[str, Any]:
         return self.request(
             "POST",
             f"/api/compose/actions/{action}",
-            {"service": service, "services": services, "profile": profile},
+            {"service": service, "services": services, "profile": profile, "no_cache": no_cache},
             timeout=self.compose_timeout,
         )
 
     def ros_stop(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/stop", {})
+
+    def estop_set(self, engaged: bool) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/estop", {"engaged": engaged})
+
+    def estop_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/estop")
 
     def cmd_vel(self, linear_x: float, angular_z: float) -> dict[str, Any]:
         return self.request(
@@ -123,6 +130,9 @@ class HostClient:
 
     def ros_map(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/map", timeout=5.0)
+
+    def ros_costmap(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/costmap", timeout=3.0)
 
     def ros_pose(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/pose")
@@ -200,6 +210,9 @@ class HostClient:
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
 
+    def battery_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/host/battery")
+
     def arm_trajectory(self, positions: list[float], time_from_start: float = 0.3) -> dict[str, Any]:
         return self.request(
             "POST",
@@ -218,6 +231,40 @@ class HostClient:
 
     def nav_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/nav/status")
+
+    def search_retrieve_start(self, target_id: str, home_pose_x: float, home_pose_y: float, home_pose_yaw: float = 0.0) -> dict[str, Any]:
+        return self.request(
+            "POST", 
+            "/api/ros/search_retrieve/start", 
+            {"target_id": target_id, "home_pose_x": home_pose_x, "home_pose_y": home_pose_y, "home_pose_yaw": home_pose_yaw}, 
+            timeout=8.0
+        )
+
+    def search_retrieve_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/search_retrieve/cancel", {}, timeout=5.0)
+
+    def search_retrieve_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/search_retrieve/status")
+
+    def bridge_retrieve_start(self, bridge_waypoint_name: str, target_class: str = "xiong_qiao") -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/api/ros/bridge_retrieve/start",
+            {"bridge_waypoint_name": bridge_waypoint_name, "target_class": target_class},
+            timeout=8.0,
+        )
+
+    def bridge_retrieve_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/bridge_retrieve/cancel", {}, timeout=5.0)
+
+    def bridge_retrieve_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/bridge_retrieve/status")
+
+    def semantic_memory(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
+
+    def semantic_memory_clear(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/semantic_memory/clear", {}, timeout=5.0)
 
     def imu_calibration_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)

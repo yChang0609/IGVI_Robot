@@ -8,6 +8,8 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GrabObject.action"
   "action/OpenDoor.action"
+  "action/SearchAndRetrieve.action"
+  "action/BridgeRetrieve.action"
 )
 
 ament_python_install_package(wildbot_grasp_nodes)
@@ -18,6 +20,12 @@ install(PROGRAMS
   scripts/arm_safeguard_node
   scripts/open_door_server
   scripts/tune_open_door
+  scripts/search_retrieve_server
+  scripts/search_retrieve_launch
+  scripts/bridge_retrieve_server
+  scripts/bridge_retrieve_launch
+  scripts/bear_grasp_task_node
+  scripts/grasp_stack
   DESTINATION lib/${PROJECT_NAME}
 )
 

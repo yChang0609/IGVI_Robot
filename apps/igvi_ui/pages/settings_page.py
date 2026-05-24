@@ -220,7 +220,7 @@ class SettingsPage(QWidget):
         restart_kinect.clicked.connect(lambda: self._restart_services(["camera_kinect"]))
         toolbar.addWidget(restart_kinect)
         restart_slam = QPushButton("Restart SLAM")
-        restart_slam.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"]))
+        restart_slam.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"], clear_semantic_memory=True))
         toolbar.addWidget(restart_slam)
         outer.addLayout(toolbar)
 
@@ -367,7 +367,7 @@ class SettingsPage(QWidget):
         save.clicked.connect(self._save_calibration)
         toolbar.addWidget(save)
         restart = QPushButton("Restart SLAM")
-        restart.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"]))
+        restart.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"], clear_semantic_memory=True))
         toolbar.addWidget(restart)
         outer.addLayout(toolbar)
 
@@ -405,7 +405,7 @@ class SettingsPage(QWidget):
         save.clicked.connect(self._save_calibration)
         toolbar.addWidget(save)
         restart = QPushButton("Restart SLAM")
-        restart.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"]))
+        restart.clicked.connect(lambda: self._restart_services(["slam_fusion", "slam_localization"], clear_semantic_memory=True))
         toolbar.addWidget(restart)
         outer.addLayout(toolbar)
 
@@ -587,7 +587,7 @@ class SettingsPage(QWidget):
             "Manually adjust the extrinsics above and save.",
         )
 
-    def _restart_services(self, services: list[str]) -> None:
+    def _restart_services(self, services: list[str], *, clear_semantic_memory: bool = False) -> None:
         reply = QMessageBox.question(
             self, "Restart",
             f"Restart {', '.join(services)}? Changes take effect after restart.",
@@ -599,6 +599,11 @@ class SettingsPage(QWidget):
         except HostClientError as exc:
             QMessageBox.warning(self, "Restart failed", str(exc))
             return
+        if clear_semantic_memory:
+            try:
+                self.client.semantic_memory_clear()
+            except HostClientError:
+                pass
         QMessageBox.information(self, "Restarted", f"{', '.join(services)} restarted.")
 
     def showEvent(self, event) -> None:  # noqa: N802

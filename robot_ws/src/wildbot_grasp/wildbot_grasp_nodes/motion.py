@@ -36,8 +36,10 @@ class ArmCommander:
         self.node.declare_parameter("arm_topic", "/arm_safeguard/target_trajectory")
         self.node.declare_parameter("move_duration_sec", 1.0)
         self.node.declare_parameter("settle_sec", 0.5)
-        self.node.declare_parameter("grasp_pose_deg", [167.0, 75.0, 170.6])
+        self.node.declare_parameter("grasp_pose_deg", [167.0, 75.0, 155.0])
         self.node.declare_parameter("place_pose_deg", [120.0, 75.0, 239.0])
+        self.node.declare_parameter("carry_pose_deg", [190.0, 0.0, 155.0])
+        self.node.declare_parameter("home_pose_deg", [190.0, 0.0, 240.0])
 
     def pose_deg(self, name: str) -> list[float]:
         return [float(value) for value in self.node.get_parameter(name).value]

@@ -12,7 +12,7 @@ x-kros-xacro-volume: &kros_xacro_volume ../../../robot_ws/configs/kros_car.xacro
 services:
   kros_car:
     <<: *base_service
-    profiles: ["core"]
+    profiles: ["robot"]
     image: ghcr.io/screamlab/wildbot_base_image:latest
     devices:
       - /dev/usb_wheel:/dev/usb_wheel

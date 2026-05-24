@@ -25,10 +25,10 @@ GRIPPER_MIN_SAFE, GRIPPER_MAX = 168.0, 240.0  # < 168° will burn the motor
 GRIPPER_RETRACT_DEG = 2.0
 GRIPPER_RETRACT_DELAY_MS = 500
 
-# Default starting target (mid-range, gripper open)
-DEFAULT_ARM1 = 120.0
-DEFAULT_ARM2 = 120.0
-DEFAULT_GRIPPER = GRIPPER_MAX
+# Default starting target / Home pose (arm_1 up, arm_2 folded, gripper open)
+DEFAULT_ARM1 = 210.0
+DEFAULT_ARM2 = 0.0
+DEFAULT_GRIPPER = 240.0
 
 # Continuous step rate (deg/sec) while a key is held
 ARM_RATE_DEG_PER_SEC = 25.0
@@ -229,7 +229,12 @@ class ArmControl(QWidget):
 
 
     def _on_temperatures(self, data: dict) -> None:
-        temperatures = [float(value) for value in data.get("temperatures") or []]
+        temperatures = []
+        for value in data.get("temperatures") or []:
+            try:
+                temperatures.append(float(value))
+            except (TypeError, ValueError):
+                temperatures.append(math.nan)
         if not data.get("ok") or not temperatures:
             self.temperature_label.setText("Temperatures unavailable")
             self.temperature_label.setStyleSheet("color: #94a3b8;")
@@ -239,10 +244,14 @@ class ArmControl(QWidget):
         parts = []
         for index, value in enumerate(temperatures):
             name = names[index] if index < len(names) else f"joint_{index + 1}"
-            parts.append(f"{name} {value:.1f}°C")
+            reading = "unknown" if math.isnan(value) else f"{value:.1f}°C"
+            parts.append(f"{name} {reading}")
 
-        gripper_index = int(data.get("gripper_index", 2))
-        gripper_temp = temperatures[gripper_index] if gripper_index < len(temperatures) else None
+        try:
+            gripper_index = int(data.get("gripper_index", 2))
+        except (TypeError, ValueError):
+            gripper_index = 2
+        gripper_temp = temperatures[gripper_index] if 0 <= gripper_index < len(temperatures) else None
         if gripper_temp is None or math.isnan(gripper_temp):
             tone = "#94a3b8"
             state = "unknown"

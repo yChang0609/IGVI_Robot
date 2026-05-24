@@ -11,6 +11,9 @@ COMMAND_TO_POSE = {
     "open": "place_pose_deg",
     "place": "place_pose_deg",
     "release": "place_pose_deg",
+    "home": "home_pose_deg",
+    "carry": "carry_pose_deg",
+    "hold": "carry_pose_deg",
     "close": "grasp_pose_deg",
     "grasp": "grasp_pose_deg",
 }
@@ -24,7 +27,7 @@ class GripperCommand(Node):
     def run(self, command: str) -> int:
         pose_name = COMMAND_TO_POSE.get(command)
         if pose_name is None:
-            self.get_logger().error("usage: ros2 run wildbot_grasp gripper_command open|close")
+            self.get_logger().error("usage: ros2 run wildbot_grasp gripper_command open|close|home|place|release|carry")
             return 2
 
         # Give DDS a short moment to match /arm_controller/joint_trajectory.
