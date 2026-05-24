@@ -136,6 +136,11 @@ class ArenaMissionServer(RetrieveBase):
                     if bx is None or by is None:
                         continue
                         
+                    bz = pos.get("z", 0.0)
+                    if bz > 0.15:
+                        self.get_logger().info(f"Skipping bear {obj_id} because it is too high (z={bz:.2f}m)")
+                        continue
+                        
                     # Check exclusion radius
                     if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
                         continue
@@ -314,6 +319,10 @@ class ArenaMissionServer(RetrieveBase):
                             if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
                                 valid = False
                             if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
+                                valid = False
+                                
+                            bz = pos.get("z", 0.0)
+                            if bz > 0.15:
                                 valid = False
                                 
                             if valid:

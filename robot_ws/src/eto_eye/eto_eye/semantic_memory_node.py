@@ -252,7 +252,7 @@ class SemanticMemoryNode(Node):
             if not det.get('depth_valid'):
                 continue
 
-            depth_z = det['depth_m']
+            depth_z = float(det['depth_m'])
             # Filter out detections that are too close (depth < 0.45 meters).
             # This prevents adding the carried object (bear in gripper) inside the robot footprint
             # into spatial memory as a false ground detection while the robot is navigating.
@@ -260,8 +260,8 @@ class SemanticMemoryNode(Node):
                 continue
 
             class_name = det.get('class_name', str(det.get('class_id')))
-            center_x = det['bbox']['center_x']
-            center_y = det['bbox']['center_y']
+            center_x = float(det['bbox']['center_x'])
+            center_y = float(det['bbox']['center_y'])
             score = det.get('score', 0.0)
 
             # If the arm is active (not home) and the detection center_y is in the bottom masked region of the image,
