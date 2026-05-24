@@ -14,7 +14,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 
 from std_msgs.msg import Empty, String
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import PointStamped
 
@@ -57,6 +57,35 @@ class SemanticMemoryNode(Node):
         self.camera_frame_id = None
         self.latest_depth_stamp = None
 
+        # Arm state and shared parameters for dynamic bottom-half image masking
+        env_home = os.environ.get("ARM_HOME_POSE_DEG")
+        if env_home:
+            try:
+                default_home = [float(x.strip()) for x in env_home.split(",")]
+            except Exception:
+                default_home = [190.0, 0.0, 240.0]
+        else:
+            default_home = [190.0, 0.0, 240.0]
+
+        env_tol = os.environ.get("ARM_JOINT_TOLERANCE_DEG")
+        default_tol = float(env_tol) if env_tol else 10.0
+
+        env_mask_pct = os.environ.get("ARM_MASK_HEIGHT_PCT")
+        default_mask_pct = float(env_mask_pct) if env_mask_pct else 0.50
+
+        self.declare_parameter('home_pose_deg', default_home)
+        self.declare_parameter('joint_tolerance_deg', default_tol)
+        self.declare_parameter('mask_height_pct', default_mask_pct)
+
+        home_deg = self.get_parameter('home_pose_deg').value
+        self.arm_1_home = math.radians(float(home_deg[0]))
+        self.arm_2_home = math.radians(float(home_deg[1]))
+        self.gripper_home = math.radians(float(home_deg[2]))
+        self.tolerance = math.radians(self.get_parameter('joint_tolerance_deg').value)
+        self.mask_height_pct = self.get_parameter('mask_height_pct').value
+
+        self.arm_is_home = True
+
         # { object_id: {class_name, x, y, z, last_seen, hits, score, last_depth_m} }
         self.memory = {}
         self.memory_lock = __import__('threading').Lock()
@@ -68,6 +97,13 @@ class SemanticMemoryNode(Node):
             self.get_parameter('camera_info_topic').value,
             self.camera_info_callback,
             10
+        )
+        self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_states_callback,
+            10,
+            callback_group=self.callback_group
         )
         self.create_subscription(
             String,
@@ -165,6 +201,28 @@ class SemanticMemoryNode(Node):
         self.camera_frame_id = msg.header.frame_id
         self.latest_depth_stamp = msg.header.stamp
 
+    def joint_states_callback(self, msg: JointState):
+        joint_map = dict(zip(msg.name, msg.position))
+        arm_1 = joint_map.get('arm_1_joint')
+        arm_2 = joint_map.get('arm_2_joint')
+        gripper = joint_map.get('gripper_joint')
+
+        if arm_1 is None or arm_2 is None or gripper is None:
+            return
+
+        dev_1 = abs(arm_1 - self.arm_1_home)
+        dev_2 = abs(arm_2 - self.arm_2_home)
+        dev_g = abs(gripper - self.gripper_home)
+
+        is_home = (dev_1 <= self.tolerance) and (dev_2 <= self.tolerance) and (dev_g <= self.tolerance)
+        if is_home != self.arm_is_home:
+            self.arm_is_home = is_home
+            state_str = "HOME (All Detections Active)" if is_home else "ACTIVE (Bottom Masking Enabled)"
+            self.get_logger().info(
+                f"Arm state transition: {state_str}. "
+                f"Joints: arm_1={math.degrees(arm_1):.1f}°, arm_2={math.degrees(arm_2):.1f}°, gripper={math.degrees(gripper):.1f}°"
+            )
+
     def detection_callback(self, msg: String):
         if not self.camera_info_received:
             return
@@ -198,13 +256,22 @@ class SemanticMemoryNode(Node):
             # Filter out detections that are too close (depth < 0.45 meters).
             # This prevents adding the carried object (bear in gripper) inside the robot footprint
             # into spatial memory as a false ground detection while the robot is navigating.
-            # if depth_z < 0.45:
-            #     continue
+            if depth_z < 0.45:
+                continue
 
             class_name = det.get('class_name', str(det.get('class_id')))
             center_x = det['bbox']['center_x']
             center_y = det['bbox']['center_y']
             score = det.get('score', 0.0)
+
+            # If the arm is active (not home) and the detection center_y is in the bottom masked region of the image,
+            # we reject it entirely to prevent the carried object or raised arm from generating false spatial memory entries.
+            if not self.arm_is_home:
+                img_height = self.cam_model.height if (self.cam_model and self.cam_model.height) else 720
+                mask_start_y = img_height * (1.0 - self.mask_height_pct)
+                if center_y > mask_start_y:
+                    self.get_logger().info(f"Rejecting detection in bottom half (y={center_y:.1f}/{img_height}) because arm is active.")
+                    continue
 
             ray = self.cam_model.projectPixelTo3dRay((center_x, center_y))
             cam_x = ray[0] * (depth_z / ray[2])

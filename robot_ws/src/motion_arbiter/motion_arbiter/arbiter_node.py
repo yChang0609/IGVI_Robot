@@ -65,8 +65,15 @@ class MotionArbiter(Node):
         self.declare_parameter("control_rate", 20.0)
         self.declare_parameter("override_timeout", 0.6)
         self.declare_parameter("lookahead_distance", 0.35)
-        self.declare_parameter("goal_tolerance", 0.1)
-        self.declare_parameter("yaw_tolerance", 0.1)
+        import os
+        env_goal_tol = os.environ.get("RETRIEVE_ARRIVAL_TOLERANCE")
+        default_goal_tol = float(env_goal_tol) if env_goal_tol else 0.1
+
+        env_yaw_tol = os.environ.get("RETRIEVE_YAW_TOLERANCE")
+        default_yaw_tol = float(env_yaw_tol) if env_yaw_tol else 0.1
+
+        self.declare_parameter("goal_tolerance", default_goal_tol)
+        self.declare_parameter("yaw_tolerance", default_yaw_tol)
         self.declare_parameter("kp_linear_align", 0.8)
         self.declare_parameter("max_linear_velocity", 0.2)
         self.declare_parameter("max_angular_velocity", 0.9)
@@ -77,7 +84,7 @@ class MotionArbiter(Node):
         self.declare_parameter("slow_heading_threshold", math.pi / 4)
         self.declare_parameter("slow_linear_velocity", 0.0)
         self.declare_parameter("output_topic", "/cmd_vel")
-        self.declare_parameter("enable_drift_correction", False)
+        self.declare_parameter("enable_drift_correction", True)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._override_timeout = float(self.get_parameter("override_timeout").value)

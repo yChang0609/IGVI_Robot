@@ -8,6 +8,7 @@ import rclpy
 from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
 from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import Twist
 
 from wildbot_grasp.action import SearchAndRetrieve
 from wildbot_grasp_nodes.retrieve_base import RetrieveBase
@@ -94,15 +95,17 @@ class ArenaMissionServer(RetrieveBase):
                     result.success = False
                     result.message = "Arena mission canceled"
                     return result
-                
                 waypoints = self.load_waypoints()
                 our_base = waypoints.get("our_base")
                 enemy_base = waypoints.get("enemy_base")
+                home_pose = waypoints.get("home_pose")
                 
-                if not our_base:
-                    self.publish_feedback(goal_handle, "error", 0.0, "Missing 'our_base' in waypoints")
+                # We need a valid return pose (home_pose or our_base) to return the bear to.
+                return_target = home_pose or our_base
+                if not return_target:
+                    self.publish_feedback(goal_handle, "error", 0.0, "Missing both 'home_pose' and 'our_base' in waypoints")
                     result.success = False
-                    result.message = "Missing 'our_base' in waypoints"
+                    result.message = "Missing both 'home_pose' and 'our_base' in waypoints"
                     goal_handle.abort()
                     return result
 
@@ -156,18 +159,13 @@ class ArenaMissionServer(RetrieveBase):
                         
                     req = SearchAndRetrieve.Goal()
                     req.target_id = target_id
-                    req.home_pose_x = float(our_base["x"])
-                    req.home_pose_y = float(our_base["y"])
-                    req.home_pose_yaw = float(our_base["yaw"])
+                    req.home_pose_x = float(return_target["x"])
+                    req.home_pose_y = float(return_target["y"])
+                    req.home_pose_yaw = float(return_target["yaw"])
                     
                     send_future = self.search_client.send_goal_async(req)
                     while rclpy.ok() and not send_future.done():
-                        if goal_handle.is_cancel_requested:
-                            break
-                        time.sleep(0.1)
-                        
-                    if goal_handle.is_cancel_requested:
-                        continue
+                        time.sleep(0.05)
                         
                     search_goal_handle = send_future.result()
                     if not search_goal_handle.accepted:
@@ -175,13 +173,33 @@ class ArenaMissionServer(RetrieveBase):
                         blacklist[target_id] = time.monotonic()
                         continue
                         
+                    if goal_handle.is_cancel_requested:
+                        cancel_future = search_goal_handle.cancel_goal_async()
+                        self.cmd_vel_pub.publish(Twist())
+                        while rclpy.ok() and not cancel_future.done():
+                            time.sleep(0.05)
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
+                        
                     result_future = search_goal_handle.get_result_async()
                     cancel_sent = False
                     while rclpy.ok() and not result_future.done():
-                        if goal_handle.is_cancel_requested and not cancel_sent:
-                            search_goal_handle.cancel_goal_async()
-                            cancel_sent = True
+                        if goal_handle.is_cancel_requested:
+                            if not cancel_sent:
+                                cancel_future = search_goal_handle.cancel_goal_async()
+                                self.cmd_vel_pub.publish(Twist())
+                                cancel_sent = True
+                            time.sleep(0.1)
+                            continue
                         time.sleep(0.2)
+                        
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
                         
                     wrapped_result = result_future.result()
                     if wrapped_result and wrapped_result.status == 4: # STATUS_SUCCEEDED
@@ -221,16 +239,21 @@ class ArenaMissionServer(RetrieveBase):
                     
                 send_future = self.nav_client.send_goal_async(nav_goal)
                 while rclpy.ok() and not send_future.done():
-                    if goal_handle.is_cancel_requested:
-                        break
-                    time.sleep(0.1)
-                    
-                if goal_handle.is_cancel_requested:
-                    continue
+                    time.sleep(0.05)
                     
                 nav_goal_handle = send_future.result()
                 if not nav_goal_handle.accepted:
                     continue
+                    
+                if goal_handle.is_cancel_requested:
+                    cancel_future = nav_goal_handle.cancel_goal_async()
+                    self.cmd_vel_pub.publish(Twist())
+                    while rclpy.ok() and not cancel_future.done():
+                        time.sleep(0.05)
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "Arena mission canceled"
+                    return result
                     
                 result_future = nav_goal_handle.get_result_async()
                 patrol_interrupted = False
@@ -241,10 +264,17 @@ class ArenaMissionServer(RetrieveBase):
                 patrol_start_time = time.time()
                 patrol_timeout = 60.0
                 
+                cancel_sent = False
                 while rclpy.ok():
                     if goal_handle.is_cancel_requested:
-                        nav_goal_handle.cancel_goal_async()
-                        break
+                        if not cancel_sent:
+                            cancel_future = nav_goal_handle.cancel_goal_async()
+                            self.cmd_vel_pub.publish(Twist())
+                            cancel_sent = True
+                        if result_future.done():
+                            break
+                        time.sleep(0.1)
+                        continue
                         
                     if time.time() - patrol_start_time > patrol_timeout:
                         self.get_logger().warn(f"Patrol to {patrol_name} timed out")
@@ -296,6 +326,12 @@ class ArenaMissionServer(RetrieveBase):
                         break
                         
                     time.sleep(0.3)
+                    
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "Arena mission canceled"
+                    return result
                     
                 if not patrol_interrupted:
                     self.get_logger().info(f"Finished patrol {patrol_name}")

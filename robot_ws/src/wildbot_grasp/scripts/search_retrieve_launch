@@ -21,5 +21,6 @@ append_param ros_args RETRIEVE_APPROACH_TIMEOUT_SEC approach_timeout_sec
 append_param ros_args RETRIEVE_CENTER_TOLERANCE_PX  approach_center_tolerance_px
 append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
 append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
+append_param ros_args RETRIEVE_YAW_TOLERANCE        yaw_tolerance
 
 exec ros2 run wildbot_grasp search_retrieve_server "${ros_args[@]}"

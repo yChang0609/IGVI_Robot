@@ -9,10 +9,26 @@ class CameraMaskerNode(Node):
     def __init__(self):
         super().__init__('camera_masker_node')
 
+        import os
         # Parameters
-        self.declare_parameter('home_pose_deg', [190.0, 0.0, 240.0])
-        self.declare_parameter('joint_tolerance_deg', 10.0)
-        self.declare_parameter('mask_height_pct', 0.50) # Bottom 45% of the image
+        env_home = os.environ.get("ARM_HOME_POSE_DEG")
+        if env_home:
+            try:
+                default_home = [float(x.strip()) for x in env_home.split(",")]
+            except Exception:
+                default_home = [190.0, 0.0, 240.0]
+        else:
+            default_home = [190.0, 0.0, 240.0]
+
+        env_tol = os.environ.get("ARM_JOINT_TOLERANCE_DEG")
+        default_tol = float(env_tol) if env_tol else 10.0
+
+        env_mask_pct = os.environ.get("ARM_MASK_HEIGHT_PCT")
+        default_mask_pct = float(env_mask_pct) if env_mask_pct else 0.50
+
+        self.declare_parameter('home_pose_deg', default_home)
+        self.declare_parameter('joint_tolerance_deg', default_tol)
+        self.declare_parameter('mask_height_pct', default_mask_pct)
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('rgb_input_topic', '/rgb/image_raw')
         self.declare_parameter('depth_input_topic', '/depth_to_rgb/image_raw')

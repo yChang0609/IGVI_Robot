@@ -39,7 +39,18 @@ class ArmCommander:
         self.node.declare_parameter("grasp_pose_deg", [167.0, 75.0, 130.0])
         self.node.declare_parameter("place_pose_deg", [120.0, 75.0, 239.0])
         self.node.declare_parameter("carry_pose_deg", [190.0, 0.0, 130.0])
-        self.node.declare_parameter("home_pose_deg", [190.0, 0.0, 240.0])
+        
+        import os
+        env_home = os.environ.get("ARM_HOME_POSE_DEG")
+        if env_home:
+            try:
+                default_home = [float(x.strip()) for x in env_home.split(",")]
+            except Exception:
+                default_home = [190.0, 0.0, 240.0]
+        else:
+            default_home = [190.0, 0.0, 240.0]
+            
+        self.node.declare_parameter("home_pose_deg", default_home)
 
     def pose_deg(self, name: str) -> list[float]:
         return [float(value) for value in self.node.get_parameter(name).value]

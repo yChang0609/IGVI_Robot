@@ -38,8 +38,15 @@ class RetrieveBase(Node):
         self.declare_parameter("visual_servo_kp", visual_servo_kp)
         self.declare_parameter("image_center_x", 640.0)
         self.declare_parameter("nav_server_timeout", 30.0)
-        self.declare_parameter("arrival_tolerance", 0.1)
-        self.declare_parameter("yaw_tolerance", 0.1)
+        import os
+        env_arrival_tol = os.environ.get("RETRIEVE_ARRIVAL_TOLERANCE")
+        default_arrival_tol = float(env_arrival_tol) if env_arrival_tol else 0.1
+
+        env_yaw_tol = os.environ.get("RETRIEVE_YAW_TOLERANCE")
+        default_yaw_tol = float(env_yaw_tol) if env_yaw_tol else 0.1
+
+        self.declare_parameter("arrival_tolerance", default_arrival_tol)
+        self.declare_parameter("yaw_tolerance", default_yaw_tol)
         self.declare_parameter("arrival_timeout", 45.0)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
@@ -913,4 +920,13 @@ class RetrieveBase(Node):
             if goal_handle.is_cancel_requested:
                 return False, "mission canceled"
             time.sleep(0.05)
-        return True, "object released"
+            
+        # Return to home pose
+        self.arm.publish_named("return_home", "home_pose_deg")
+        deadline = time.monotonic() + self.arm.motion_wait_sec()
+        while rclpy.ok() and time.monotonic() < deadline:
+            if goal_handle.is_cancel_requested:
+                return False, "mission canceled"
+            time.sleep(0.05)
+            
+        return True, "object released and arm returned home"
