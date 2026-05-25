@@ -576,6 +576,7 @@ class RetrieveBase(Node):
         standoff = float(self.get_parameter("standoff_distance").value)
         bx, by = float(target_pos["x"]), float(target_pos["y"])
         rx, ry = robot_pose[0], robot_pose[1]
+        robot_angle = math.atan2(ry - by, rx - bx)
         costmap = self.latest_costmap()
         sample_count = max(8, int(self.get_parameter("approach_sample_count").value))
         best_cost = float("inf")
@@ -589,10 +590,8 @@ class RetrieveBase(Node):
             angle_rad = idx * math.tau / sample_count
             cx = bx + standoff * math.cos(angle_rad)
             cy = by + standoff * math.sin(angle_rad)
-            same_side = (
-                math.cos(angle_rad) * (rx - bx)
-                + math.sin(angle_rad) * (ry - by)
-            ) >= 0.0
+            angle_delta = abs(self._ang_norm(angle_rad - robot_angle))
+            same_side = angle_delta <= math.pi / 2.0
             candidate_cost = 0.0
             if costmap is not None:
                 candidate_cost = self.approach_candidate_cost(costmap, cx, cy)
@@ -603,72 +602,89 @@ class RetrieveBase(Node):
                 "y": cy,
                 "same_side": same_side,
                 "cost": candidate_cost,
+                "angle_delta": angle_delta,
                 "robot_dist": math.hypot(cx - rx, cy - ry),
             })
 
+        nearby_candidates = [c for c in candidates if c["same_side"]]
+        fallback_candidates = [c for c in candidates if not c["same_side"]]
+
         if costmap is None:
             self.get_logger().warn(
-                "global costmap unavailable; selecting approach by path length only"
+                "global costmap unavailable; selecting nearby approach by path length only"
             )
-            candidates.sort(key=lambda c: (0 if c["same_side"] else 1, c["robot_dist"]))
+            sort_key = lambda c: (c["angle_delta"], c["robot_dist"])
         else:
-            candidates.sort(key=lambda c: (c["cost"], 0 if c["same_side"] else 1, c["robot_dist"]))
+            sort_key = lambda c: (c["cost"], c["angle_delta"], c["robot_dist"])
 
-        for candidate in candidates:
-            if costmap is not None and best_pose is not None and candidate["cost"] > best_cost:
+        selected_group = None
+        search_groups = [
+            ("nearby", sorted(nearby_candidates, key=sort_key)),
+            ("opposite fallback", sorted(fallback_candidates, key=sort_key)),
+        ]
+
+        for group_name, group_candidates in search_groups:
+            if not group_candidates:
+                continue
+            for candidate in group_candidates:
+                if costmap is not None and best_pose is not None and candidate["cost"] > best_cost:
+                    break
+
+                angle_rad = candidate["angle_rad"]
+                cx = candidate["x"]
+                cy = candidate["y"]
+                goal_pose = self.make_pose(cx, cy, angle_rad + math.pi)
+
+                req = ComputePathToPose.Goal()
+                req.use_start = True
+                req.start = start_pose
+                req.goal = goal_pose
+                future = self.path_client.send_goal_async(req)
+                deadline = time.monotonic() + 3.0
+                while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if not future.done():
+                    continue
+
+                path_goal_handle = future.result()
+                if path_goal_handle is None or not path_goal_handle.accepted:
+                    continue
+
+                result_future = path_goal_handle.get_result_async()
+                deadline = time.monotonic() + 5.0
+                while rclpy.ok() and not result_future.done() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if not result_future.done():
+                    continue
+
+                result = result_future.result()
+                resp = result.result if result is not None else None
+                if resp is None or not resp.path.poses:
+                    continue
+
+                path_len = 0.0
+                prev = start_pose.pose.position
+                for p in resp.path.poses:
+                    path_len += math.hypot(p.pose.position.x - prev.x, p.pose.position.y - prev.y)
+                    prev = p.pose.position
+                candidate_cost = candidate["cost"]
+                if costmap is None:
+                    is_better = path_len < best_len
+                else:
+                    is_better = (
+                        candidate_cost < best_cost
+                        or (candidate_cost == best_cost and path_len < best_len)
+                    )
+                if is_better:
+                    best_cost = candidate_cost
+                    best_len = path_len
+                    best_pose = goal_pose
+                    best_path = resp.path
+                    best_angle = candidate["angle_deg"]
+                    selected_group = group_name
+
+            if best_pose is not None:
                 break
-
-            angle_rad = candidate["angle_rad"]
-            cx = candidate["x"]
-            cy = candidate["y"]
-            goal_pose = self.make_pose(cx, cy, angle_rad + math.pi)
-
-            req = ComputePathToPose.Goal()
-            req.use_start = True
-            req.start = start_pose
-            req.goal = goal_pose
-            future = self.path_client.send_goal_async(req)
-            deadline = time.monotonic() + 3.0
-            while rclpy.ok() and not future.done() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            if not future.done():
-                continue
-
-            path_goal_handle = future.result()
-            if path_goal_handle is None or not path_goal_handle.accepted:
-                continue
-
-            result_future = path_goal_handle.get_result_async()
-            deadline = time.monotonic() + 5.0
-            while rclpy.ok() and not result_future.done() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            if not result_future.done():
-                continue
-
-            result = result_future.result()
-            resp = result.result if result is not None else None
-            if resp is None or not resp.path.poses:
-                continue
-
-            path_len = 0.0
-            prev = start_pose.pose.position
-            for p in resp.path.poses:
-                path_len += math.hypot(p.pose.position.x - prev.x, p.pose.position.y - prev.y)
-                prev = p.pose.position
-            candidate_cost = candidate["cost"]
-            if costmap is None:
-                is_better = path_len < best_len
-            else:
-                is_better = (
-                    candidate_cost < best_cost
-                    or (candidate_cost == best_cost and path_len < best_len)
-                )
-            if is_better:
-                best_cost = candidate_cost
-                best_len = path_len
-                best_pose = goal_pose
-                best_path = resp.path
-                best_angle = candidate["angle_deg"]
 
         if best_pose is None:
             return None, "No valid path found to target"
@@ -680,10 +696,10 @@ class RetrieveBase(Node):
         if costmap is not None:
             return (
                 best_pose,
-                f"selected approach angle {best_angle:.1f}deg, "
+                f"selected {selected_group} approach angle {best_angle:.1f}deg, "
                 f"cost {best_cost:.0f}, path length {best_len:.2f}m",
             )
-        return best_pose, f"selected approach path length {best_len:.2f}m"
+        return best_pose, f"selected {selected_group} approach path length {best_len:.2f}m"
 
     # ------------------------------------------------------------------
     # Visual approach: drive toward target until at grab distance
