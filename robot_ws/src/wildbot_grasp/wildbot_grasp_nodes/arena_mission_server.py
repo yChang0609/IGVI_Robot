@@ -24,7 +24,7 @@ class ArenaMissionServer(RetrieveBase):
             standoff_distance=0.45,
             visual_servo_kp=0.005,
         )
-        self.declare_parameter("base_exclusion_radius_m", 0.3)
+        self.declare_parameter("base_exclusion_radius_m", 0.5)
         self.declare_parameter("blacklist_timeout_sec", 60.0)
         
         self._goal_lock = threading.Lock()
@@ -127,6 +127,7 @@ class ArenaMissionServer(RetrieveBase):
                 # 2. Find best bear
                 best_bear = None
                 best_dist = float('inf')
+                best_robot_dist = 0.0
                 
                 robot_xy = self.get_robot_xy()
                 radius = float(self.get_parameter("base_exclusion_radius_m").value)
@@ -158,14 +159,17 @@ class ArenaMissionServer(RetrieveBase):
                         continue
                         
                     d_robot = self._dist(bx, by, robot_xy[0], robot_xy[1])
-                    if d_robot < best_dist:
-                        best_dist = d_robot
+                    d_base = self._dist(bx, by, our_base["x"], our_base["y"]) if our_base else d_robot
+                    
+                    if d_base < best_dist:
+                        best_dist = d_base
                         best_bear = obj
+                        best_robot_dist = d_robot
 
                 # If found a valid bear, go grab it
                 if best_bear:
                     target_id = best_bear['id']
-                    self.publish_feedback(goal_handle, "grabbing", 0.0, f"Found {target_id} at {best_dist:.1f}m. Calling search_retrieve.")
+                    self.publish_feedback(goal_handle, "grabbing", 0.0, f"Found {target_id} at {best_robot_dist:.1f}m (base dist: {best_dist:.1f}m). Calling search_retrieve.")
                     
                     if not self.search_client.wait_for_server(timeout_sec=5.0):
                         self.get_logger().error("search_retrieve server not available")

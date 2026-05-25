@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 import numpy as np
@@ -254,7 +255,11 @@ class Map2DView(QWidget):
                 painter.drawLine(QPointF(pt.x(), pt.y() - cross), QPointF(pt.x(), pt.y() + cross))
             elif is_our_base or is_enemy_base:
                 res = self._map_data.get("resolution", 0.05)
-                exclusion_radius_px = 0.3 / res if res > 0 else 6
+                try:
+                    exclusion_radius_m = float(os.environ.get("ARENA_EXCLUSION_RADIUS_M", "0.5"))
+                except (ValueError, TypeError):
+                    exclusion_radius_m = 0.5
+                exclusion_radius_px = exclusion_radius_m / res if res > 0 else 6
                 painter.setPen(QPen(pen_color, 1, Qt.PenStyle.DashLine))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(pt, exclusion_radius_px, exclusion_radius_px)
