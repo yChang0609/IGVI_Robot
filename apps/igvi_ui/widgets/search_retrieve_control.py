@@ -329,6 +329,16 @@ class SearchRetrieveControl(QWidget):
     def shutdown(self) -> None:
         self._status_timer.stop()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._status_timer.isActive():
+            self._status_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._status_timer.stop()
+
+
 
     def _toggle_arena_set(self, target: str) -> None:
         if target == "":

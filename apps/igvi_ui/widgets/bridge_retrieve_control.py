@@ -44,12 +44,19 @@ class BridgeRetrieveControl(QWidget):
         self._status_timer.timeout.connect(self._poll_status)
         self._build_ui()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._active_bridge_task is not None:
+            self._status_timer.start()
+
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._disarm_bridge_pick()
         self._disarm_door_pick()
         self._disarm_return_pick()
         self._disarm_home_pick()
+        self._status_timer.stop()
+
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)

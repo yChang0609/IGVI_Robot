@@ -196,36 +196,25 @@ class ArenaMissionServer(RetrieveBase):
                         continue
                         
                     if goal_handle.is_cancel_requested:
-                        cancel_future = search_goal_handle.cancel_goal_async()
+                        search_goal_handle.cancel_goal_async()
                         self._plan_pub.publish(Path())
                         self.cmd_vel_pub.publish(Twist())
-                        while rclpy.ok() and not cancel_future.done():
-                            time.sleep(0.05)
                         goal_handle.canceled()
                         result.success = False
                         result.message = "Arena mission canceled"
                         return result
                         
                     result_future = search_goal_handle.get_result_async()
-                    cancel_sent = False
                     while rclpy.ok() and not result_future.done():
                         if goal_handle.is_cancel_requested:
-                            if not cancel_sent:
-                                cancel_future = search_goal_handle.cancel_goal_async()
-                                self._plan_pub.publish(Path())
-                                self.cmd_vel_pub.publish(Twist())
-                                cancel_sent = True
-                            time.sleep(0.1)
-                            continue
+                            search_goal_handle.cancel_goal_async()
+                            self._plan_pub.publish(Path())
+                            self.cmd_vel_pub.publish(Twist())
+                            goal_handle.canceled()
+                            result.success = False
+                            result.message = "Arena mission canceled"
+                            return result
                         time.sleep(0.2)
-                        
-                    if goal_handle.is_cancel_requested:
-                        self._plan_pub.publish(Path())
-                        self.cmd_vel_pub.publish(Twist())
-                        goal_handle.canceled()
-                        result.success = False
-                        result.message = "Arena mission canceled"
-                        return result
                         
                     wrapped_result = result_future.result()
                     if wrapped_result and wrapped_result.status == 4: # STATUS_SUCCEEDED
@@ -275,11 +264,9 @@ class ArenaMissionServer(RetrieveBase):
                     continue
                     
                 if goal_handle.is_cancel_requested:
-                    cancel_future = nav_goal_handle.cancel_goal_async()
+                    nav_goal_handle.cancel_goal_async()
                     self._plan_pub.publish(Path())
                     self.cmd_vel_pub.publish(Twist())
-                    while rclpy.ok() and not cancel_future.done():
-                        time.sleep(0.05)
                     goal_handle.canceled()
                     result.success = False
                     result.message = "Arena mission canceled"
@@ -303,18 +290,15 @@ class ArenaMissionServer(RetrieveBase):
                 patrol_start_time = time.time()
                 patrol_timeout = 60.0
                 
-                cancel_sent = False
                 while rclpy.ok():
                     if goal_handle.is_cancel_requested:
-                        if not cancel_sent:
-                            cancel_future = nav_goal_handle.cancel_goal_async()
-                            self._plan_pub.publish(Path())
-                            self.cmd_vel_pub.publish(Twist())
-                            cancel_sent = True
-                        if result_future.done():
-                            break
-                        time.sleep(0.1)
-                        continue
+                        nav_goal_handle.cancel_goal_async()
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
                         
                     if time.time() - patrol_start_time > patrol_timeout:
                         self.get_logger().warn(f"Patrol to {patrol_name} timed out")

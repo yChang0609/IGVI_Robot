@@ -80,7 +80,7 @@ class MotionArbiter(Node):
         self.declare_parameter("yaw_tolerance", default_yaw_tol)
         self.declare_parameter("kp_linear_align", 0.8)
         self.declare_parameter("max_linear_velocity", 0.3)
-        self.declare_parameter("max_angular_velocity", 0.15)
+        self.declare_parameter("max_angular_velocity", 0.5)
         self.declare_parameter("accel_linear", 0.6)
         self.declare_parameter("accel_angular", 2.0)
         self.declare_parameter("kp_angular", 1.4)
