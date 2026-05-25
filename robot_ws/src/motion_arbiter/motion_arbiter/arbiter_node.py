@@ -478,11 +478,23 @@ class MotionArbiter(Node):
         heading_error = _wrap_angle(target_heading - yaw)
 
         slow_thr = float(self.get_parameter("slow_heading_threshold").value)
-        if abs(heading_error) > slow_thr:
-            # Slow down but do not stop completely if heading error is large
-            vx = float(self.get_parameter("slow_linear_velocity").value)
+        max_vx = float(self.get_parameter("max_linear_velocity").value)
+        slow_vx = float(self.get_parameter("slow_linear_velocity").value)
+        
+        # 1. Linear deceleration based on heading error
+        if slow_thr > 0.0:
+            ratio = max(0.0, min(1.0, 1.0 - (abs(heading_error) / slow_thr)))
+            vx = slow_vx + ratio * (max_vx - slow_vx)
         else:
-            vx = float(self.get_parameter("max_linear_velocity").value)
+            vx = max_vx
+            
+        # 2. Predictive deceleration based on physical acceleration limits to prevent overshoot
+        accel_lin = float(self.get_parameter("accel_linear").value)
+        # We ensure a minimum speed floor of 0.05 m/s so the robot never stalls due to friction before crossing the goal tolerance
+        MIN_DRIVE_VELOCITY = 0.05
+        max_allowed_vx = max(MIN_DRIVE_VELOCITY, math.sqrt(2.0 * accel_lin * max(0.0, dist_to_goal)))
+        vx = min(vx, max_allowed_vx)
+
         wz = float(self.get_parameter("kp_angular").value) * heading_error
         return vx, wz, closest_idx, State.PATH_TRACKING
 
