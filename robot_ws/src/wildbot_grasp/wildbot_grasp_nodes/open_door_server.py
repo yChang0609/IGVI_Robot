@@ -535,6 +535,10 @@ class OpenDoorServer(Node):
         # The grace is measured from loss onset (not state entry) so a few dropped
         # frames near the door — common at close range — don't abort the slam.
         lost_since = None
+        # Last depth reading that was valid. Used to "coast" into PRESS when
+        # the Kinect drops below its minimum range and stops returning valid
+        # depth pixels — the robot was already close enough, just proceed.
+        last_valid_depth_m: float = 0.0
 
         self._publish_feedback(goal_handle, State.ALIGN.value, 0.05, "starting alignment")
 
@@ -583,13 +587,28 @@ class OpenDoorServer(Node):
             elif state == State.APPROACH:
                 if det is None or not det.depth_valid:
                     self._publish_twist(0.0, 0.0)
-                    if lost_since is None:
-                        lost_since = time.monotonic()
-                    if lost_too_long():
-                        state, state_entered, lost_since = State.ABORT, time.monotonic(), None
-                        self._publish_feedback(goal_handle, state.value, 0.0, "bar/depth lost in APPROACH")
+                    # Kinect depth drops out below ~0.3 m (returns fewer than
+                    # min_valid pixels). If we already had a valid reading that
+                    # was within the ready-distance window, the robot is close
+                    # enough — proceed to PRESS rather than waiting and aborting.
+                    ready = float(self.get_parameter("ready_distance_m").value)
+                    if last_valid_depth_m > 0.0 and last_valid_depth_m <= ready * 1.3:
+                        self._publish_feedback(
+                            goal_handle,
+                            State.PRESS.value,
+                            0.5,
+                            f"depth lost at close range (last={last_valid_depth_m:.3f}m) — proceeding",
+                        )
+                        state, state_entered, lost_since = State.PRESS, time.monotonic(), None
+                    else:
+                        if lost_since is None:
+                            lost_since = time.monotonic()
+                        if lost_too_long():
+                            state, state_entered, lost_since = State.ABORT, time.monotonic(), None
+                            self._publish_feedback(goal_handle, state.value, 0.0, "bar/depth lost in APPROACH")
                 else:
                     lost_since = None  # detection recovered → reset the grace clock
+                    last_valid_depth_m = det.depth_m   # track for close-range coast
                     ready = float(self.get_parameter("ready_distance_m").value)
                     if det.depth_m > 0.0 and det.depth_m <= ready:
                         self._publish_twist(0.0, 0.0)
