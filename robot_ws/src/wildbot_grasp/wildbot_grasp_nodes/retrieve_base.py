@@ -81,7 +81,7 @@ class RetrieveBase(Node):
         self.declare_parameter("face_point_timeout_sec", 10.0)
 
         # Dynamic Obstacle Avoidance parameters
-        self.declare_parameter("avoidance_enabled", True)
+        self.declare_parameter("avoidance_enabled", False)
         self.declare_parameter("avoidance_lookahead_m", 0.40)
         self.declare_parameter("avoidance_radius_m", 0.16)
         self.declare_parameter("avoidance_min_height_m", 0.05)
