@@ -12,6 +12,13 @@ append_param() {
 }
 
 ros_args=(--ros-args)
+if [[ -f /configs/task_speeds.yaml ]]; then
+  ros_args+=(--params-file /configs/task_speeds.yaml)
+fi
+append_param ros_args RETRIEVE_TRANSIT_LINEAR_SPEED transit_linear_speed
+append_param ros_args RETRIEVE_TRANSIT_ANGULAR_SPEED transit_angular_speed
+append_param ros_args RETRIEVE_CARRY_LINEAR_SPEED   carry_linear_speed
+append_param ros_args RETRIEVE_CARRY_ANGULAR_SPEED  carry_angular_speed
 append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
 append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
 append_param ros_args RETRIEVE_YAW_TOLERANCE        yaw_tolerance

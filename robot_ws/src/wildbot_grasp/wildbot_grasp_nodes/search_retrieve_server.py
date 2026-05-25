@@ -68,7 +68,9 @@ class SearchRetrieveServer(RetrieveBase):
                 return result
     
             # 3. Navigate to standoff pose
-            ok, message = self.navigate_to_pose(goal_handle, approach_pose, "navigating", 0.3)
+            ok, message = self.navigate_to_pose(
+                goal_handle, approach_pose, "navigating", 0.3, speed_profile="transit"
+            )
             if not ok:
                 result.success = False
                 result.message = message
@@ -92,7 +94,9 @@ class SearchRetrieveServer(RetrieveBase):
             self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
             self.set_motion_arbiter_drift_correction(False)  # Disable precise alignment for return to home navigation
             home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
-            ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning", 0.9)
+            ok, message = self.navigate_to_pose(
+                goal_handle, home_pose, "returning", 0.9, speed_profile="carry"
+            )
             self.set_motion_arbiter_drift_correction(True)  # Re-enable drift correction for subsequent tasks
             if not ok:
                 result.success = False

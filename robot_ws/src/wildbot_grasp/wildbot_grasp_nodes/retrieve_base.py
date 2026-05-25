@@ -56,8 +56,13 @@ class RetrieveBase(Node):
         self.declare_parameter("arrival_tolerance", default_arrival_tol)
         self.declare_parameter("yaw_tolerance", default_yaw_tol)
         self.declare_parameter("arrival_timeout", 45.0)
+        self.declare_parameter("transit_linear_speed", 0.25)
+        self.declare_parameter("transit_angular_speed", 0.45)
+        self.declare_parameter("carry_linear_speed", 0.16)
+        self.declare_parameter("carry_angular_speed", 0.30)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
+        self.declare_parameter("approach_angular_speed", 0.30)
         self.declare_parameter("approach_timeout_sec", 20.0)
         self.declare_parameter("approach_sample_count", 32)
         # After a successful grab, reverse by however far the visual approach
@@ -434,10 +439,19 @@ class RetrieveBase(Node):
     # Navigation
     # ------------------------------------------------------------------
 
-    def navigate_to_pose(self, goal_handle, pose: PoseStamped, stage: str, progress: float):
+    def navigate_to_pose(
+        self,
+        goal_handle,
+        pose: PoseStamped,
+        stage: str,
+        progress: float,
+        speed_profile: str = "transit",
+    ):
         timeout = float(self.get_parameter("nav_server_timeout").value)
         if not self.nav_client.wait_for_server(timeout_sec=timeout):
             return False, "NavigateToPose action server not available"
+
+        self.set_motion_arbiter_speed_profile(speed_profile)
 
         max_replans = 5
         replan_count = 0
@@ -726,8 +740,10 @@ class RetrieveBase(Node):
         no_depth_centered_t0 = None
         no_detection_t0 = None
 
+        max_approach_wz = abs(float(self.get_parameter("approach_angular_speed").value))
+
         def clamp_ang(value):
-            return max(-0.3, min(0.3, value))
+            return max(-max_approach_wz, min(max_approach_wz, value))
 
         while rclpy.ok() and time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
@@ -1050,8 +1066,10 @@ class RetrieveBase(Node):
         centered_frames = 0
         lost_frames = 0
 
+        max_approach_wz = abs(float(self.get_parameter("approach_angular_speed").value))
+
         def clamp_ang(v):
-            return max(-0.3, min(0.3, v))
+            return max(-max_approach_wz, min(max_approach_wz, v))
 
         while rclpy.ok() and time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
@@ -1239,6 +1257,25 @@ class RetrieveBase(Node):
 
     def set_motion_arbiter_drift_correction(self, enabled: bool):
         """Dynamically set the enable_drift_correction parameter of motion_arbiter."""
+        self.set_motion_arbiter_params({"enable_drift_correction": bool(enabled)})
+
+    def set_motion_arbiter_speed_profile(self, profile: str) -> None:
+        """Apply task-level navigation speed limits to motion_arbiter."""
+        prefix = "carry" if profile == "carry" else "transit"
+        linear = float(self.get_parameter(f"{prefix}_linear_speed").value)
+        angular = float(self.get_parameter(f"{prefix}_angular_speed").value)
+        self.set_motion_arbiter_params(
+            {
+                "max_linear_velocity": linear,
+                "max_angular_velocity": angular,
+            }
+        )
+        self.get_logger().info(
+            f"motion speed profile={prefix} linear={linear:.2f} angular={angular:.2f}"
+        )
+
+    def set_motion_arbiter_params(self, params: dict[str, object]) -> None:
+        """Best-effort dynamic parameter update for motion_arbiter."""
         from rcl_interfaces.srv import SetParameters
         from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
         
@@ -1248,9 +1285,22 @@ class RetrieveBase(Node):
             return
             
         req = SetParameters.Request()
-        val = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(enabled))
-        param = Parameter(name="enable_drift_correction", value=val)
-        req.parameters = [param]
+        req.parameters = []
+        for name, value in params.items():
+            param_value = ParameterValue()
+            if isinstance(value, bool):
+                param_value.type = ParameterType.PARAMETER_BOOL
+                param_value.bool_value = bool(value)
+            elif isinstance(value, int):
+                param_value.type = ParameterType.PARAMETER_INTEGER
+                param_value.integer_value = int(value)
+            else:
+                param_value.type = ParameterType.PARAMETER_DOUBLE
+                param_value.double_value = float(value)
+            req.parameters.append(Parameter(name=name, value=param_value))
         
-        self.get_logger().info(f"Setting /motion_arbiter enable_drift_correction to {enabled}")
+        self.get_logger().info(
+            "Setting /motion_arbiter params: "
+            + ", ".join(f"{key}={value}" for key, value in params.items())
+        )
         client.call_async(req)

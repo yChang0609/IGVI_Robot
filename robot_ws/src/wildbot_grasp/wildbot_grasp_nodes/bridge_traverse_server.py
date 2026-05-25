@@ -85,7 +85,9 @@ class BridgeTraverseServer(RetrieveBase):
                     goal.bridge_pose_x - goal.home_pose_x,
                 )
             bridge_pose = self.make_pose(goal.bridge_pose_x, goal.bridge_pose_y, approach_yaw)
-            ok, message = self.navigate_to_pose(goal_handle, bridge_pose, "to_bridge_center", 0.45)
+            ok, message = self.navigate_to_pose(
+                goal_handle, bridge_pose, "to_bridge_center", 0.45, speed_profile="transit"
+            )
             if not ok:
                 result.success = False
                 result.message = message
@@ -117,7 +119,9 @@ class BridgeTraverseServer(RetrieveBase):
             total = len(return_legs)
             for index, (stage, pose) in enumerate(return_legs):
                 progress = 0.45 + 0.50 * ((index + 1) / total)
-                ok, message = self.navigate_to_pose(goal_handle, pose, stage, progress)
+                ok, message = self.navigate_to_pose(
+                    goal_handle, pose, stage, progress, speed_profile="transit"
+                )
                 if not ok:
                     result.success = False
                     result.message = message
