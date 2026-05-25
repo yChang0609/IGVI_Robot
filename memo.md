@@ -67,3 +67,11 @@ vision features). If RTAB-Map correction lag becomes an issue, revisit:
       `enable_odom_tf: false`.
 - [ ] RTAB-Map still publishes `map -> odom`; map does not drift/explode.
 - [ ] Continuous nav still works; localized pose keeps up with a fast move.
+
+
+
+
+self.declare_parameter("max_linear_velocity", 0.546)
+self.declare_parameter("max_angular_velocity", 0.9)
+self.declare_parameter("accel_linear", 0.6)
+self.declare_parameter("accel_angular", 4.0)
