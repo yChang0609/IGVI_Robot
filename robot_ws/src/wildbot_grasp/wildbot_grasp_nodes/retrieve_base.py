@@ -8,16 +8,24 @@ import rclpy
 import tf2_ros
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Path
+from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from wildbot_grasp.action import GrabObject
 from wildbot_grasp_nodes.motion import ArmCommander
+
+
+_MAP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class RetrieveBase(Node):
@@ -51,6 +59,7 @@ class RetrieveBase(Node):
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_timeout_sec", 20.0)
+        self.declare_parameter("approach_sample_count", 32)
         # After a successful grab, reverse by however far the visual approach
         # drove the robot in, so it doesn't drag the held object through whatever
         # it approached when navigating away.
@@ -104,6 +113,8 @@ class RetrieveBase(Node):
         self._last_obstacles_time = 0.0
         self._obstacles_lock = threading.Lock()
         self._path_lock = threading.Lock()
+        self._costmap = None
+        self._costmap_lock = threading.Lock()
 
         self.create_subscription(
             String, "/semantic_memory", self.memory_callback, 10,
@@ -123,6 +134,10 @@ class RetrieveBase(Node):
         )
         self.create_subscription(
             Path, "/plan", self._on_plan, 10,
+            callback_group=self.callback_group,
+        )
+        self.create_subscription(
+            OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS,
             callback_group=self.callback_group,
         )
         from sensor_msgs.msg import PointCloud2
@@ -204,6 +219,10 @@ class RetrieveBase(Node):
     def _on_plan(self, msg: Path) -> None:
         with self._path_lock:
             self._active_path = msg
+
+    def _on_costmap(self, msg: OccupancyGrid) -> None:
+        with self._costmap_lock:
+            self._costmap = msg
 
     def _on_obstacles(self, msg) -> None:
         with self._obstacles_lock:
@@ -372,6 +391,40 @@ class RetrieveBase(Node):
         pose.pose.orientation.w = qw
         return pose
 
+    def latest_costmap(self):
+        with self._costmap_lock:
+            return self._costmap
+
+    def costmap_value_at(self, costmap: OccupancyGrid, x: float, y: float) -> float:
+        info = costmap.info
+        resolution = float(info.resolution)
+        if resolution <= 0.0:
+            return 100.0
+
+        mx = math.floor((x - float(info.origin.position.x)) / resolution)
+        my = math.floor((y - float(info.origin.position.y)) / resolution)
+        if mx < 0 or my < 0 or mx >= int(info.width) or my >= int(info.height):
+            return 100.0
+
+        idx = my * int(info.width) + mx
+        if idx < 0 or idx >= len(costmap.data):
+            return 100.0
+
+        raw = int(costmap.data[idx])
+        if raw < 0:
+            return 100.0
+        return float(raw)
+
+    def approach_candidate_cost(self, costmap: OccupancyGrid, x: float, y: float) -> float:
+        """Use the worst cost near the approach center so we don't pick a pose
+        whose center is free but whose footprint is too close to a wall."""
+        radius = 0.12
+        samples = [(0.0, 0.0)]
+        for angle_idx in range(8):
+            angle = angle_idx * math.tau / 8.0
+            samples.append((radius * math.cos(angle), radius * math.sin(angle)))
+        return max(self.costmap_value_at(costmap, x + dx, y + dy) for dx, dy in samples)
+
     # ------------------------------------------------------------------
     # Navigation
     # ------------------------------------------------------------------
@@ -523,24 +576,51 @@ class RetrieveBase(Node):
         standoff = float(self.get_parameter("standoff_distance").value)
         bx, by = float(target_pos["x"]), float(target_pos["y"])
         rx, ry = robot_pose[0], robot_pose[1]
+        costmap = self.latest_costmap()
+        sample_count = max(8, int(self.get_parameter("approach_sample_count").value))
+        best_cost = float("inf")
         best_len = float("inf")
         best_pose = None
         best_path = None
+        best_angle = None
 
-        all_angles = [0, 45, 90, 135, 180, -135, -90, -45]
-        # Prefer standoffs on the same side of the bear as the robot.
-        # dot(standoff - bear, robot - bear) >= 0 means they are on the same side.
-        # This prevents the planner from choosing an approach that goes through the bear
-        # (which is not in the costmap and thus appears as free space to Nav2).
-        same_side = [a for a in all_angles
-                     if (math.cos(math.radians(a)) * (rx - bx)
-                         + math.sin(math.radians(a)) * (ry - by)) >= 0]
-        candidates = same_side if same_side else all_angles
-
-        for angle_deg in candidates:
-            angle_rad = math.radians(angle_deg)
+        candidates = []
+        for idx in range(sample_count):
+            angle_rad = idx * math.tau / sample_count
             cx = bx + standoff * math.cos(angle_rad)
             cy = by + standoff * math.sin(angle_rad)
+            same_side = (
+                math.cos(angle_rad) * (rx - bx)
+                + math.sin(angle_rad) * (ry - by)
+            ) >= 0.0
+            candidate_cost = 0.0
+            if costmap is not None:
+                candidate_cost = self.approach_candidate_cost(costmap, cx, cy)
+            candidates.append({
+                "angle_rad": angle_rad,
+                "angle_deg": math.degrees(angle_rad),
+                "x": cx,
+                "y": cy,
+                "same_side": same_side,
+                "cost": candidate_cost,
+                "robot_dist": math.hypot(cx - rx, cy - ry),
+            })
+
+        if costmap is None:
+            self.get_logger().warn(
+                "global costmap unavailable; selecting approach by path length only"
+            )
+            candidates.sort(key=lambda c: (0 if c["same_side"] else 1, c["robot_dist"]))
+        else:
+            candidates.sort(key=lambda c: (c["cost"], 0 if c["same_side"] else 1, c["robot_dist"]))
+
+        for candidate in candidates:
+            if costmap is not None and best_pose is not None and candidate["cost"] > best_cost:
+                break
+
+            angle_rad = candidate["angle_rad"]
+            cx = candidate["x"]
+            cy = candidate["y"]
             goal_pose = self.make_pose(cx, cy, angle_rad + math.pi)
 
             req = ComputePathToPose.Goal()
@@ -575,10 +655,20 @@ class RetrieveBase(Node):
             for p in resp.path.poses:
                 path_len += math.hypot(p.pose.position.x - prev.x, p.pose.position.y - prev.y)
                 prev = p.pose.position
-            if path_len < best_len:
+            candidate_cost = candidate["cost"]
+            if costmap is None:
+                is_better = path_len < best_len
+            else:
+                is_better = (
+                    candidate_cost < best_cost
+                    or (candidate_cost == best_cost and path_len < best_len)
+                )
+            if is_better:
+                best_cost = candidate_cost
                 best_len = path_len
                 best_pose = goal_pose
                 best_path = resp.path
+                best_angle = candidate["angle_deg"]
 
         if best_pose is None:
             return None, "No valid path found to target"
@@ -587,6 +677,12 @@ class RetrieveBase(Node):
         if best_path is not None:
             self._plan_pub.publish(best_path)
 
+        if costmap is not None:
+            return (
+                best_pose,
+                f"selected approach angle {best_angle:.1f}deg, "
+                f"cost {best_cost:.0f}, path length {best_len:.2f}m",
+            )
         return best_pose, f"selected approach path length {best_len:.2f}m"
 
     # ------------------------------------------------------------------
