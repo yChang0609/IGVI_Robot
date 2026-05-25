@@ -247,6 +247,9 @@ class ArenaMissionServer(RetrieveBase):
                 
                 self.publish_feedback(goal_handle, "patrolling", 0.0, f"Patrolling to {patrol_name} ({patrol_wp['x']:.2f}, {patrol_wp['y']:.2f})")
                 
+                # Disable precise drift correction during patrol navigation to avoid slow in-place alignment
+                self.set_motion_arbiter_drift_correction(False)
+                
                 nav_pose = self.make_pose(patrol_wp["x"], patrol_wp["y"], patrol_wp["yaw"])
                 nav_goal = NavigateToPose.Goal()
                 nav_goal.pose = nav_pose
@@ -345,6 +348,7 @@ class ArenaMissionServer(RetrieveBase):
                     
                     if patrol_interrupted:
                         self.publish_feedback(goal_handle, "interrupt", 0.0, "Bear spotted during patrol! Interrupting.")
+                        self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
                         nav_goal_handle.cancel_goal_async()
                         break
                         
@@ -358,6 +362,7 @@ class ArenaMissionServer(RetrieveBase):
                     
                 if not patrol_interrupted:
                     self.get_logger().info(f"Finished patrol {patrol_name}")
+                    self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
                     time.sleep(1.0) # pause at patrol point
 
         except Exception as e:

@@ -940,3 +940,21 @@ class RetrieveBase(Node):
             time.sleep(0.05)
             
         return True, "object released and arm returned home"
+
+    def set_motion_arbiter_drift_correction(self, enabled: bool):
+        """Dynamically set the enable_drift_correction parameter of motion_arbiter."""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+        
+        client = self.create_client(SetParameters, "/motion_arbiter/set_parameters")
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn("SetParameters service for /motion_arbiter not available")
+            return
+            
+        req = SetParameters.Request()
+        val = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(enabled))
+        param = Parameter(name="enable_drift_correction", value=val)
+        req.parameters = [param]
+        
+        self.get_logger().info(f"Setting /motion_arbiter enable_drift_correction to {enabled}")
+        client.call_async(req)

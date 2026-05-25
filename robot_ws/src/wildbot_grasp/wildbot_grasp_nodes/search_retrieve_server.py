@@ -90,8 +90,10 @@ class SearchRetrieveServer(RetrieveBase):
             # 6. Return to caller-specified home pose
             self.clear_costmaps()  # bear is now held — clear its pre-grasp marks before navigating
             self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
+            self.set_motion_arbiter_drift_correction(False)  # Disable precise alignment for return to home navigation
             home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
             ok, message = self.navigate_to_pose(goal_handle, home_pose, "returning", 0.9)
+            self.set_motion_arbiter_drift_correction(True)  # Re-enable drift correction for subsequent tasks
             if not ok:
                 result.success = False
                 result.message = message
