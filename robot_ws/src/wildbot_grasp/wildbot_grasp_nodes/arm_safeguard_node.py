@@ -37,7 +37,7 @@ class ArmSafeguardNode(Node):
         self.action_lock = threading.Lock()
         self.last_cmd_time = self.get_clock().now()
         self.current_duration = 0.0
-        self.position_history = deque(maxlen=10)
+        self.position_history = deque(maxlen=100)
         self.last_measured = None  # latest measured joint positions (for E-stop hold)
 
         # 4. 訂閱馬達真實狀態
@@ -87,7 +87,7 @@ class ArmSafeguardNode(Node):
         dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e9
 
         # 🌟 關鍵新增：只有當時間大於 current_duration (也就是預期已經走到定點後)，才開始記錄
-        if dt > self.current_duration:
+        if dt > self.current_duration + 1:
             if len(msg.feedback.positions) >= 3:
                 self.position_history.append(msg.feedback.positions)
 
