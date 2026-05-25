@@ -92,7 +92,7 @@ services:
       - *config_volume
       - *grasp_source_volume
       - *tuner_output_volume
-    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp open_door_server"]
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run wildbot_grasp open_door_server --ros-args --params-file /configs/task_speeds.yaml"]
     restart: unless-stopped
 
 networks:
