@@ -89,11 +89,11 @@ global_costmap:
         combination_method: 1
         observation_sources: kinect_cloud rear_scan
         kinect_cloud:
-          topic: /points2
+          topic: /rtabmap/cloud_obstacles
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.15   # ignore the floor
+          min_obstacle_height: 0.05   # ignore the floor is handled by rtabmap; 0.05 filters residual edge noise
           max_obstacle_height: 1.5
           obstacle_max_range: 3.0     # trust Kinect depth out to ~3 m
           obstacle_min_range: 0.35    # ignore held object (~0.24m grab dist); tune if needed

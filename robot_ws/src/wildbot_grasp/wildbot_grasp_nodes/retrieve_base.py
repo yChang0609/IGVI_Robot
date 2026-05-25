@@ -80,6 +80,13 @@ class RetrieveBase(Node):
         self.declare_parameter("face_point_yaw_tol_deg", 8.0)
         self.declare_parameter("face_point_timeout_sec", 10.0)
 
+        # Dynamic Obstacle Avoidance parameters
+        self.declare_parameter("avoidance_enabled", True)
+        self.declare_parameter("avoidance_lookahead_m", 0.40)
+        self.declare_parameter("avoidance_radius_m", 0.16)
+        self.declare_parameter("avoidance_min_height_m", 0.05)
+        self.declare_parameter("avoidance_max_height_m", 0.35)
+
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -90,6 +97,13 @@ class RetrieveBase(Node):
         self.latest_memory = {}
         self.latest_detections = []
         self.motion_state = "idle"
+
+        # Path and Obstacle subscriptions for dynamic avoidance
+        self._active_path = None
+        self._last_obstacles = None
+        self._last_obstacles_time = 0.0
+        self._obstacles_lock = threading.Lock()
+        self._path_lock = threading.Lock()
 
         self.create_subscription(
             String, "/semantic_memory", self.memory_callback, 10,
@@ -107,6 +121,16 @@ class RetrieveBase(Node):
             String, "/motion/state", self.motion_state_callback, 10,
             callback_group=self.callback_group,
         )
+        self.create_subscription(
+            Path, "/plan", self._on_plan, 10,
+            callback_group=self.callback_group,
+        )
+        from sensor_msgs.msg import PointCloud2
+        self.create_subscription(
+            PointCloud2, "/rtabmap/cloud_obstacles", self._on_obstacles, 10,
+            callback_group=self.callback_group,
+        )
+
         self.cmd_vel_pub = self.create_publisher(Twist, "/motion/cmd", 10)
         self.remove_memory_pub = self.create_publisher(
             String, "/semantic_memory/remove", 10,
@@ -177,6 +201,138 @@ class RetrieveBase(Node):
         self.get_logger().info(f"Published request to remove object {target_id} from semantic memory")
 
     # ------------------------------------------------------------------
+    def _on_plan(self, msg: Path) -> None:
+        with self._path_lock:
+            self._active_path = msg
+
+    def _on_obstacles(self, msg) -> None:
+        with self._obstacles_lock:
+            self._last_obstacles = msg
+            self._last_obstacles_time = time.time()
+
+    def get_robot_pose_3d(self):
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                "map", "base_link", rclpy.time.Time(), rclpy.duration.Duration(seconds=1.0)
+            )
+            q = tf.transform.rotation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            return tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z, yaw
+        except Exception as exc:
+            self.get_logger().warning(f"Could not get robot 3D pose: {exc}")
+            return None
+
+    def is_path_blocked(self) -> bool:
+        """Check if the active path is blocked by an obstacle in cloud_obstacles."""
+        if not self.get_parameter("avoidance_enabled").value:
+            return False
+
+        if self.motion_state != "path_tracking":
+            return False
+
+        with self._path_lock:
+            path = self._active_path
+            
+        with self._obstacles_lock:
+            obstacles = self._last_obstacles
+            obstacles_time = self._last_obstacles_time
+
+        if not path or not path.poses or not obstacles:
+            return False
+
+        # If the obstacle data is older than 2.0 seconds, it's stale; don't use it
+        if time.time() - obstacles_time > 2.0:
+            return False
+
+        robot_pose = self.get_robot_pose_3d()
+        if robot_pose is None:
+            return False
+        rx, ry, rz, ryaw = robot_pose
+
+        # Find closest path index to current robot position
+        closest_idx = 0
+        min_dist = float("inf")
+        for idx, pose_stamped in enumerate(path.poses):
+            d = math.hypot(pose_stamped.pose.position.x - rx, pose_stamped.pose.position.y - ry)
+            if d < min_dist:
+                min_dist = d
+                closest_idx = idx
+
+        # Extract path lookahead points (up to lookahead distance along path)
+        lookahead_m = float(self.get_parameter("avoidance_lookahead_m").value)
+        lookahead_points = []
+        accumulated_dist = 0.0
+        prev_x, prev_y = rx, ry
+        
+        for i in range(closest_idx, len(path.poses)):
+            px = path.poses[i].pose.position.x
+            py = path.poses[i].pose.position.y
+            accumulated_dist += math.hypot(px - prev_x, py - prev_y)
+            if accumulated_dist > lookahead_m:
+                break
+            lookahead_points.append((px, py))
+            prev_x, prev_y = px, py
+
+        if not lookahead_points:
+            return False
+
+        # Decode point cloud efficiently
+        import struct
+        msg = obstacles
+        step = msg.point_step
+        ox = oy = oz = 0
+        for f in msg.fields:
+            if f.name == 'x': ox = f.offset
+            elif f.name == 'y': oy = f.offset
+            elif f.name == 'z': oz = f.offset
+
+        num_points = len(msg.data) // step
+        
+        # Avoid performance issues by checking at most 2000 points (downsampling if needed)
+        max_cloud_points = 2000
+        stride = max(1, num_points // max_cloud_points)
+
+        check_points = []
+        for i in range(0, num_points, stride):
+            offset = i * step
+            # Fast contiguous unpack if standard C++ layout
+            if ox == 0 and oy == 4 and oz == 8:
+                x, y, z = struct.unpack_from('fff', msg.data, offset)
+            else:
+                x = struct.unpack_from('f', msg.data, offset + ox)[0]
+                y = struct.unpack_from('f', msg.data, offset + oy)[0]
+                z = struct.unpack_from('f', msg.data, offset + oz)[0]
+            check_points.append((x, y, z))
+
+        # Filter and count blocked points
+        radius_m = float(self.get_parameter("avoidance_radius_m").value)
+        min_h = float(self.get_parameter("avoidance_min_height_m").value)
+        max_h = float(self.get_parameter("avoidance_max_height_m").value)
+
+        blocked_count = 0
+        for x, y, z in check_points:
+            # Broad box check to eliminate distant points quickly (within 1.2m of robot)
+            if abs(x - rx) > 1.2 or abs(y - ry) > 1.2:
+                continue
+
+            # Check relative height to robot floor
+            rel_z = z - rz
+            if rel_z < min_h or rel_z > max_h:
+                continue
+
+            # Check distance to any lookahead path point
+            for px, py in lookahead_points:
+                if math.hypot(x - px, y - py) < radius_m:
+                    blocked_count += 1
+                    if blocked_count >= 5:  # Require at least 5 points to trigger blockage (noise threshold)
+                        return True
+                    break
+
+        return False
+
     # Geometry helpers
     # ------------------------------------------------------------------
 
@@ -221,40 +377,56 @@ class RetrieveBase(Node):
         if not self.nav_client.wait_for_server(timeout_sec=timeout):
             return False, "NavigateToPose action server not available"
 
-        self.publish_feedback(
-            goal_handle, stage, progress,
-            f"Navigating to x={pose.pose.position.x:.2f}, y={pose.pose.position.y:.2f}",
-        )
-        nav_goal = NavigateToPose.Goal()
-        nav_goal.pose = pose
-        send_future = self.nav_client.send_goal_async(nav_goal)
-        while rclpy.ok() and not send_future.done():
-            if goal_handle.is_cancel_requested:
-                self._plan_pub.publish(Path())
-                self.cmd_vel_pub.publish(Twist())
-                return False, "mission canceled"
-            time.sleep(0.05)
+        max_replans = 5
+        replan_count = 0
 
-        nav_goal_handle = send_future.result()
-        if not nav_goal_handle.accepted:
-            return False, "Nav2 rejected goal"
+        while replan_count <= max_replans:
+            attempt_str = f" (plan attempt {replan_count + 1}/{max_replans + 1})" if replan_count > 0 else ""
+            self.publish_feedback(
+                goal_handle, stage, progress,
+                f"Navigating to x={pose.pose.position.x:.2f}, y={pose.pose.position.y:.2f}{attempt_str}",
+            )
+            nav_goal = NavigateToPose.Goal()
+            nav_goal.pose = pose
+            send_future = self.nav_client.send_goal_async(nav_goal)
+            while rclpy.ok() and not send_future.done():
+                if goal_handle.is_cancel_requested:
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
+                    return False, "mission canceled"
+                time.sleep(0.05)
 
-        result_future = nav_goal_handle.get_result_async()
-        while rclpy.ok() and not result_future.done():
-            if goal_handle.is_cancel_requested:
-                nav_goal_handle.cancel_goal_async()
-                self._plan_pub.publish(Path())
-                self.cmd_vel_pub.publish(Twist())
-                return False, "mission canceled"
-            time.sleep(0.1)
+            nav_goal_handle = send_future.result()
+            if not nav_goal_handle.accepted:
+                return False, "Nav2 rejected goal"
 
-        wrapped_result = result_future.result()
-        if wrapped_result is None:
-            return False, "Nav2 returned no result"
-        if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
-            return False, f"Nav2 goal ended with status {wrapped_result.status}"
+            result_future = nav_goal_handle.get_result_async()
+            while rclpy.ok() and not result_future.done():
+                if goal_handle.is_cancel_requested:
+                    nav_goal_handle.cancel_goal_async()
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
+                    return False, "mission canceled"
+                time.sleep(0.1)
 
-        return self.wait_until_arrived(goal_handle, pose)
+            wrapped_result = result_future.result()
+            if wrapped_result is None:
+                return False, "Nav2 returned no result"
+            if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
+                return False, f"Nav2 goal ended with status {wrapped_result.status}"
+
+            ok, reason = self.wait_until_arrived(goal_handle, pose)
+            if ok:
+                return True, reason
+            elif reason == "replanning_required":
+                replan_count += 1
+                self.clear_costmaps()
+                time.sleep(0.5)  # Let the costmap clear and update with new obstacles
+                continue
+            else:
+                return False, reason
+
+        return False, "failed to reach goal after maximum re-plans due to continuous blockage"
 
     def wait_until_arrived(self, goal_handle, pose: PoseStamped):
         # We now unify arrival checking completely under motion_arbiter's state.
@@ -286,6 +458,14 @@ class RetrieveBase(Node):
                 
             if time.time() - start_time > timeout:
                 return False, "navigation timeout"
+
+            # Check dynamic lookahead path collision checker
+            if self.is_path_blocked():
+                self.get_logger().warn("[Dynamic Avoidance] Path is blocked! INSTANT STOP ENGAGED!")
+                # Immediately halt the robot physically by sending an empty path and zero velocity
+                self._plan_pub.publish(Path())
+                self.cmd_vel_pub.publish(Twist())
+                return False, "replanning_required"
 
             if has_started and self.motion_state == "idle":
                 return True, "arrived at goal (confirmed by motion_arbiter)"
