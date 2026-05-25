@@ -58,7 +58,7 @@ open_door_server:
 
 igvi_bridge:
   ros__parameters:
-    door_transit_linear_speed: 0.8
-    door_transit_angular_speed: 0.9
+    door_transit_linear_speed: 0.4
+    door_transit_angular_speed: 0.5
     door_transit_linear_accel: 0.30
     door_transit_angular_accel: 0.80
