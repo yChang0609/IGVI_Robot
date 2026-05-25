@@ -396,7 +396,7 @@ class GrabObjectServer(Node):
                 f"attempt {attempt}/{max_attempts} during close_gripper",
                 grasp_pose_rad[2],
                 open_gripper_rad,
-                self.arm.motion_wait_sec(),
+                self.arm.motion_wait_sec("grasp_pose_deg"),
             )
             self.publish_feedback(goal_handle, "gripper_min_angle", 0.43, min_detail)
 

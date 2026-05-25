@@ -479,7 +479,7 @@ class DockerPage(QWidget):
     def _group_stop_running(self, svc_names: list[str]) -> None:
         targets = self._running_in_group(svc_names)
         if targets:
-            self._start_worker("stop", services=targets)
+            self._start_worker("remove", services=targets)
 
     def _attach_group_buttons(self, group_item: QTreeWidgetItem, profile_key: str, services: list[dict]) -> None:
         widget = QWidget()
@@ -517,7 +517,7 @@ class DockerPage(QWidget):
             restart_btn.clicked.connect(lambda _=False, names=svc_names: self._group_restart(names))
             layout.addWidget(restart_btn)
 
-            stop_btn = QPushButton("Stop")
+            stop_btn = QPushButton("Stop+Rm")
             stop_btn.setStyleSheet(_GRP_STOP_STYLE)
             stop_btn.setFixedHeight(26)
             stop_btn.clicked.connect(lambda _=False, names=svc_names: self._group_stop_running(names))
@@ -535,10 +535,10 @@ class DockerPage(QWidget):
             restart_btn.clicked.connect(lambda _=False, names=svc_names: self._group_restart(names))
             layout.addWidget(restart_btn)
 
-            stop_btn = QPushButton("Stop")
+            stop_btn = QPushButton("Stop+Rm")
             stop_btn.setStyleSheet(_GRP_STOP_STYLE)
             stop_btn.setFixedHeight(26)
-            stop_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("stop", services=names))
+            stop_btn.clicked.connect(lambda _=False, names=svc_names: self._start_worker("remove", services=names))
             layout.addWidget(stop_btn)
 
         self.tree.setItemWidget(group_item, 0, widget)

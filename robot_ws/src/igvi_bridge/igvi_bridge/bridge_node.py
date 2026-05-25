@@ -132,6 +132,7 @@ class BridgeNode(Node):
         self._nav_goal: dict[str, float] | None = None
         self._nav_feedback: dict[str, float] = {}
         self._nav_goal_token = 0
+        self._nav_waypoint_pending_restore_drift: bool = False  # re-enable drift correction after waypoint nav
 
         self._open_door = OpenDoorProxy(
             self,
@@ -761,6 +762,23 @@ class BridgeNode(Node):
             # Don't leak service clients across many tuning calls.
             self.destroy_client(client)
 
+    def _set_drift_correction_async(self, enabled: bool) -> None:
+        """Fire-and-forget: set motion_arbiter's enable_drift_correction parameter.
+
+        Safe to call from within ROS callbacks (non-blocking).
+        Mirrors the same helper in retrieve_base.py used by search-home-pose navigation.
+        """
+        client = self.create_client(SetParameters, "/motion_arbiter/set_parameters")
+        if not client.wait_for_service(timeout_sec=0.5):
+            self.get_logger().warn("_set_drift_correction_async: /motion_arbiter/set_parameters not available")
+            self.destroy_client(client)
+            return
+        req = SetParameters.Request()
+        req.parameters = [_make_parameter("enable_drift_correction", enabled)]
+        future = client.call_async(req)
+        future.add_done_callback(lambda _f: self.destroy_client(client))
+        self.get_logger().info(f"motion_arbiter enable_drift_correction → {enabled} (waypoint nav)")
+
     # ── Open-door action (red-bar FSM trigger) ────────────────────────────────
 
     def snapshot_open_door(self) -> dict[str, Any]:
@@ -894,6 +912,10 @@ class BridgeNode(Node):
             wp = dict(wp) if wp else None
         if wp is None:
             return False, f"no waypoint named '{name}'"
+        # Waypoint navigation doesn't need precise drift correction — use the same
+        # relaxed alignment as search-home-pose (pure in-place rotation, no micro-adjustments).
+        self._set_drift_correction_async(False)
+        self._nav_waypoint_pending_restore_drift = True
         return self.send_nav_goal(wp["x"], wp["y"], wp["yaw"])
 
     # ── Navigation (Nav2 NavigateToPose action) ──────────────────────────────
@@ -1598,6 +1620,11 @@ class BridgeNode(Node):
             self._nav_state = state
             self._nav_message = message
             self._nav_goal_handle = None
+        # If this result closes a waypoint navigation, restore precise drift correction
+        # so subsequent door/retrieve missions still get the accurate alignment they need.
+        if self._nav_waypoint_pending_restore_drift:
+            self._nav_waypoint_pending_restore_drift = False
+            self._set_drift_correction_async(True)
         self._door_mission.on_nav_result(goal_token, state, message)
 
     def _on_nav_cancel_response(self, future: Any) -> None:
