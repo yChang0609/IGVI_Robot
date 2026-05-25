@@ -89,7 +89,7 @@ global_costmap:
         combination_method: 1
         observation_sources: kinect_cloud rear_scan
         kinect_cloud:
-          topic: /rtabmap/cloud_obstacles
+          topic: /local_grid_obstacle
           data_type: "PointCloud2"
           marking: true
           clearing: true

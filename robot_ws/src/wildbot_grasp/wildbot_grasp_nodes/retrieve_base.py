@@ -127,7 +127,7 @@ class RetrieveBase(Node):
         )
         from sensor_msgs.msg import PointCloud2
         self.create_subscription(
-            PointCloud2, "/rtabmap/cloud_obstacles", self._on_obstacles, 10,
+            PointCloud2, "/local_grid_obstacle", self._on_obstacles, 10,
             callback_group=self.callback_group,
         )
 

@@ -491,7 +491,7 @@ class MotionArbiter(Node):
         # 2. Predictive deceleration based on physical acceleration limits to prevent overshoot
         accel_lin = float(self.get_parameter("accel_linear").value)
         # We ensure a minimum speed floor of 0.05 m/s so the robot never stalls due to friction before crossing the goal tolerance
-        MIN_DRIVE_VELOCITY = 0.05
+        MIN_DRIVE_VELOCITY = 0.11
         max_allowed_vx = max(MIN_DRIVE_VELOCITY, math.sqrt(2.0 * accel_lin * max(0.0, dist_to_goal)))
         vx = min(vx, max_allowed_vx)
 
