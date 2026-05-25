@@ -32,9 +32,9 @@ class GrabObjectServer(Node):
         self.declare_parameter("release_after_grasp", False)
         # Per-action trajectory duration (overrides move_duration_sec for each step).
         # Tune these to balance speed vs. smoothness for each grab phase.
-        self.declare_parameter("open_duration_sec", 0.8)   # 張爪移到抓取準備位 0.8
+        self.declare_parameter("open_duration_sec", 0.3)   # 張爪移到抓取準備位 0.8
         self.declare_parameter("close_duration_sec", 0.3)  # 閉爪夾物 1.2
-        self.declare_parameter("carry_duration_sec", 0.5)  # 夾住後移到搬運位 1.5
+        self.declare_parameter("carry_duration_sec", 0.1)  # 夾住後移到搬運位 1.5
         self.declare_parameter("home_duration_sec", 0.3)   # 回 home（失敗/完成）1.0
 
         self.latest_joint_state = None
