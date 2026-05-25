@@ -8,16 +8,24 @@ import rclpy
 import tf2_ros
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Path
+from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from wildbot_grasp.action import GrabObject
 from wildbot_grasp_nodes.motion import ArmCommander
+
+
+_MAP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class RetrieveBase(Node):
@@ -86,6 +94,19 @@ class RetrieveBase(Node):
         self.declare_parameter("avoidance_radius_m", 0.16)
         self.declare_parameter("avoidance_min_height_m", 0.05)
         self.declare_parameter("avoidance_max_height_m", 0.35)
+        # Costmap-aware approach selection. Nav2 can plan to a pose that is
+        # technically reachable but too close to a wall for the final visual
+        # servo drive, so score the standoff pose and the short drive corridor.
+        self.declare_parameter("approach_costmap_enabled", True)
+        self.declare_parameter("approach_clearance_radius_m", 0.12)
+        self.declare_parameter("approach_corridor_width_m", 0.16)
+        self.declare_parameter("approach_costmap_sample_step_m", 0.05)
+        self.declare_parameter("approach_target_cost_exclusion_m", 0.30)
+        self.declare_parameter("approach_max_endpoint_cost", 80.0)
+        self.declare_parameter("approach_max_corridor_cost", 85.0)
+        self.declare_parameter("approach_endpoint_cost_weight", 0.02)
+        self.declare_parameter("approach_corridor_cost_weight", 0.02)
+        self.declare_parameter("approach_unknown_cost", 100.0)
 
         self.callback_group = ReentrantCallbackGroup()
         self.tf_buffer = tf2_ros.Buffer()
@@ -104,6 +125,8 @@ class RetrieveBase(Node):
         self._last_obstacles_time = 0.0
         self._obstacles_lock = threading.Lock()
         self._path_lock = threading.Lock()
+        self._costmap = None
+        self._costmap_lock = threading.Lock()
 
         self.create_subscription(
             String, "/semantic_memory", self.memory_callback, 10,
@@ -123,6 +146,10 @@ class RetrieveBase(Node):
         )
         self.create_subscription(
             Path, "/plan", self._on_plan, 10,
+            callback_group=self.callback_group,
+        )
+        self.create_subscription(
+            OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS,
             callback_group=self.callback_group,
         )
         from sensor_msgs.msg import PointCloud2
@@ -204,6 +231,10 @@ class RetrieveBase(Node):
     def _on_plan(self, msg: Path) -> None:
         with self._path_lock:
             self._active_path = msg
+
+    def _on_costmap(self, msg: OccupancyGrid) -> None:
+        with self._costmap_lock:
+            self._costmap = msg
 
     def _on_obstacles(self, msg) -> None:
         with self._obstacles_lock:
@@ -372,6 +403,126 @@ class RetrieveBase(Node):
         pose.pose.orientation.w = qw
         return pose
 
+    def latest_costmap(self):
+        with self._costmap_lock:
+            return self._costmap
+
+    def costmap_value_at(self, costmap: OccupancyGrid, x: float, y: float) -> float:
+        """Return OccupancyGrid cost at map point. Unknown/outside is high cost."""
+        info = costmap.info
+        resolution = float(info.resolution)
+        if resolution <= 0.0:
+            return float(self.get_parameter("approach_unknown_cost").value)
+
+        mx = math.floor((x - float(info.origin.position.x)) / resolution)
+        my = math.floor((y - float(info.origin.position.y)) / resolution)
+        if mx < 0 or my < 0 or mx >= int(info.width) or my >= int(info.height):
+            return float(self.get_parameter("approach_unknown_cost").value)
+
+        idx = my * int(info.width) + mx
+        if idx < 0 or idx >= len(costmap.data):
+            return float(self.get_parameter("approach_unknown_cost").value)
+        raw = int(costmap.data[idx])
+        if raw < 0:
+            return float(self.get_parameter("approach_unknown_cost").value)
+        return float(raw)
+
+    def sample_costmap_disc(
+        self,
+        costmap: OccupancyGrid,
+        x: float,
+        y: float,
+        radius_m: float,
+        step_m: float,
+    ):
+        radius = max(0.0, float(radius_m))
+        step = max(float(step_m), float(costmap.info.resolution), 0.01)
+        cells = max(0, int(math.ceil(radius / step)))
+        max_cost = 0.0
+        total_cost = 0.0
+        count = 0
+
+        for ix in range(-cells, cells + 1):
+            dx = ix * step
+            for iy in range(-cells, cells + 1):
+                dy = iy * step
+                if dx * dx + dy * dy > radius * radius + 1e-9:
+                    continue
+                cost = self.costmap_value_at(costmap, x + dx, y + dy)
+                max_cost = max(max_cost, cost)
+                total_cost += cost
+                count += 1
+
+        if count == 0:
+            cost = self.costmap_value_at(costmap, x, y)
+            return cost, cost
+        return max_cost, total_cost / count
+
+    def score_approach_costmap(
+        self,
+        costmap: OccupancyGrid,
+        cx: float,
+        cy: float,
+        bx: float,
+        by: float,
+        standoff: float,
+    ) -> dict:
+        step = float(self.get_parameter("approach_costmap_sample_step_m").value)
+        clearance_radius = float(self.get_parameter("approach_clearance_radius_m").value)
+        corridor_width = float(self.get_parameter("approach_corridor_width_m").value)
+        target_exclusion = float(self.get_parameter("approach_target_cost_exclusion_m").value)
+
+        endpoint_max, endpoint_avg = self.sample_costmap_disc(
+            costmap, cx, cy, clearance_radius, step,
+        )
+
+        dist_to_target = math.hypot(bx - cx, by - cy)
+        if dist_to_target <= 1e-6:
+            corridor_max, corridor_avg = endpoint_max, endpoint_avg
+        else:
+            # Do not score the last target-adjacent portion; the bear itself can
+            # be marked as an obstacle, but the robot still needs to approach it.
+            scored_len = max(0.0, min(dist_to_target, standoff) - max(0.0, target_exclusion))
+            ux = (bx - cx) / dist_to_target
+            uy = (by - cy) / dist_to_target
+            nx = -uy
+            ny = ux
+            step = max(step, float(costmap.info.resolution), 0.01)
+            along_count = max(1, int(math.ceil(scored_len / step)))
+            half_width = max(0.0, corridor_width * 0.5)
+            side_count = max(0, int(math.ceil(half_width / step)))
+
+            corridor_max = 0.0
+            corridor_total = 0.0
+            corridor_count = 0
+            for i in range(along_count + 1):
+                s = min(scored_len, i * step)
+                px = cx + ux * s
+                py = cy + uy * s
+                for j in range(-side_count, side_count + 1):
+                    offset = j * step
+                    if abs(offset) > half_width + 1e-9:
+                        continue
+                    cost = self.costmap_value_at(costmap, px + nx * offset, py + ny * offset)
+                    corridor_max = max(corridor_max, cost)
+                    corridor_total += cost
+                    corridor_count += 1
+
+            if corridor_count == 0:
+                corridor_max, corridor_avg = endpoint_max, endpoint_avg
+            else:
+                corridor_avg = corridor_total / corridor_count
+
+        endpoint_weight = float(self.get_parameter("approach_endpoint_cost_weight").value)
+        corridor_weight = float(self.get_parameter("approach_corridor_cost_weight").value)
+        return {
+            "endpoint_max": endpoint_max,
+            "endpoint_avg": endpoint_avg,
+            "corridor_max": corridor_max,
+            "corridor_avg": corridor_avg,
+            "score": endpoint_weight * endpoint_max + corridor_weight * corridor_max,
+        }
+
     # ------------------------------------------------------------------
     # Navigation
     # ------------------------------------------------------------------
@@ -523,9 +674,23 @@ class RetrieveBase(Node):
         standoff = float(self.get_parameter("standoff_distance").value)
         bx, by = float(target_pos["x"]), float(target_pos["y"])
         rx, ry = robot_pose[0], robot_pose[1]
+        best_score = float("inf")
         best_len = float("inf")
         best_pose = None
         best_path = None
+        best_cost = None
+        cost_rejections = 0
+        path_failures = 0
+
+        costmap = None
+        if bool(self.get_parameter("approach_costmap_enabled").value):
+            costmap = self.latest_costmap()
+            if costmap is None:
+                self.get_logger().warn(
+                    "global costmap unavailable; selecting approach by path length only"
+                )
+        max_endpoint_cost = float(self.get_parameter("approach_max_endpoint_cost").value)
+        max_corridor_cost = float(self.get_parameter("approach_max_corridor_cost").value)
 
         all_angles = [0, 45, 90, 135, 180, -135, -90, -45]
         # Prefer standoffs on the same side of the bear as the robot.
@@ -543,6 +708,21 @@ class RetrieveBase(Node):
             cy = by + standoff * math.sin(angle_rad)
             goal_pose = self.make_pose(cx, cy, angle_rad + math.pi)
 
+            cost_detail = None
+            if costmap is not None:
+                cost_detail = self.score_approach_costmap(costmap, cx, cy, bx, by, standoff)
+                if (
+                    cost_detail["endpoint_max"] > max_endpoint_cost
+                    or cost_detail["corridor_max"] > max_corridor_cost
+                ):
+                    cost_rejections += 1
+                    self.get_logger().debug(
+                        f"Rejecting approach {angle_deg:.0f}deg: "
+                        f"endpoint_cost={cost_detail['endpoint_max']:.1f} "
+                        f"corridor_cost={cost_detail['corridor_max']:.1f}"
+                    )
+                    continue
+
             req = ComputePathToPose.Goal()
             req.use_start = True
             req.start = start_pose
@@ -552,10 +732,12 @@ class RetrieveBase(Node):
             while rclpy.ok() and not future.done() and time.monotonic() < deadline:
                 time.sleep(0.01)
             if not future.done():
+                path_failures += 1
                 continue
 
             path_goal_handle = future.result()
             if path_goal_handle is None or not path_goal_handle.accepted:
+                path_failures += 1
                 continue
 
             result_future = path_goal_handle.get_result_async()
@@ -563,11 +745,13 @@ class RetrieveBase(Node):
             while rclpy.ok() and not result_future.done() and time.monotonic() < deadline:
                 time.sleep(0.01)
             if not result_future.done():
+                path_failures += 1
                 continue
 
             result = result_future.result()
             resp = result.result if result is not None else None
             if resp is None or not resp.path.poses:
+                path_failures += 1
                 continue
 
             path_len = 0.0
@@ -575,18 +759,38 @@ class RetrieveBase(Node):
             for p in resp.path.poses:
                 path_len += math.hypot(p.pose.position.x - prev.x, p.pose.position.y - prev.y)
                 prev = p.pose.position
-            if path_len < best_len:
+
+            score = path_len
+            if cost_detail is not None:
+                score += cost_detail["score"]
+            if score < best_score:
+                best_score = score
                 best_len = path_len
                 best_pose = goal_pose
                 best_path = resp.path
+                best_cost = cost_detail
 
         if best_pose is None:
+            if costmap is not None and cost_rejections:
+                return (
+                    None,
+                    "No cost-safe path found to target "
+                    f"(cost rejections={cost_rejections}, path failures={path_failures})",
+                )
             return None, "No valid path found to target"
 
         self._approach_pose_pub.publish(best_pose)
         if best_path is not None:
             self._plan_pub.publish(best_path)
 
+        if best_cost is not None:
+            return (
+                best_pose,
+                "selected approach "
+                f"score {best_score:.2f}, path {best_len:.2f}m, "
+                f"endpoint cost {best_cost['endpoint_max']:.0f}, "
+                f"corridor cost {best_cost['corridor_max']:.0f}",
+            )
         return best_pose, f"selected approach path length {best_len:.2f}m"
 
     # ------------------------------------------------------------------

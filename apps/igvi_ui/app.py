@@ -68,6 +68,7 @@ from igvi_ui.pages.door_page import DoorPage
 from igvi_ui.pages.robot_page import RobotPage
 from igvi_ui.pages.settings_page import SettingsPage
 from igvi_ui.theme import build_style_sheet
+from igvi_ui.widgets.approach_tuning_control import ApproachTuningControl
 from igvi_ui.widgets.sensor_group import SensorGroup
 from igvi_ui.widgets.status_badge import StatusBadge
 
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
             ("Door", door_page),
+            ("Approach", ApproachTuningControl(self.client)),
             ("Settings", SettingsPage(self.client)),
         ]
         for index, (label, page) in enumerate(pages):
