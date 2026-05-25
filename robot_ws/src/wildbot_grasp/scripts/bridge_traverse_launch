@@ -19,6 +19,10 @@ append_param ros_args RETRIEVE_TRANSIT_LINEAR_SPEED transit_linear_speed
 append_param ros_args RETRIEVE_TRANSIT_ANGULAR_SPEED transit_angular_speed
 append_param ros_args RETRIEVE_CARRY_LINEAR_SPEED   carry_linear_speed
 append_param ros_args RETRIEVE_CARRY_ANGULAR_SPEED  carry_angular_speed
+append_param ros_args RETRIEVE_TRANSIT_LINEAR_ACCEL transit_linear_accel
+append_param ros_args RETRIEVE_TRANSIT_ANGULAR_ACCEL transit_angular_accel
+append_param ros_args RETRIEVE_CARRY_LINEAR_ACCEL   carry_linear_accel
+append_param ros_args RETRIEVE_CARRY_ANGULAR_ACCEL  carry_angular_accel
 append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
 append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
 append_param ros_args RETRIEVE_YAW_TOLERANCE        yaw_tolerance
