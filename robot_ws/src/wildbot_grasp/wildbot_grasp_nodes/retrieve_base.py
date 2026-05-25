@@ -230,6 +230,8 @@ class RetrieveBase(Node):
         send_future = self.nav_client.send_goal_async(nav_goal)
         while rclpy.ok() and not send_future.done():
             if goal_handle.is_cancel_requested:
+                self._plan_pub.publish(Path())
+                self.cmd_vel_pub.publish(Twist())
                 return False, "mission canceled"
             time.sleep(0.05)
 
@@ -241,6 +243,8 @@ class RetrieveBase(Node):
         while rclpy.ok() and not result_future.done():
             if goal_handle.is_cancel_requested:
                 nav_goal_handle.cancel_goal_async()
+                self._plan_pub.publish(Path())
+                self.cmd_vel_pub.publish(Twist())
                 return False, "mission canceled"
             time.sleep(0.1)
 
@@ -264,6 +268,8 @@ class RetrieveBase(Node):
         has_started = False
         while time.time() - start_wait < 1.5:
             if goal_handle and goal_handle.is_cancel_requested:
+                self._plan_pub.publish(Path())
+                self.cmd_vel_pub.publish(Twist())
                 return False, "mission canceled"
             if self.motion_state in ("path_tracking", "aligning"):
                 has_started = True
@@ -274,6 +280,8 @@ class RetrieveBase(Node):
         timeout = 60.0
         while rclpy.ok():
             if goal_handle and goal_handle.is_cancel_requested:
+                self._plan_pub.publish(Path())
+                self.cmd_vel_pub.publish(Twist())
                 return False, "mission canceled"
                 
             if time.time() - start_time > timeout:

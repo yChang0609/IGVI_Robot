@@ -9,6 +9,7 @@ from rclpy.action import ActionServer, ActionClient, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Path
 
 from wildbot_grasp.action import SearchAndRetrieve
 from wildbot_grasp_nodes.retrieve_base import RetrieveBase
@@ -101,6 +102,8 @@ class ArenaMissionServer(RetrieveBase):
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     self.get_logger().info("Cancel requested! Returning from execute_callback...")
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
                     goal_handle.canceled()
                     result.success = False
                     result.message = "Arena mission canceled"
@@ -194,6 +197,7 @@ class ArenaMissionServer(RetrieveBase):
                         
                     if goal_handle.is_cancel_requested:
                         cancel_future = search_goal_handle.cancel_goal_async()
+                        self._plan_pub.publish(Path())
                         self.cmd_vel_pub.publish(Twist())
                         while rclpy.ok() and not cancel_future.done():
                             time.sleep(0.05)
@@ -208,6 +212,7 @@ class ArenaMissionServer(RetrieveBase):
                         if goal_handle.is_cancel_requested:
                             if not cancel_sent:
                                 cancel_future = search_goal_handle.cancel_goal_async()
+                                self._plan_pub.publish(Path())
                                 self.cmd_vel_pub.publish(Twist())
                                 cancel_sent = True
                             time.sleep(0.1)
@@ -215,6 +220,8 @@ class ArenaMissionServer(RetrieveBase):
                         time.sleep(0.2)
                         
                     if goal_handle.is_cancel_requested:
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
                         goal_handle.canceled()
                         result.success = False
                         result.message = "Arena mission canceled"
@@ -269,6 +276,7 @@ class ArenaMissionServer(RetrieveBase):
                     
                 if goal_handle.is_cancel_requested:
                     cancel_future = nav_goal_handle.cancel_goal_async()
+                    self._plan_pub.publish(Path())
                     self.cmd_vel_pub.publish(Twist())
                     while rclpy.ok() and not cancel_future.done():
                         time.sleep(0.05)
@@ -300,6 +308,7 @@ class ArenaMissionServer(RetrieveBase):
                     if goal_handle.is_cancel_requested:
                         if not cancel_sent:
                             cancel_future = nav_goal_handle.cancel_goal_async()
+                            self._plan_pub.publish(Path())
                             self.cmd_vel_pub.publish(Twist())
                             cancel_sent = True
                         if result_future.done():
@@ -355,6 +364,8 @@ class ArenaMissionServer(RetrieveBase):
                     time.sleep(0.3)
                     
                 if goal_handle.is_cancel_requested:
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
                     goal_handle.canceled()
                     result.success = False
                     result.message = "Arena mission canceled"

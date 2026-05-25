@@ -264,10 +264,12 @@ class SearchRetrieveControl(QWidget):
             QMessageBox.warning(self, "Error", str(e))
 
     def _cancel_task(self) -> None:
+        self.cancel_btn.setEnabled(False)
         try:
             self.client.search_retrieve_cancel()
             self.status_label.setText("Canceling...")
         except HostClientError as e:
+            self.cancel_btn.setEnabled(True)
             QMessageBox.warning(self, "Error", str(e))
 
     def _poll_status(self) -> None:
@@ -450,8 +452,10 @@ class SearchRetrieveControl(QWidget):
         self.patrol_start_combo.blockSignals(False)
 
     def _cancel_arena(self) -> None:
+        self.cancel_arena_btn.setEnabled(False)
         try:
             self.client.arena_mission_cancel()
             self.arena_status_label.setText("Canceling Arena...")
         except HostClientError as e:
+            self.cancel_arena_btn.setEnabled(True)
             QMessageBox.warning(self, "Error", str(e))
