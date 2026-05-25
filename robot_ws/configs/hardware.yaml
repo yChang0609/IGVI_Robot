@@ -21,9 +21,9 @@ arm_joints: arm_1_joint,arm_2_joint,gripper_joint
 # Gripper safety
 gripper_max_ticks: 1000
 gripper_stall_error_ticks: 30
-gripper_stall_trigger_ms: 500
+gripper_stall_trigger_ms: 99999000
 gripper_stall_motion_epsilon_ticks: 3
-gripper_stall_backoff_ticks: 10
+gripper_stall_backoff_ticks: 0
 gripper_stall_release_delta_ticks: 20
 gripper_overheat_temp_c: 70
 gripper_overheat_hysteresis_c: 5
