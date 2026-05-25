@@ -80,6 +80,11 @@ class RetrieveBase(Node):
         self.declare_parameter("face_point_yaw_tol_deg", 8.0)
         self.declare_parameter("face_point_timeout_sec", 10.0)
 
+        # Per-action trajectory duration for release sequence (arena mission return).
+        # Tune these to control how fast the arm moves when releasing the bear.
+        self.declare_parameter("place_duration_sec", 0.5)       # 放下熊（張爪到 place pose）
+        self.declare_parameter("return_home_duration_sec", 0.5) # 放下後回 home
+
         # Dynamic Obstacle Avoidance parameters
         self.declare_parameter("avoidance_enabled", False)
         self.declare_parameter("avoidance_lookahead_m", 0.40)
@@ -1116,21 +1121,24 @@ class RetrieveBase(Node):
             self.get_logger().warn("global_costmap clear timed out")
 
     def release_arm(self, goal_handle):
-        self.arm.publish_named("release_object", "place_pose_deg")
-        deadline = time.monotonic() + self.arm.motion_wait_sec()
+        place_dur = float(self.get_parameter("place_duration_sec").value)
+        home_dur = float(self.get_parameter("return_home_duration_sec").value)
+
+        self.arm.publish_named("release_object", "place_pose_deg", place_dur)
+        deadline = time.monotonic() + self.arm.motion_wait_sec(place_dur)
         while rclpy.ok() and time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
                 return False, "mission canceled"
             time.sleep(0.05)
-            
+
         # Return to home pose
-        self.arm.publish_named("return_home", "home_pose_deg")
-        deadline = time.monotonic() + self.arm.motion_wait_sec()
+        self.arm.publish_named("return_home", "home_pose_deg", home_dur)
+        deadline = time.monotonic() + self.arm.motion_wait_sec(home_dur)
         while rclpy.ok() and time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
                 return False, "mission canceled"
             time.sleep(0.05)
-            
+
         return True, "object released and arm returned home"
 
     def set_motion_arbiter_drift_correction(self, enabled: bool):

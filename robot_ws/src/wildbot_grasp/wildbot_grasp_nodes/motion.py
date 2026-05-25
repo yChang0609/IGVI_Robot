@@ -55,10 +55,10 @@ class ArmCommander:
     def pose_deg(self, name: str) -> list[float]:
         return [float(value) for value in self.node.get_parameter(name).value]
 
-    def motion_wait_sec(self) -> float:
-        duration = float(self.node.get_parameter("move_duration_sec").value)
+    def motion_wait_sec(self, duration_sec: float | None = None) -> float:
+        d = duration_sec if duration_sec is not None else float(self.node.get_parameter("move_duration_sec").value)
         settle = float(self.node.get_parameter("settle_sec").value)
-        return duration + settle
+        return d + settle
 
     def wait_for_subscriber(self, timeout_sec: float = 2.0):
         deadline = time.monotonic() + timeout_sec
@@ -71,27 +71,27 @@ class ArmCommander:
         )
         return False
 
-    def publish_degrees(self, stage: str, positions_deg: Sequence[float]) -> list[float]:
+    def publish_degrees(self, stage: str, positions_deg: Sequence[float], duration_sec: float | None = None) -> list[float]:
         positions_rad = degrees_to_radians(positions_deg)
-        duration = float(self.node.get_parameter("move_duration_sec").value)
+        duration = duration_sec if duration_sec is not None else float(self.node.get_parameter("move_duration_sec").value)
         self.node.get_logger().info(
             f"publishing {stage}: deg={[round(v, 2) for v in positions_deg]} "
-            f"rad={[round(v, 4) for v in positions_rad]}"
+            f"rad={[round(v, 4) for v in positions_rad]} duration={duration:.2f}s"
         )
         self.wait_for_subscriber()
         self.publisher.publish(make_arm_trajectory(positions_rad, duration))
         return positions_rad
 
-    def wait_after_publish(self):
-        time.sleep(self.motion_wait_sec())
+    def wait_after_publish(self, duration_sec: float | None = None):
+        time.sleep(self.motion_wait_sec(duration_sec))
 
-    def send_degrees(self, stage: str, positions_deg: Sequence[float]) -> list[float]:
-        positions_rad = self.publish_degrees(stage, positions_deg)
-        self.wait_after_publish()
+    def send_degrees(self, stage: str, positions_deg: Sequence[float], duration_sec: float | None = None) -> list[float]:
+        positions_rad = self.publish_degrees(stage, positions_deg, duration_sec)
+        self.wait_after_publish(duration_sec)
         return positions_rad
 
-    def publish_named(self, stage: str, pose_parameter: str) -> list[float]:
-        return self.publish_degrees(stage, self.pose_deg(pose_parameter))
+    def publish_named(self, stage: str, pose_parameter: str, duration_sec: float | None = None) -> list[float]:
+        return self.publish_degrees(stage, self.pose_deg(pose_parameter), duration_sec)
 
-    def send_named(self, stage: str, pose_parameter: str) -> list[float]:
-        return self.send_degrees(stage, self.pose_deg(pose_parameter))
+    def send_named(self, stage: str, pose_parameter: str, duration_sec: float | None = None) -> list[float]:
+        return self.send_degrees(stage, self.pose_deg(pose_parameter), duration_sec)

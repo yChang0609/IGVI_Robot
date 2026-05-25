@@ -30,6 +30,12 @@ class GrabObjectServer(Node):
         self.declare_parameter("initial_pose_on_start", True)
         self.declare_parameter("initial_pose_delay_sec", 1.0)
         self.declare_parameter("release_after_grasp", False)
+        # Per-action trajectory duration (overrides move_duration_sec for each step).
+        # Tune these to balance speed vs. smoothness for each grab phase.
+        self.declare_parameter("open_duration_sec", 0.8)   # 張爪移到抓取準備位 0.8
+        self.declare_parameter("close_duration_sec", 0.3)  # 閉爪夾物 1.2
+        self.declare_parameter("carry_duration_sec", 0.5)  # 夾住後移到搬運位 1.5
+        self.declare_parameter("home_duration_sec", 0.3)   # 回 home（失敗/完成）1.0
 
         self.latest_joint_state = None
         self.latest_temperatures = None
@@ -73,7 +79,8 @@ class GrabObjectServer(Node):
             self.initial_pose_timer.cancel()
             self.initial_pose_timer = None
         self.get_logger().info("moving arm to initial/home pose")
-        self.arm.send_named("initial_home_pose", "home_pose_deg")
+        self.arm.send_named("initial_home_pose", "home_pose_deg",
+                            float(self.get_parameter("home_duration_sec").value))
 
     def joint_state_callback(self, msg):
         self.latest_joint_state = msg
@@ -378,9 +385,12 @@ class GrabObjectServer(Node):
                 safety_abort = True
                 break
 
+            open_dur = float(self.get_parameter("open_duration_sec").value)
+            close_dur = float(self.get_parameter("close_duration_sec").value)
+
             detail = f"attempt {attempt}/{max_attempts}: opening gripper at grasp pose ({temperature_detail})"
             self.publish_feedback(goal_handle, "open_for_grasp", 0.15, detail)
-            self.arm.send_degrees("open_for_grasp", self.open_at_grasp_pose_deg())
+            self.arm.send_degrees("open_for_grasp", self.open_at_grasp_pose_deg(), open_dur)
             open_gripper_rad = self.wait_for_gripper_position(float(self.get_parameter("grasp_check_timeout_sec").value))
             self.publish_feedback(
                 goal_handle,
@@ -391,12 +401,12 @@ class GrabObjectServer(Node):
 
             detail = f"attempt {attempt}/{max_attempts}: closing gripper for {label}"
             self.publish_feedback(goal_handle, "close_gripper", 0.35, detail)
-            grasp_pose_rad = self.arm.publish_named(f"close_gripper_attempt_{attempt}", "grasp_pose_deg")
+            grasp_pose_rad = self.arm.publish_named(f"close_gripper_attempt_{attempt}", "grasp_pose_deg", close_dur)
             min_detail = self.min_gripper_sample_detail(
                 f"attempt {attempt}/{max_attempts} during close_gripper",
                 grasp_pose_rad[2],
                 open_gripper_rad,
-                self.arm.motion_wait_sec(),
+                self.arm.motion_wait_sec(close_dur),
             )
             self.publish_feedback(goal_handle, "gripper_min_angle", 0.43, min_detail)
 
@@ -427,7 +437,8 @@ class GrabObjectServer(Node):
                 0.72,
                 "grasp detected; moving to carry pose while keeping gripper closed",
             )
-            carry_pose_rad = self.arm.send_named("move_to_carry_holding", "carry_pose_deg")
+            carry_dur = float(self.get_parameter("carry_duration_sec").value)
+            carry_pose_rad = self.arm.send_named("move_to_carry_holding", "carry_pose_deg", carry_dur)
             self.publish_feedback(
                 goal_handle,
                 "gripper_angle",
@@ -442,10 +453,11 @@ class GrabObjectServer(Node):
 
             if object_grasped:
                 if bool(self.get_parameter("release_after_grasp").value):
+                    home_dur = float(self.get_parameter("home_duration_sec").value)
                     self.publish_feedback(goal_handle, "release_at_place", 0.92, "object still held; opening gripper at place pose")
-                    self.arm.send_named("release_at_place", "place_pose_deg")
+                    self.arm.send_named("release_at_place", "place_pose_deg", home_dur)
                     self.publish_feedback(goal_handle, "return_home_after_release", 0.97, "object released; returning arm to home pose")
-                    self.arm.send_named("return_home_after_release", "home_pose_deg")
+                    self.arm.send_named("return_home_after_release", "home_pose_deg", home_dur)
                 else:
                     self.publish_feedback(goal_handle, "hold_for_navigation", 0.97, "object held; staying in carry pose for navigation")
                 break
@@ -462,7 +474,8 @@ class GrabObjectServer(Node):
 
         if not object_grasped and not safety_abort:
             self.publish_feedback(goal_handle, "reset_to_home", 0.9, grasp_detail)
-            self.arm.send_named("reset_to_home", "home_pose_deg")
+            self.arm.send_named("reset_to_home", "home_pose_deg",
+                                float(self.get_parameter("home_duration_sec").value))
 
         result.success = bool(object_grasped)
         result.object_grasped = bool(object_grasped)
