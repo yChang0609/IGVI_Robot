@@ -210,10 +210,12 @@ class RetrieveBase(Node):
             self._last_obstacles = msg
             self._last_obstacles_time = time.time()
 
-    def get_robot_pose_3d(self):
+    def get_robot_pose_3d(self, time_stamp=None):
+        if time_stamp is None:
+            time_stamp = rclpy.time.Time()
         try:
             tf = self.tf_buffer.lookup_transform(
-                "map", "base_link", rclpy.time.Time(), rclpy.duration.Duration(seconds=1.0)
+                "map", "base_link", time_stamp, rclpy.duration.Duration(seconds=1.0)
             )
             q = tf.transform.rotation
             yaw = math.atan2(
@@ -247,7 +249,7 @@ class RetrieveBase(Node):
         if time.time() - obstacles_time > 2.0:
             return False
 
-        robot_pose = self.get_robot_pose_3d()
+        robot_pose = self.get_robot_pose_3d(obstacles.header.stamp)
         if robot_pose is None:
             return False
         rx, ry, rz, ryaw = robot_pose
@@ -336,10 +338,12 @@ class RetrieveBase(Node):
     # Geometry helpers
     # ------------------------------------------------------------------
 
-    def get_robot_pose(self):
+    def get_robot_pose(self, time_stamp=None):
+        if time_stamp is None:
+            time_stamp = rclpy.time.Time()
         try:
             tf = self.tf_buffer.lookup_transform(
-                "map", "base_link", rclpy.time.Time(), rclpy.duration.Duration(seconds=1.0)
+                "map", "base_link", time_stamp, rclpy.duration.Duration(seconds=1.0)
             )
             q = tf.transform.rotation
             yaw = math.atan2(
