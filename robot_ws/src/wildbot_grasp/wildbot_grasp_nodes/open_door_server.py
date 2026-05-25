@@ -154,6 +154,8 @@ class OpenDoorServer(Node):
         self.declare_parameter("approach_speed", 0.10)
         self.declare_parameter("approach_center_kp", 0.4)
         self.declare_parameter("approach_max_wz", 0.25)
+        self.declare_parameter("approach_linear_accel", 0.15)
+        self.declare_parameter("approach_angular_accel", 0.45)
 
         # ── PRESS (arm slam) / PUSH (drive forward) ──────────────────────
         self.declare_parameter("pose_hold_sec", 0.3)   # dwell between slam poses
@@ -527,6 +529,7 @@ class OpenDoorServer(Node):
                 [Parameter("ready_distance_m", value=float(goal.ready_distance_m))]
             )
 
+        self._set_motion_arbiter_approach_limits()
         period = 1.0 / float(self.get_parameter("control_rate_hz").value)
         state = State.ALIGN
         state_entered = time.monotonic()
@@ -695,6 +698,38 @@ class OpenDoorServer(Node):
         msg.linear.x = float(vx)
         msg.angular.z = float(wz)
         self._twist_pub.publish(msg)
+
+    def _set_motion_arbiter_approach_limits(self) -> None:
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import SetParameters
+
+        client = self.create_client(SetParameters, "/motion_arbiter/set_parameters")
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn("SetParameters service for /motion_arbiter not available")
+            return
+
+        def param(name: str, value: float) -> Parameter:
+            parameter_value = ParameterValue()
+            parameter_value.type = ParameterType.PARAMETER_DOUBLE
+            parameter_value.double_value = float(value)
+            return Parameter(name=name, value=parameter_value)
+
+        linear = float(self.get_parameter("approach_speed").value)
+        angular = float(self.get_parameter("approach_max_wz").value)
+        linear_accel = float(self.get_parameter("approach_linear_accel").value)
+        angular_accel = float(self.get_parameter("approach_angular_accel").value)
+        request = SetParameters.Request()
+        request.parameters = [
+            param("max_linear_velocity", linear),
+            param("max_angular_velocity", angular),
+            param("accel_linear", linear_accel),
+            param("accel_angular", angular_accel),
+        ]
+        self.get_logger().info(
+            f"door approach speed linear={linear:.2f} angular={angular:.2f} "
+            f"accel_linear={linear_accel:.2f} accel_angular={angular_accel:.2f}"
+        )
+        client.call_async(request)
 
     def _publish_feedback(self, goal_handle, stage: str, progress: float, detail: str) -> None:
         self._fsm_state = stage

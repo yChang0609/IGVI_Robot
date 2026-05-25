@@ -58,11 +58,17 @@ class RetrieveBase(Node):
         self.declare_parameter("arrival_timeout", 45.0)
         self.declare_parameter("transit_linear_speed", 0.25)
         self.declare_parameter("transit_angular_speed", 0.45)
+        self.declare_parameter("transit_linear_accel", 0.40)
+        self.declare_parameter("transit_angular_accel", 1.00)
         self.declare_parameter("carry_linear_speed", 0.16)
         self.declare_parameter("carry_angular_speed", 0.30)
+        self.declare_parameter("carry_linear_accel", 0.25)
+        self.declare_parameter("carry_angular_accel", 0.70)
         self.declare_parameter("approach_target_distance_m", 0.24)
         self.declare_parameter("approach_linear_speed", 0.05)
         self.declare_parameter("approach_angular_speed", 0.30)
+        self.declare_parameter("approach_linear_accel", 0.20)
+        self.declare_parameter("approach_angular_accel", 0.60)
         self.declare_parameter("approach_timeout_sec", 20.0)
         self.declare_parameter("approach_sample_count", 32)
         # After a successful grab, reverse by however far the visual approach
@@ -741,6 +747,7 @@ class RetrieveBase(Node):
         # falls back to PATH_TRACKING and pulls the robot back toward the
         # original nav goal, fighting the visual servo.
         self._plan_pub.publish(Path())
+        self.set_motion_arbiter_speed_profile("approach")
         time.sleep(0.1)
 
         target_dist = float(self.get_parameter("approach_target_distance_m").value)
@@ -1277,17 +1284,22 @@ class RetrieveBase(Node):
 
     def set_motion_arbiter_speed_profile(self, profile: str) -> None:
         """Apply task-level navigation speed limits to motion_arbiter."""
-        prefix = "carry" if profile == "carry" else "transit"
+        prefix = profile if profile in ("transit", "approach", "carry") else "transit"
         linear = float(self.get_parameter(f"{prefix}_linear_speed").value)
         angular = float(self.get_parameter(f"{prefix}_angular_speed").value)
+        linear_accel = float(self.get_parameter(f"{prefix}_linear_accel").value)
+        angular_accel = float(self.get_parameter(f"{prefix}_angular_accel").value)
         self.set_motion_arbiter_params(
             {
                 "max_linear_velocity": linear,
                 "max_angular_velocity": angular,
+                "accel_linear": linear_accel,
+                "accel_angular": angular_accel,
             }
         )
         self.get_logger().info(
-            f"motion speed profile={prefix} linear={linear:.2f} angular={angular:.2f}"
+            f"motion speed profile={prefix} linear={linear:.2f} angular={angular:.2f} "
+            f"accel_linear={linear_accel:.2f} accel_angular={angular_accel:.2f}"
         )
 
     def set_motion_arbiter_params(self, params: dict[str, object]) -> None:

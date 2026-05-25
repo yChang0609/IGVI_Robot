@@ -113,6 +113,8 @@ class BridgeNode(Node):
         super().__init__("igvi_bridge")
         self.declare_parameter("door_transit_linear_speed", 0.18)
         self.declare_parameter("door_transit_angular_speed", 0.35)
+        self.declare_parameter("door_transit_linear_accel", 0.30)
+        self.declare_parameter("door_transit_angular_accel", 0.80)
         self._lock = threading.Lock()
         self._map: dict[str, Any] | None = None
         self._costmap: dict[str, Any] | None = None
@@ -910,6 +912,8 @@ class BridgeNode(Node):
         self._set_motion_arbiter_speed(
             float(self.get_parameter("door_transit_linear_speed").value),
             float(self.get_parameter("door_transit_angular_speed").value),
+            float(self.get_parameter("door_transit_linear_accel").value),
+            float(self.get_parameter("door_transit_angular_accel").value),
         )
         return self._dispatch_nav_goal(x, y, yaw)
 
@@ -939,7 +943,9 @@ class BridgeNode(Node):
         future.add_done_callback(lambda done, token=goal_token: self._on_nav_response(done, token))
         return True, "goal dispatched", goal_token
 
-    def _set_motion_arbiter_speed(self, linear: float, angular: float) -> None:
+    def _set_motion_arbiter_speed(
+        self, linear: float, angular: float, linear_accel: float, angular_accel: float
+    ) -> None:
         client = self.create_client(SetParameters, "/motion_arbiter/set_parameters")
         if not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn("SetParameters service for /motion_arbiter not available")
@@ -949,9 +955,12 @@ class BridgeNode(Node):
         request.parameters = [
             _make_parameter("max_linear_velocity", float(linear)),
             _make_parameter("max_angular_velocity", float(angular)),
+            _make_parameter("accel_linear", float(linear_accel)),
+            _make_parameter("accel_angular", float(angular_accel)),
         ]
         self.get_logger().info(
-            f"door transit speed linear={linear:.2f} angular={angular:.2f}"
+            f"door transit speed linear={linear:.2f} angular={angular:.2f} "
+            f"accel_linear={linear_accel:.2f} accel_angular={angular_accel:.2f}"
         )
         client.call_async(request)
 
