@@ -48,9 +48,15 @@ start_node grab_object_server ros2 run wildbot_grasp grab_object_server "${grab_
 start_node arm_safeguard_node ros2 run wildbot_grasp arm_safeguard_node
 start_node camera_masker_node ros2 run wildbot_grasp camera_masker_node
 
-bear_task_args=(--ros-args -p auto_start:=false)
+bear_task_args=(--ros-args)
+if [[ -f /configs/target_filter.yaml ]]; then
+  bear_task_args+=(--params-file /configs/target_filter.yaml)
+fi
+bear_task_args+=(-p auto_start:=false)
 append_param bear_task_args BEAR_TARGET_CENTER_X_PX target_center_x_px
 append_param bear_task_args BEAR_TARGET_MAX_DISTANCE_M target_max_distance_m
+append_param bear_task_args BEAR_MIN_CONFIDENCE min_confidence
+append_param bear_task_args BEAR_TARGET_CONFIRM_FRAMES target_confirm_frames
 append_param bear_task_args BEAR_BACKUP_LINEAR_X backup_linear_x
 append_param bear_task_args BEAR_BACKUP_DURATION_SEC backup_duration_sec
 append_param bear_task_args BEAR_MAX_TASK_RETRIES max_task_retries

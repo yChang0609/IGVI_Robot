@@ -33,6 +33,8 @@ class SemanticMemoryNode(Node):
         self.declare_parameter('target_frame', 'map')
         self.declare_parameter('merge_radius_m', 0.4)
         self.declare_parameter('memory_timeout_sec', 600.0)
+        self.declare_parameter('publish_min_hits', 3)
+        self.declare_parameter('xiong_memory_min_hits', 8)
         self.declare_parameter('position_alpha', 0.3)
         self.declare_parameter('position_alpha_close', 0.7)
         self.declare_parameter('depth_topic', '/depth_to_rgb/image_raw')
@@ -43,6 +45,8 @@ class SemanticMemoryNode(Node):
         self.target_frame = self.get_parameter('target_frame').value
         self.merge_radius = float(self.get_parameter('merge_radius_m').value)
         self.timeout_sec = self.get_parameter('memory_timeout_sec').value
+        self.publish_min_hits = int(self.get_parameter('publish_min_hits').value)
+        self.xiong_memory_min_hits = int(self.get_parameter('xiong_memory_min_hits').value)
         self.alpha = self.get_parameter('position_alpha').value
         self.alpha_close = self.get_parameter('position_alpha_close').value
         self.depth_scale = self.get_parameter('depth_unit_scale').value
@@ -421,7 +425,7 @@ class SemanticMemoryNode(Node):
 
         with self.memory_lock:
             for obj_id, obj_data in self.memory.items():
-                if obj_data['hits'] >= 3:
+                if obj_data['hits'] >= self._min_hits_for_class(obj_data['class_name']):
                     memory_list.append({
                         "id": obj_id,
                         "class_name": obj_data['class_name'],
@@ -437,7 +441,7 @@ class SemanticMemoryNode(Node):
 
         with self.memory_lock:
             for obj_id, obj_data in self.memory.items():
-                if obj_data['hits'] < 3:
+                if obj_data['hits'] < self._min_hits_for_class(obj_data['class_name']):
                     continue
 
                 stable_int_id = hash(obj_id) % 2147483647
@@ -481,6 +485,11 @@ class SemanticMemoryNode(Node):
                 marker_array.markers.append(t)
 
         self.marker_pub.publish(marker_array)
+
+    def _min_hits_for_class(self, class_name: str) -> int:
+        if str(class_name).lower() in {"xiong", "xiong_qiao"}:
+            return max(1, int(self.xiong_memory_min_hits))
+        return max(1, int(self.publish_min_hits))
 
 
 def main(args=None):

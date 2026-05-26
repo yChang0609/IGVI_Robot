@@ -53,6 +53,8 @@ class BearGraspTaskNode(Node):
         self.state = TaskState.IDLE
         self.active = bool(self.get_parameter("auto_start").value)
         self.latest_detection: TargetDetection | None = None
+        self.candidate_detection: TargetDetection | None = None
+        self.candidate_confirm_count = 0
         self.grasp_retry_count = 0
         self.goal_in_flight = False
         self.in_grasp_range = False
@@ -97,6 +99,7 @@ class BearGraspTaskNode(Node):
         self.declare_parameter("grab_action_name", "grab_object")
         self.declare_parameter("target_labels", ["bear", "teddy bear", "xiong", "熊","xiong_qiao"])
         self.declare_parameter("min_confidence", 0.35)
+        self.declare_parameter("target_confirm_frames", 1)
         self.declare_parameter("target_max_distance_m", 0.24)
         # Once the target enters the grasp band, depth noise must exceed this
         # margin (in metres) past target_max before we drop back to approaching.
@@ -123,6 +126,8 @@ class BearGraspTaskNode(Node):
         self.grasp_retry_count = 0
         self.goal_in_flight = False
         self.in_grasp_range = False
+        self.latest_detection = None
+        self._reset_candidate()
         self._set_state(TaskState.WAITING_FOR_BEAR, "manual start")
         response.success = True
         response.message = "bear grasp task started"
@@ -132,6 +137,8 @@ class BearGraspTaskNode(Node):
         self.active = False
         self.goal_in_flight = False
         self.in_grasp_range = False
+        self.latest_detection = None
+        self._reset_candidate()
         self._publish_stop()
         self._set_state(TaskState.IDLE, "manual stop")
         response.success = True
@@ -154,6 +161,11 @@ class BearGraspTaskNode(Node):
         image_height = self._first_number(payload, ["image_height", "height"])
         best = self._select_target(payload, image_width, image_height)
         if best is None:
+            self._reset_candidate()
+            self.latest_detection = None
+            return
+        if not self._confirm_target(best):
+            self.latest_detection = None
             return
         self.latest_detection = best
         now = time.monotonic()
@@ -203,6 +215,46 @@ class BearGraspTaskNode(Node):
             if best is None or self._target_priority(candidate) > self._target_priority(best):
                 best = candidate
         return best
+
+    def _confirm_target(self, detection: TargetDetection) -> bool:
+        required = max(1, int(self.get_parameter("target_confirm_frames").value))
+        if self._same_candidate(detection, self.candidate_detection):
+            self.candidate_confirm_count += 1
+        else:
+            self.candidate_detection = detection
+            self.candidate_confirm_count = 1
+
+        if self.candidate_confirm_count < required:
+            self.get_logger().debug(
+                f"confirming {detection.label}: {self.candidate_confirm_count}/{required} "
+                f"score={detection.score:.2f}"
+            )
+            return False
+        return True
+
+    def _same_candidate(
+        self, detection: TargetDetection, previous: TargetDetection | None
+    ) -> bool:
+        if previous is None:
+            return False
+        if detection.label.lower() != previous.label.lower():
+            return False
+
+        # Keep this threshold internal so the public config stays simple:
+        # the candidate must remain roughly in the same image neighborhood.
+        avg_size = max(
+            40.0,
+            (detection.size_x + detection.size_y + previous.size_x + previous.size_y) / 4.0,
+        )
+        center_dist = math.hypot(
+            detection.center_x - previous.center_x,
+            detection.center_y - previous.center_y,
+        )
+        return center_dist <= avg_size
+
+    def _reset_candidate(self) -> None:
+        self.candidate_detection = None
+        self.candidate_confirm_count = 0
 
     def _target_priority(self, detection: TargetDetection):
         # A target without depth cannot enter the grasp distance gate.
