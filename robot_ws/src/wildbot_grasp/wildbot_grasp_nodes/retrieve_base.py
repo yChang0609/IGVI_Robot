@@ -265,6 +265,11 @@ class RetrieveBase(Node):
     def is_path_blocked(self) -> bool:
         """Check if the active path is blocked by an obstacle in global_costmap."""
         if not self.get_parameter("avoidance_enabled").value:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            last_disabled_log = getattr(self, "_last_disabled_log_time", 0.0)
+            if now_sec - last_disabled_log > 5.0:
+                self.get_logger().info("[Dynamic Avoidance] avoidance_enabled is False. Obstacle avoidance is DISABLED.")
+                self._last_disabled_log_time = now_sec
             return False
 
         if self.motion_state not in ("path_tracking", "aligning"):
@@ -274,7 +279,15 @@ class RetrieveBase(Node):
             path = self._active_path
 
         costmap = self.latest_costmap()
-        if not path or not path.poses or costmap is None:
+        if not path or not path.poses:
+            return False
+            
+        if costmap is None:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            last_costmap_log = getattr(self, "_last_costmap_log_time", 0.0)
+            if now_sec - last_costmap_log > 5.0:
+                self.get_logger().warn("[Dynamic Avoidance] No global costmap received yet! Cannot check for path blockage.")
+                self._last_costmap_log_time = now_sec
             return False
 
         robot_pose = self.get_robot_pose()
@@ -321,7 +334,10 @@ class RetrieveBase(Node):
                 raw = int(costmap.data[idx])
                 if raw >= 90 or raw < 0:
                     self.get_logger().warn(
-                        f"[Dynamic Avoidance] Path is blocked in costmap at x={px:.2f}, y={py:.2f} (cost: {raw})"
+                        f"[Dynamic Avoidance] Path is blocked! "
+                        f"Blockage at relative x={px-rx:+.2f}m, y={py-ry:+.2f}m. "
+                        f"Distance along plan: {accumulated_dist:.2f}m (limit: {lookahead_m:.2f}m), "
+                        f"Cost: {raw}"
                     )
                     return True
 

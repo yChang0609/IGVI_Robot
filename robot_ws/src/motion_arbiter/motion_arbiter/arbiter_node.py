@@ -238,11 +238,21 @@ class MotionArbiter(Node):
     def _is_path_blocked(self, path: list[tuple[float, float, float]], path_index: int, rx: float, ry: float) -> bool:
         """Check if the active plan is blocked by an obstacle in the costmap."""
         if not self.get_parameter("avoidance_enabled").value:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            last_disabled_log = getattr(self, "_last_disabled_log_time", 0.0)
+            if now_sec - last_disabled_log > 5.0:
+                self.get_logger().info("[SAFETY] avoidance_enabled is False. Obstacle avoidance is DISABLED.")
+                self._last_disabled_log_time = now_sec
             return False
 
         with self._costmap_lock:
             costmap = self._costmap
         if costmap is None:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            last_costmap_log = getattr(self, "_last_costmap_log_time", 0.0)
+            if now_sec - last_costmap_log > 5.0:
+                self.get_logger().warn("[SAFETY] No costmap received yet! Cannot check for path blockage.")
+                self._last_costmap_log_time = now_sec
             return False
 
         # Find closest path index to current robot position
@@ -283,6 +293,16 @@ class MotionArbiter(Node):
             if 0 <= idx < len(costmap.data):
                 raw = int(costmap.data[idx])
                 if raw >= 90 or raw < 0:
+                    now_sec = self.get_clock().now().nanoseconds * 1e-9
+                    last_warn = getattr(self, "_last_blocked_warn_time", 0.0)
+                    if now_sec - last_warn > 1.0:
+                        self.get_logger().warn(
+                            f"[SAFETY] Path blocked by obstacle! Holding robot position. "
+                            f"Blockage at relative x={px-rx:+.2f}m, y={py-ry:+.2f}m. "
+                            f"Distance along plan: {accumulated_dist:.2f}m (limit: {lookahead_m:.2f}m), "
+                            f"Cost: {raw}"
+                        )
+                        self._last_blocked_warn_time = now_sec
                     return True
 
             prev_x, prev_y = px, py
@@ -343,11 +363,6 @@ class MotionArbiter(Node):
             if pose is None:
                 desired_vx, desired_wz = 0.0, 0.0
             elif self._is_path_blocked(path, path_index, pose[0], pose[1]):
-                now_sec = now.nanoseconds * 1e-9
-                last_warn = getattr(self, "_last_blocked_warn_time", 0.0)
-                if now_sec - last_warn > 1.0:
-                    self.get_logger().warn("[SAFETY] Path blocked by obstacle! Holding robot position.")
-                    self._last_blocked_warn_time = now_sec
                 desired_vx, desired_wz = 0.0, 0.0
             else:
                 result = self._pure_pursuit(path, path_index, pose, state)
