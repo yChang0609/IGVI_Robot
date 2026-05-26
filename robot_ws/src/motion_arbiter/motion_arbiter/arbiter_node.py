@@ -39,7 +39,7 @@ import rclpy
 import tf2_ros
 from tf2_ros import TransformException
 from geometry_msgs.msg import Twist, TwistStamped
-from nav_msgs.msg import Path
+from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Empty, String
@@ -47,6 +47,12 @@ from std_msgs.msg import Bool, Empty, String
 # Latched QoS matching the bridge's /estop publisher so we receive the current
 # state immediately on subscribe, even if the arbiter starts after the bridge.
 _ESTOP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+_MAP_QOS = QoSProfile(
     depth=1,
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -89,6 +95,8 @@ class MotionArbiter(Node):
         self.declare_parameter("slow_linear_velocity", 0.0)
         self.declare_parameter("output_topic", "/cmd_vel")
         self.declare_parameter("enable_drift_correction", True)
+        self.declare_parameter("avoidance_enabled", True)
+        self.declare_parameter("avoidance_lookahead_m", 0.45)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._override_timeout = float(self.get_parameter("override_timeout").value)
@@ -108,12 +116,16 @@ class MotionArbiter(Node):
         self._path_frame_id: str = "map"
         self._current_vel: tuple[float, float] = (0.0, 0.0)
         # self._current_wz_measured: float = 0.0
+        
+        self._costmap: OccupancyGrid | None = None
+        self._costmap_lock = threading.Lock()
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
         self.create_subscription(Empty, "/motion/clear_path", self._on_clear_path, 10)
         self.create_subscription(Bool, "/estop", self._on_estop, _ESTOP_QOS)
+        self.create_subscription(OccupancyGrid, "/global_costmap/costmap", self._on_costmap, _MAP_QOS)
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -219,6 +231,64 @@ class MotionArbiter(Node):
                 self._state = State.PATH_TRACKING if self._path else State.IDLE
         self.get_logger().warn("E-STOP ENGAGED" if engaged else "E-STOP RELEASED")
 
+    def _on_costmap(self, msg: OccupancyGrid) -> None:
+        with self._costmap_lock:
+            self._costmap = msg
+
+    def _is_path_blocked(self, path: list[tuple[float, float, float]], path_index: int, rx: float, ry: float) -> bool:
+        """Check if the active plan is blocked by an obstacle in the costmap."""
+        if not self.get_parameter("avoidance_enabled").value:
+            return False
+
+        with self._costmap_lock:
+            costmap = self._costmap
+        if costmap is None:
+            return False
+
+        # Find closest path index to current robot position
+        closest_idx = path_index
+        min_dist = float("inf")
+        for idx in range(path_index, len(path)):
+            px, py, _ = path[idx]
+            d = math.hypot(px - rx, py - ry)
+            if d < min_dist:
+                min_dist = d
+                closest_idx = idx
+
+        # Extract path lookahead points (up to lookahead distance along path)
+        lookahead_m = float(self.get_parameter("avoidance_lookahead_m").value)
+        accumulated_dist = 0.0
+        prev_x, prev_y = rx, ry
+
+        info = costmap.info
+        resolution = float(info.resolution)
+        origin_x = float(info.origin.position.x)
+        origin_y = float(info.origin.position.y)
+        width = int(info.width)
+        height = int(info.height)
+
+        for i in range(closest_idx, len(path)):
+            px, py, _ = path[i]
+            accumulated_dist += math.hypot(px - prev_x, py - prev_y)
+            if accumulated_dist > lookahead_m:
+                break
+
+            # Check costmap value at px, py
+            mx = math.floor((px - origin_x) / resolution)
+            my = math.floor((py - origin_y) / resolution)
+            if mx < 0 or my < 0 or mx >= width or my >= height:
+                continue
+
+            idx = my * width + mx
+            if 0 <= idx < len(costmap.data):
+                raw = int(costmap.data[idx])
+                if raw >= 90 or raw < 0:
+                    return True
+
+            prev_x, prev_y = px, py
+
+        return False
+
     # ── Control loop ──────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -271,6 +341,13 @@ class MotionArbiter(Node):
                 self.get_logger().warn(f"Could not get transform to base_link: {ex}")
 
             if pose is None:
+                desired_vx, desired_wz = 0.0, 0.0
+            elif self._is_path_blocked(path, path_index, pose[0], pose[1]):
+                now_sec = now.nanoseconds * 1e-9
+                last_warn = getattr(self, "_last_blocked_warn_time", 0.0)
+                if now_sec - last_warn > 1.0:
+                    self.get_logger().warn("[SAFETY] Path blocked by obstacle! Holding robot position.")
+                    self._last_blocked_warn_time = now_sec
                 desired_vx, desired_wz = 0.0, 0.0
             else:
                 result = self._pure_pursuit(path, path_index, pose, state)

@@ -106,7 +106,7 @@ class RetrieveBase(Node):
         self.declare_parameter("return_home_duration_sec", 0.5) # 放下後回 home
 
         # Dynamic Obstacle Avoidance parameters
-        self.declare_parameter("avoidance_enabled", False)
+        self.declare_parameter("avoidance_enabled", True)
         self.declare_parameter("avoidance_lookahead_m", 0.40)
         self.declare_parameter("avoidance_radius_m", 0.16)
         self.declare_parameter("avoidance_min_height_m", 0.05)
@@ -263,31 +263,24 @@ class RetrieveBase(Node):
             return None
 
     def is_path_blocked(self) -> bool:
-        """Check if the active path is blocked by an obstacle in cloud_obstacles."""
+        """Check if the active path is blocked by an obstacle in global_costmap."""
         if not self.get_parameter("avoidance_enabled").value:
             return False
 
-        if self.motion_state != "path_tracking":
+        if self.motion_state not in ("path_tracking", "aligning"):
             return False
 
         with self._path_lock:
             path = self._active_path
-            
-        with self._obstacles_lock:
-            obstacles = self._last_obstacles
-            obstacles_time = self._last_obstacles_time
 
-        if not path or not path.poses or not obstacles:
+        costmap = self.latest_costmap()
+        if not path or not path.poses or costmap is None:
             return False
 
-        # If the obstacle data is older than 2.0 seconds, it's stale; don't use it
-        if time.time() - obstacles_time > 2.0:
-            return False
-
-        robot_pose = self.get_robot_pose_3d(obstacles.header.stamp)
+        robot_pose = self.get_robot_pose()
         if robot_pose is None:
             return False
-        rx, ry, rz, ryaw = robot_pose
+        rx, ry, ryaw = robot_pose
 
         # Find closest path index to current robot position
         closest_idx = 0
@@ -300,73 +293,39 @@ class RetrieveBase(Node):
 
         # Extract path lookahead points (up to lookahead distance along path)
         lookahead_m = float(self.get_parameter("avoidance_lookahead_m").value)
-        lookahead_points = []
         accumulated_dist = 0.0
         prev_x, prev_y = rx, ry
         
+        info = costmap.info
+        resolution = float(info.resolution)
+        origin_x = float(info.origin.position.x)
+        origin_y = float(info.origin.position.y)
+        width = int(info.width)
+        height = int(info.height)
+
         for i in range(closest_idx, len(path.poses)):
             px = path.poses[i].pose.position.x
             py = path.poses[i].pose.position.y
             accumulated_dist += math.hypot(px - prev_x, py - prev_y)
             if accumulated_dist > lookahead_m:
                 break
-            lookahead_points.append((px, py))
+            
+            # Check costmap value at px, py
+            mx = math.floor((px - origin_x) / resolution)
+            my = math.floor((py - origin_y) / resolution)
+            if mx < 0 or my < 0 or mx >= width or my >= height:
+                continue
+
+            idx = my * width + mx
+            if 0 <= idx < len(costmap.data):
+                raw = int(costmap.data[idx])
+                if raw >= 90 or raw < 0:
+                    self.get_logger().warn(
+                        f"[Dynamic Avoidance] Path is blocked in costmap at x={px:.2f}, y={py:.2f} (cost: {raw})"
+                    )
+                    return True
+
             prev_x, prev_y = px, py
-
-        if not lookahead_points:
-            return False
-
-        # Decode point cloud efficiently
-        import struct
-        msg = obstacles
-        step = msg.point_step
-        ox = oy = oz = 0
-        for f in msg.fields:
-            if f.name == 'x': ox = f.offset
-            elif f.name == 'y': oy = f.offset
-            elif f.name == 'z': oz = f.offset
-
-        num_points = len(msg.data) // step
-        
-        # Avoid performance issues by checking at most 2000 points (downsampling if needed)
-        max_cloud_points = 2000
-        stride = max(1, num_points // max_cloud_points)
-
-        check_points = []
-        for i in range(0, num_points, stride):
-            offset = i * step
-            # Fast contiguous unpack if standard C++ layout
-            if ox == 0 and oy == 4 and oz == 8:
-                x, y, z = struct.unpack_from('fff', msg.data, offset)
-            else:
-                x = struct.unpack_from('f', msg.data, offset + ox)[0]
-                y = struct.unpack_from('f', msg.data, offset + oy)[0]
-                z = struct.unpack_from('f', msg.data, offset + oz)[0]
-            check_points.append((x, y, z))
-
-        # Filter and count blocked points
-        radius_m = float(self.get_parameter("avoidance_radius_m").value)
-        min_h = float(self.get_parameter("avoidance_min_height_m").value)
-        max_h = float(self.get_parameter("avoidance_max_height_m").value)
-
-        blocked_count = 0
-        for x, y, z in check_points:
-            # Broad box check to eliminate distant points quickly (within 1.2m of robot)
-            if abs(x - rx) > 1.2 or abs(y - ry) > 1.2:
-                continue
-
-            # Check relative height to robot floor
-            rel_z = z - rz
-            if rel_z < min_h or rel_z > max_h:
-                continue
-
-            # Check distance to any lookahead path point
-            for px, py in lookahead_points:
-                if math.hypot(x - px, y - py) < radius_m:
-                    blocked_count += 1
-                    if blocked_count >= 5:  # Require at least 5 points to trigger blockage (noise threshold)
-                        return True
-                    break
 
         return False
 

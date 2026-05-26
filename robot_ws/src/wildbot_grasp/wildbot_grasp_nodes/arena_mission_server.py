@@ -241,56 +241,44 @@ class ArenaMissionServer(RetrieveBase):
                 patrol_name, patrol_wp = patrols[self._patrol_idx % len(patrols)]
                 self._patrol_idx += 1
                 
-                self.publish_feedback(goal_handle, "patrolling", 0.0, f"Patrolling to {patrol_name} ({patrol_wp['x']:.2f}, {patrol_wp['y']:.2f})")
-                
-                # Disable precise drift correction during patrol navigation to avoid slow in-place alignment
-                self.set_motion_arbiter_drift_correction(False)
-                
-                nav_pose = self.make_pose(patrol_wp["x"], patrol_wp["y"], patrol_wp["yaw"])
-                nav_goal = NavigateToPose.Goal()
-                nav_goal.pose = nav_pose
-                
-                if not self.nav_client.wait_for_server(timeout_sec=5.0):
-                    self.get_logger().error("Nav2 server not available")
-                    time.sleep(1.0)
-                    continue
-                    
-                send_future = self.nav_client.send_goal_async(nav_goal)
-                while rclpy.ok() and not send_future.done():
-                    time.sleep(0.05)
-                    
-                nav_goal_handle = send_future.result()
-                if not nav_goal_handle.accepted:
-                    continue
-                    
-                if goal_handle.is_cancel_requested:
-                    nav_goal_handle.cancel_goal_async()
-                    self._plan_pub.publish(Path())
-                    self.cmd_vel_pub.publish(Twist())
-                    goal_handle.canceled()
-                    result.success = False
-                    result.message = "Arena mission canceled"
-                    return result
-                    
-                result_future = nav_goal_handle.get_result_async()
+                max_patrol_retries = 3
+                patrol_retry_count = 0
+                patrol_blocked = False
                 patrol_interrupted = False
-                # Wait for motion_arbiter to transition away from 'idle' state.
-                # We give it up to 1.5 seconds. If it doesn't transition, we assume
-                # the goal is already reached or the plan was completed instantly.
-                start_wait = time.time()
-                has_started = False
-                while time.time() - start_wait < 1.5:
-                    if goal_handle.is_cancel_requested:
-                        break
-                    if self.motion_state in ("path_tracking", "aligning"):
-                        has_started = True
-                        break
-                    time.sleep(0.05)
-                
-                patrol_start_time = time.time()
-                patrol_timeout = 60.0
-                
-                while rclpy.ok():
+                patrol_success = False
+
+                while patrol_retry_count < max_patrol_retries and rclpy.ok():
+                    self.publish_feedback(
+                        goal_handle,
+                        "patrolling",
+                        0.0,
+                        f"Patrolling to {patrol_name} ({patrol_wp['x']:.2f}, {patrol_wp['y']:.2f}) "
+                        f"[Attempt {patrol_retry_count + 1}/{max_patrol_retries}]"
+                    )
+                    
+                    # Disable precise drift correction during patrol navigation to avoid slow in-place alignment
+                    self.set_motion_arbiter_drift_correction(False)
+                    
+                    nav_pose = self.make_pose(patrol_wp["x"], patrol_wp["y"], patrol_wp["yaw"])
+                    nav_goal = NavigateToPose.Goal()
+                    nav_goal.pose = nav_pose
+                    
+                    if not self.nav_client.wait_for_server(timeout_sec=5.0):
+                        self.get_logger().error("Nav2 server not available")
+                        time.sleep(1.0)
+                        patrol_retry_count += 1
+                        continue
+                        
+                    send_future = self.nav_client.send_goal_async(nav_goal)
+                    while rclpy.ok() and not send_future.done():
+                        time.sleep(0.05)
+                        
+                    nav_goal_handle = send_future.result()
+                    if not nav_goal_handle.accepted:
+                        patrol_retry_count += 1
+                        time.sleep(0.5)
+                        continue
+                        
                     if goal_handle.is_cancel_requested:
                         nav_goal_handle.cancel_goal_async()
                         self._plan_pub.publish(Path())
@@ -300,65 +288,134 @@ class ArenaMissionServer(RetrieveBase):
                         result.message = "Arena mission canceled"
                         return result
                         
-                    if time.time() - patrol_start_time > patrol_timeout:
-                        self.get_logger().warn(f"Patrol to {patrol_name} timed out")
-                        self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
-                        break
-                        
-                    # Check if motion_arbiter has returned to idle (completed arrival & alignment)
-                    if has_started and self.motion_state == "idle":
-                        self.get_logger().info(f"Arrived at patrol waypoint '{patrol_name}' (confirmed by motion_arbiter)")
-                        break
-                    elif not has_started and time.time() - patrol_start_time > 2.0:
-                        self.get_logger().info(f"Patrol waypoint '{patrol_name}' already reached.")
-                        break
-                        
-                    # Memory interrupt check
-                    with self.memory_lock:
-                        memory_copy = list(self.latest_memory.values())
-                        
-                    for obj in memory_copy:
-                        obj_id = obj.get("id")
-                        if obj.get("class_name") == "xiong" and obj_id not in blacklist:
-                            pos = obj.get("position", {})
-                            bx, by = pos.get("x"), pos.get("y")
-                            if bx is None or by is None:
-                                continue
+                    result_future = nav_goal_handle.get_result_async()
+                    patrol_interrupted = False
+                    
+                    # Wait for motion_arbiter to transition away from 'idle' state.
+                    # We give it up to 1.5 seconds. If it doesn't transition, we assume
+                    # the goal is already reached or the plan was completed instantly.
+                    start_wait = time.time()
+                    has_started = False
+                    while time.time() - start_wait < 1.5:
+                        if goal_handle.is_cancel_requested:
+                            break
+                        if self.motion_state in ("path_tracking", "aligning"):
+                            has_started = True
+                            break
+                        time.sleep(0.05)
+                    
+                    patrol_start_time = time.time()
+                    patrol_timeout = 60.0
+                    local_blocked = False
+                    
+                    while rclpy.ok():
+                        if goal_handle.is_cancel_requested:
+                            nav_goal_handle.cancel_goal_async()
+                            self._plan_pub.publish(Path())
+                            self.cmd_vel_pub.publish(Twist())
+                            goal_handle.canceled()
+                            result.success = False
+                            result.message = "Arena mission canceled"
+                            return result
                             
-                            valid = True
-                            if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
-                                valid = False
-                            if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
-                                valid = False
+                        if self.is_path_blocked():
+                            self.get_logger().warn(
+                                f"[Dynamic Avoidance] Patrol to {patrol_name} is blocked! "
+                                f"Halting current attempt."
+                            )
+                            nav_goal_handle.cancel_goal_async()
+                            self._plan_pub.publish(Path())
+                            self.cmd_vel_pub.publish(Twist())
+                            self.clear_costmaps()
+                            local_blocked = True
+                            break
+
+                        if time.time() - patrol_start_time > patrol_timeout:
+                            self.get_logger().warn(f"Patrol to {patrol_name} timed out")
+                            self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
+                            break
+                            
+                        # Check if motion_arbiter has returned to idle (completed arrival & alignment)
+                        if has_started and self.motion_state == "idle":
+                            self.get_logger().info(f"Arrived at patrol waypoint '{patrol_name}' (confirmed by motion_arbiter)")
+                            patrol_success = True
+                            break
+                        elif not has_started and time.time() - patrol_start_time > 2.0:
+                            self.get_logger().info(f"Patrol waypoint '{patrol_name}' already reached.")
+                            patrol_success = True
+                            break
+                            
+                        # Memory interrupt check
+                        with self.memory_lock:
+                            memory_copy = list(self.latest_memory.values())
+                            
+                        for obj in memory_copy:
+                            obj_id = obj.get("id")
+                            if obj.get("class_name") == "xiong" and obj_id not in blacklist:
+                                pos = obj.get("position", {})
+                                bx, by = pos.get("x"), pos.get("y")
+                                if bx is None or by is None:
+                                    continue
                                 
-                            bz = pos.get("z", 0.0)
-                            if bz > 0.15:
-                                valid = False
-                                
-                            if valid:
-                                patrol_interrupted = True
-                                break
-                    
-                    if patrol_interrupted:
-                        self.publish_feedback(goal_handle, "interrupt", 0.0, "Bear spotted during patrol! Interrupting.")
-                        self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
-                        nav_goal_handle.cancel_goal_async()
-                        break
+                                valid = True
+                                if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
+                                    valid = False
+                                if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
+                                    valid = False
+                                    
+                                bz = pos.get("z", 0.0)
+                                if bz > 0.15:
+                                    valid = False
+                                    
+                                if valid:
+                                    patrol_interrupted = True
+                                    break
                         
-                    time.sleep(0.3)
+                        if patrol_interrupted:
+                            self.publish_feedback(goal_handle, "interrupt", 0.0, "Bear spotted during patrol! Interrupting.")
+                            self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
+                            nav_goal_handle.cancel_goal_async()
+                            break
+                            
+                        time.sleep(0.3)
+                        
+                    if goal_handle.is_cancel_requested:
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
+                        
+                    if patrol_interrupted:
+                        break
                     
-                if goal_handle.is_cancel_requested:
-                    self._plan_pub.publish(Path())
-                    self.cmd_vel_pub.publish(Twist())
-                    goal_handle.canceled()
-                    result.success = False
-                    result.message = "Arena mission canceled"
-                    return result
-                    
-                if not patrol_interrupted:
+                    if patrol_success:
+                        break
+
+                    if local_blocked:
+                        patrol_retry_count += 1
+                        if patrol_retry_count < max_patrol_retries:
+                            self.get_logger().info(
+                                f"Waiting 1.5s for obstacle to clear, then retrying same waypoint..."
+                            )
+                            time.sleep(1.5)
+                        else:
+                            self.get_logger().warn(
+                                f"Waypoint {patrol_name} blocked after {max_patrol_retries} attempts. Skipping."
+                            )
+                            patrol_blocked = True
+                            break
+                    else:
+                        # Non-obstacle break (e.g. timeout) - skip this waypoint
+                        break
+
+                if not patrol_interrupted and not patrol_blocked and patrol_success:
                     self.get_logger().info(f"Finished patrol {patrol_name}")
                     self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
                     time.sleep(1.0) # pause at patrol point
+                else:
+                    self.set_motion_arbiter_drift_correction(True)  # Re-enable drift correction if skipped/interrupted
 
         except Exception as e:
             self.get_logger().error(f"Arena mission error: {e}")
