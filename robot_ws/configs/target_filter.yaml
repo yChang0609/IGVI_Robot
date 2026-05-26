@@ -1,0 +1,14 @@
+# Target validation filters.
+#
+# These values are intentionally conservative for xiong/xiong_qiao so one-off
+# YOLO mistakes do not immediately start a grasp or enter semantic memory.
+
+bear_grasp_task_node:
+  ros__parameters:
+    min_confidence: 0.55
+    target_confirm_frames: 5
+
+semantic_memory_node:
+  ros__parameters:
+    publish_min_hits: 3
+    xiong_memory_min_hits: 5
