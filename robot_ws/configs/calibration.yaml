@@ -8,6 +8,15 @@ camera_extrinsics:
 ekf:
   frequency: 50
   sensor_timeout: 0.2
+face_point:
+  align_deg: 90.0
+  ang_floor: 0.3
+  ang_kp: 2.5
+  ang_max: 0.45
+  distance_m: 0.45
+  reverse_speed: 2.0
+  timeout_sec: 10.0
+  yaw_tol_deg: 8.0
 imu:
   gyro_bias_x: -0.008988
   gyro_bias_y: -0.004757
