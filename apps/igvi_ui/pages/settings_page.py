@@ -448,7 +448,7 @@ class SettingsPage(QWidget):
         self.fp_ang_max = self._spin(0.05, 2.0, 0.01, 2)
         self.fp_ang_floor = self._spin(0.0, 1.0, 0.01, 2)
         self.fp_align_deg = self._spin(1.0, 90.0, 1.0, 1)
-        self.fp_reverse_speed = self._spin(0.01, 1.0, 0.01, 2)
+        self.fp_reverse_speed = self._spin(0.01, 3.0, 0.01, 2)
         self.fp_yaw_tol_deg = self._spin(1.0, 45.0, 0.5, 1)
         self.fp_timeout_sec = self._spin(2.0, 60.0, 1.0, 1)
 
