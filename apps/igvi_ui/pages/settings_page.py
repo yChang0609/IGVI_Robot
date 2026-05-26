@@ -156,6 +156,7 @@ class SettingsPage(QWidget):
         self._build_wheel_tab()
         self._build_imu_tab()
         self._build_ekf_tab()
+        self._build_bridge_tab()
 
         self.health_label = QLabel()
         self.health_label.setObjectName("Muted")
@@ -423,6 +424,47 @@ class SettingsPage(QWidget):
         outer.addStretch(1)
         self.tabs.addTab(page, "EKF")
 
+    # ── Bridge Tab ────────────────────────────────────────────────────────────
+
+    def _build_bridge_tab(self) -> None:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("face_point 對準退後參數（即時生效）"))
+        toolbar.addStretch(1)
+        save = QPushButton("Save & Apply")
+        save.setObjectName("Primary")
+        save.clicked.connect(self._save_bridge)
+        toolbar.addWidget(save)
+        outer.addLayout(toolbar)
+
+        frame = QFrame()
+        frame.setObjectName("Panel")
+        form = QFormLayout(frame)
+        form.setContentsMargins(14, 14, 14, 14)
+
+        self.fp_distance_m = self._spin(0.05, 2.0, 0.01, 2)
+        self.fp_ang_kp = self._spin(0.1, 5.0, 0.05, 2)
+        self.fp_ang_max = self._spin(0.05, 2.0, 0.01, 2)
+        self.fp_ang_floor = self._spin(0.0, 1.0, 0.01, 2)
+        self.fp_align_deg = self._spin(1.0, 90.0, 1.0, 1)
+        self.fp_reverse_speed = self._spin(0.01, 1.0, 0.01, 2)
+        self.fp_yaw_tol_deg = self._spin(1.0, 45.0, 0.5, 1)
+        self.fp_timeout_sec = self._spin(2.0, 60.0, 1.0, 1)
+
+        form.addRow("退後距離 distance_m (m)", self.fp_distance_m)
+        form.addRow("角度 P 增益 ang_kp", self.fp_ang_kp)
+        form.addRow("最大轉速 ang_max (rad/s)", self.fp_ang_max)
+        form.addRow("最低轉速 ang_floor (rad/s)", self.fp_ang_floor)
+        form.addRow("開始退後角度門檻 align_deg (°)", self.fp_align_deg)
+        form.addRow("退後速度 reverse_speed (m/s)", self.fp_reverse_speed)
+        form.addRow("停止角度誤差 yaw_tol_deg (°)", self.fp_yaw_tol_deg)
+        form.addRow("超時 timeout_sec (s)", self.fp_timeout_sec)
+
+        outer.addWidget(frame)
+        outer.addStretch(1)
+        self.tabs.addTab(page, "Bridge")
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -518,6 +560,14 @@ class SettingsPage(QWidget):
         self.kinect_contrast_spin.setValue(int(calib.get("kinect_contrast", 5)))
         self.kinect_saturation_spin.setValue(int(calib.get("kinect_saturation", 32)))
         self.kinect_sharpness_spin.setValue(int(calib.get("kinect_sharpness", 2)))
+        self.fp_distance_m.setValue(calib.get("face_point_distance_m", 0.3))
+        self.fp_ang_kp.setValue(calib.get("face_point_ang_kp", 1.5))
+        self.fp_ang_max.setValue(calib.get("face_point_ang_max", 0.45))
+        self.fp_ang_floor.setValue(calib.get("face_point_ang_floor", 0.30))
+        self.fp_align_deg.setValue(calib.get("face_point_align_deg", 30.0))
+        self.fp_reverse_speed.setValue(calib.get("face_point_reverse_speed", 1.0))
+        self.fp_yaw_tol_deg.setValue(calib.get("face_point_yaw_tol_deg", 8.0))
+        self.fp_timeout_sec.setValue(calib.get("face_point_timeout_sec", 10.0))
 
     def _save_host(self) -> None:
         payload = {
@@ -578,6 +628,43 @@ class SettingsPage(QWidget):
             QMessageBox.critical(self, "Save failed", str(exc))
             return
         QMessageBox.information(self, "Saved", "Calibration saved to YAML. Restart relevant service to apply.")
+
+    def _save_bridge(self) -> None:
+        fp = {
+            "face_point_distance_m": self.fp_distance_m.value(),
+            "face_point_ang_kp": self.fp_ang_kp.value(),
+            "face_point_ang_max": self.fp_ang_max.value(),
+            "face_point_ang_floor": self.fp_ang_floor.value(),
+            "face_point_align_deg": self.fp_align_deg.value(),
+            "face_point_reverse_speed": self.fp_reverse_speed.value(),
+            "face_point_yaw_tol_deg": self.fp_yaw_tol_deg.value(),
+            "face_point_timeout_sec": self.fp_timeout_sec.value(),
+        }
+        try:
+            calib = self.client.calibration()
+            calib.update(fp)
+            self.client.set_calibration(calib)
+        except HostClientError as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
+            return
+
+        errors = []
+        for node in ("bridge_retrieve_server", "search_retrieve_server"):
+            try:
+                self.client.request(
+                    "POST", "/api/ros/params/set",
+                    {"node": node, "params": fp},
+                )
+            except HostClientError as exc:
+                errors.append(f"{node}: {exc}")
+
+        if errors:
+            QMessageBox.warning(
+                self, "Saved (partial)",
+                "Saved to YAML. Live push failed for:\n" + "\n".join(errors),
+            )
+        else:
+            QMessageBox.information(self, "Saved", "Saved to YAML and applied to running nodes.")
 
     def _start_camera_auto_calibration(self) -> None:
         QMessageBox.information(

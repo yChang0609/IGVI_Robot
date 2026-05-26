@@ -86,19 +86,25 @@ class RetrieveBase(Node):
         # Stepped door-ref scan: pause per stop + extra rotation past the door ref.
         self.declare_parameter("scan_step_settle_sec", 0.5)
         self.declare_parameter("scan_step_extra_deg", 45.0)
-        # face_point: standoff distance to back up to (for camera visibility).
-        self.declare_parameter("face_point_distance_m", 0.3)
-        # face_point: angular P controller for rotating to face the point.
-        self.declare_parameter("face_point_ang_kp", 1.5)
-        self.declare_parameter("face_point_ang_max", 0.45)
-        self.declare_parameter("face_point_ang_floor", 0.30)
-        # face_point: alignment threshold — start adding reverse motion once
-        # |yaw_err| drops below this (deg). Until then, rotate only.
-        self.declare_parameter("face_point_align_deg", 30.0)
-        # face_point: reverse speed once aligned, and final stop yaw tolerance.
-        self.declare_parameter("face_point_reverse_speed", 1.0)
-        self.declare_parameter("face_point_yaw_tol_deg", 8.0)
-        self.declare_parameter("face_point_timeout_sec", 10.0)
+        # face_point params: load from /configs/calibration.yaml if available,
+        # so UI-saved values survive node restarts without a rebuild.
+        _fp = {}
+        try:
+            import yaml as _yaml
+            _cfg = "/configs/calibration.yaml"
+            import os as _os
+            if _os.path.exists(_cfg):
+                _fp = (_yaml.safe_load(open(_cfg).read()) or {}).get("face_point", {})
+        except Exception:
+            pass
+        self.declare_parameter("face_point_distance_m", _fp.get("distance_m", 0.3))
+        self.declare_parameter("face_point_ang_kp", _fp.get("ang_kp", 1.5))
+        self.declare_parameter("face_point_ang_max", _fp.get("ang_max", 0.45))
+        self.declare_parameter("face_point_ang_floor", _fp.get("ang_floor", 0.30))
+        self.declare_parameter("face_point_align_deg", _fp.get("align_deg", 30.0))
+        self.declare_parameter("face_point_reverse_speed", _fp.get("reverse_speed", 1.0))
+        self.declare_parameter("face_point_yaw_tol_deg", _fp.get("yaw_tol_deg", 8.0))
+        self.declare_parameter("face_point_timeout_sec", _fp.get("timeout_sec", 10.0))
 
         # Per-action trajectory duration for release sequence (arena mission return).
         # Tune these to control how fast the arm moves when releasing the bear.
