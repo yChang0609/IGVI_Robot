@@ -108,9 +108,6 @@ class MotionArbiter(Node):
         self._path: list[tuple[float, float, float]] = []
         self._path_index: int = 0
         self._aligning_correcting_drift: bool = False
-        self._rot_start_pose: tuple[float, float, float] | None = None
-        self._drift_rate_x: float = 0.0
-        self._drift_rate_y: float = 0.0
         self._motion_target: tuple[float, float] = (0.0, 0.0)
         self._motion_source: str = "task"
         self._last_motion_time = None
@@ -152,9 +149,6 @@ class MotionArbiter(Node):
                 self._path = []
                 self._path_index = 0
                 self._aligning_correcting_drift = False
-                self._rot_start_pose = None
-                self._drift_rate_x = 0.0
-                self._drift_rate_y = 0.0
                 if self._estop:
                     self._state = State.ESTOP
                 elif self._state in (State.OVERRIDE, State.MANUAL):
@@ -171,9 +165,6 @@ class MotionArbiter(Node):
             ]
             self._path_index = 0
             self._aligning_correcting_drift = False
-            self._rot_start_pose = None
-            self._drift_rate_x = 0.0
-            self._drift_rate_y = 0.0
             if self._estop:
                 self._state = State.ESTOP
                 self.get_logger().info(
@@ -375,109 +366,43 @@ class MotionArbiter(Node):
             yaw_tol = float(self.get_parameter("yaw_tolerance").value)
             heading_error = _wrap_angle(gyaw - yaw)
             if abs(heading_error) < yaw_tol:
-                # Once aligned in yaw, we only exit if we are within the strict goal tolerance
                 if dist_to_goal < goal_tol:
                     self._aligning_correcting_drift = False
-                    self._rot_start_pose = None
                     return None
-                else:
-                    # If we finished rotation but drifted slightly outside tolerance,
-                    # we let it fall through to the pure-pursuit path tracker to drive straight back!
-                    self._aligning_correcting_drift = False
-                    self._rot_start_pose = None
+                # heading aligned but drifted outside position tolerance → fall through to pure pursuit
+                self._aligning_correcting_drift = False
             else:
-                # Online drift prediction & compensation:
-                # We calculate relative position to the goal:
+                # Longitudinal error: signed projection of goal offset onto current heading.
+                # Positive = goal is ahead of the robot; negative = goal is behind.
                 xr = x - gx
                 yr = y - gy
-                
+                s = -(xr * math.cos(yaw) + yr * math.sin(yaw))
+
+                DRIFT_START_THRESHOLD = 0.035  # 3.5 cm — trigger linear correction
+                DRIFT_STOP_THRESHOLD = 0.012   # 1.2 cm — resume rotation
+
                 enable_drift_correction = bool(self.get_parameter("enable_drift_correction").value)
-                
-                # Update start pose of rotation segment when starting a new rotation phase
-                if not self._aligning_correcting_drift:
-                    if self._rot_start_pose is None:
-                        self._rot_start_pose = (x, y, yaw)
-                
-                # Calculate Golden Predictive Correction Distance (s) if correction is enabled
                 if enable_drift_correction:
-                    predicted_dx = self._drift_rate_x * heading_error
-                    predicted_dy = self._drift_rate_y * heading_error
-                    
-                    # Avoid singularity when remaining angle is small (below 20 deg / 0.35 rad)
-                    if abs(heading_error) < 0.35:
-                        s = -(xr * math.cos(yaw) + yr * math.sin(yaw))
+                    if self._aligning_correcting_drift:
+                        if abs(s) < DRIFT_STOP_THRESHOLD:
+                            self._aligning_correcting_drift = False
                     else:
-                        num = (xr + predicted_dx) * math.sin(yaw + heading_error) - (yr + predicted_dy) * math.cos(yaw + heading_error)
-                        den = -math.sin(heading_error)
-                        s = num / den
-
-                    # Clamp the final compensation distance to a very safe maximum (max 4.5cm)
-                    # This physically prevents any large sudden forward/backward movements.
-                    s = max(-0.045, min(0.045, s))
+                        if abs(s) > DRIFT_START_THRESHOLD:
+                            self._aligning_correcting_drift = True
                 else:
-                    # If drift correction is disabled (False), set s = 0.0 to completely bypass
-                    # any forward/backward correction phase, performing only pure in-place rotation!
-                    s = 0.0
+                    self._aligning_correcting_drift = False
 
-                # Hysteresis Thresholds on predictive drift s
-                DRIFT_START_THRESHOLD = 0.035  # 3.5cm predictive drift
-                DRIFT_STOP_THRESHOLD = 0.012   # 1.2cm target accuracy
-                
                 if self._aligning_correcting_drift:
-                    if abs(s) < DRIFT_STOP_THRESHOLD:
-                        self._aligning_correcting_drift = False
-                        # Ready to record starting pose when rotation resumes
-                        self._rot_start_pose = None
-                else:
-                    if abs(s) > DRIFT_START_THRESHOLD:
-                        self._aligning_correcting_drift = True
-                        
-                        # Transitioning from rotation to correction!
-                        # Since the robot has stopped rotating, the EKF / SLAM has just settled,
-                        # and we have completed a full rotation segment.
-                        # Calculate the drift rate of this completed segment.
-                        if enable_drift_correction and self._rot_start_pose is not None:
-                            x_start, y_start, yaw_start = self._rot_start_pose
-                            dyaw = _wrap_angle(yaw - yaw_start)
-                            if abs(dyaw) > 0.15:
-                                raw_drx = (x - x_start) / dyaw
-                                raw_dry = (y - y_start) / dyaw
-                                
-                                # Clamp raw rates to prevent spikes and apply Exponential Moving Average (EMA) for smoothing
-                                clamped_drx = max(-0.06, min(0.06, raw_drx))
-                                clamped_dry = max(-0.06, min(0.06, raw_dry))
-                                self._drift_rate_x = 0.7 * self._drift_rate_x + 0.3 * clamped_drx
-                                self._drift_rate_y = 0.7 * self._drift_rate_y + 0.3 * clamped_dry
-                        
-                        # Reset for next rotation segment
-                        self._rot_start_pose = None
-                
-                if self._aligning_correcting_drift:
-                    # Correction phase: STOP rotation, drive straight forward/backward
-                    wz = 0.0
+                    # Linear correction phase: stop rotation, drive straight to fix drift
                     kp_linear_align = float(self.get_parameter("kp_linear_align").value)
-                    # Correct using the predictive offset s
-                    vx = kp_linear_align * s
-                    
-                    # Clamp linear correction speed to a very safe maximum (e.g. max 0.04 m/s)
-                    MAX_ALIGN_VX = 0.04
-                    if vx > MAX_ALIGN_VX:
-                        vx = MAX_ALIGN_VX
-                    elif vx < -MAX_ALIGN_VX:
-                        vx = -MAX_ALIGN_VX
+                    vx = max(-0.04, min(0.04, kp_linear_align * s))
+                    wz = 0.0
                 else:
-                    # Rotation phase: rotate in place cleanly, keep linear velocity at 0.0
+                    # Rotation phase: rotate in place, no forward/backward motion
                     wz = float(self.get_parameter("kp_angular").value) * heading_error
+                    wz = max(-0.35, min(0.35, wz))
                     vx = 0.0
-                    
-                    # Clamp angular velocity during alignment to be extremely smooth and stable (max 0.35 rad/s)
-                    # This prevents high-speed tire slip and SLAM tracking delays.
-                    MAX_ALIGN_WZ = 0.35
-                    if wz > MAX_ALIGN_WZ:
-                        wz = MAX_ALIGN_WZ
-                    elif wz < -MAX_ALIGN_WZ:
-                        wz = -MAX_ALIGN_WZ
-                
+
                 return vx, wz, path_index, State.ALIGNING
 
         # Advance closest-point index (no rewinding)
