@@ -184,9 +184,23 @@ class SemanticMemoryNode(Node):
     def _on_remove(self, msg: String):
         target_id = msg.data
         with self.memory_lock:
-            if target_id in self.memory:
-                del self.memory[target_id]
-                self.get_logger().info(f"[Semantic Memory] Removed object {target_id} from semantic memory via topic request")
+            before_count = len(self.memory)
+            removed = self.memory.pop(target_id, None)
+            after_count = len(self.memory)
+        if removed is not None:
+            self.get_logger().info(
+                "[Semantic Memory] Removed object "
+                f"{target_id} ({removed.get('class_name')}) "
+                f"pos=({float(removed.get('x', 0.0)):.2f},"
+                f"{float(removed.get('y', 0.0)):.2f},"
+                f"{float(removed.get('z', 0.0)):.2f}) "
+                f"via topic request; count {before_count}->{after_count}"
+            )
+        else:
+            self.get_logger().warn(
+                f"[Semantic Memory] Remove requested for {target_id}, "
+                f"but it was not present; count={before_count}"
+            )
         # Publish memory immediately after removal to ensure fast updates
         self.publish_memory()
 
