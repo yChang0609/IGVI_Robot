@@ -94,15 +94,36 @@ class SearchRetrieveServer(RetrieveBase):
             self.publish_feedback(goal_handle, "returning", 0.9, "Returning to specified home pose")
             self.set_motion_arbiter_drift_correction(False)  # Disable precise alignment for return to home navigation
             home_pose = self.make_pose(goal.home_pose_x, goal.home_pose_y, goal.home_pose_yaw)
-            ok, message = self.navigate_to_pose(
-                goal_handle, home_pose, "returning", 0.9, speed_profile="carry"
-            )
+            
+            while rclpy.ok():
+                if goal_handle.is_cancel_requested:
+                    self.set_motion_arbiter_drift_correction(True)
+                    result.success = False
+                    result.message = "Return home canceled by user request"
+                    goal_handle.canceled()
+                    return result
+                    
+                ok, message = self.navigate_to_pose(
+                    goal_handle, home_pose, "returning", 0.9, speed_profile="carry"
+                )
+                if ok:
+                    break
+                    
+                if goal_handle.is_cancel_requested:
+                    self.set_motion_arbiter_drift_correction(True)
+                    result.success = False
+                    result.message = "Return home canceled by user request"
+                    goal_handle.canceled()
+                    return result
+                    
+                self.get_logger().warn(
+                    f"Return home failed: {message}. Obstacle might be blocking base. "
+                    f"Retrying returning home in 2.0s..."
+                )
+                self.clear_costmaps()
+                time.sleep(2.0)
+                
             self.set_motion_arbiter_drift_correction(True)  # Re-enable drift correction for subsequent tasks
-            if not ok:
-                result.success = False
-                result.message = message
-                goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-                return result
     
             # 7. Release
             self.publish_feedback(goal_handle, "releasing", 0.98, "Releasing object")

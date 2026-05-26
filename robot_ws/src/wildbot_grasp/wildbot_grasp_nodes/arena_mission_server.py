@@ -99,6 +99,11 @@ class ArenaMissionServer(RetrieveBase):
         try:
             self._patrol_idx = start_idx
             self.clear_costmaps()  # Clear costmap at start of mission to ensure clean slate
+            
+            # Ensure arm is safely tucked in home pose before we start driving/patrolling
+            self.publish_feedback(goal_handle, "init", 0.0, "Safely tucking arm to home pose before patrol")
+            self.arm.send_named("tuck_arm_before_patrol", "home_pose_deg")
+            
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     self.get_logger().info("Cancel requested! Returning from execute_callback...")
