@@ -244,10 +244,9 @@ class BridgeNode(Node):
             10,
         )
 
-        # Manual override commands go to /motion/cmd (Twist) so motion_arbiter
-        # owns the path → /cmd_vel pipeline. We also relay motion_arbiter's
-        # /cmd_vel output onto /base_controller/cmd_vel for the wheel driver.
-        self._motion_cmd_pub = self.create_publisher(Twist, "/motion/cmd", 10)
+        # Operator/UI drive commands use their own topic so task-level speed
+        # profiles on /motion/cmd do not make keyboard control sluggish.
+        self._operator_cmd_pub = self.create_publisher(Twist, "/motion/operator_cmd", 10)
         # Drops any path motion_arbiter is currently tracking — used when a
         # door mission is canceled mid-drive, since canceling the (already
         # complete) Nav2 goal does not stop the pure-pursuit executor.
@@ -451,13 +450,12 @@ class BridgeNode(Node):
         return health
 
     def publish_cmd_vel(self, linear_x: float, angular_z: float) -> None:
-        # Manual override flows through motion_arbiter: publish a Twist on
-        # /motion/cmd; arbiter will preempt path tracking and publish the
-        # actual /cmd_vel which the bridge relays to /base_controller/cmd_vel.
+        # Operator drive flows through motion_arbiter but uses independent
+        # manual limits so task speed profiles cannot affect keyboard feel.
         msg = Twist()
         msg.linear.x = float(linear_x)
         msg.angular.z = float(angular_z)
-        self._motion_cmd_pub.publish(msg)
+        self._operator_cmd_pub.publish(msg)
 
     def emergency_stop(self) -> tuple[bool, str]:
         canceled: list[str] = []
