@@ -64,6 +64,7 @@ global_costmap:
       # plan-only stack has no controller_server polling it.
       update_frequency: 2.0
       publish_frequency: 2.0
+      always_send_full_costmap: true
       initial_transform_timeout: 120.0
       transform_tolerance: 1.0
       map_subscribe_transient_local: true

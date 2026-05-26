@@ -96,7 +96,7 @@ class MotionArbiter(Node):
         self.declare_parameter("output_topic", "/cmd_vel")
         self.declare_parameter("enable_drift_correction", True)
         self.declare_parameter("avoidance_enabled", True)
-        self.declare_parameter("avoidance_lookahead_m", 0.45)
+        self.declare_parameter("avoidance_lookahead_m", 0.65)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._override_timeout = float(self.get_parameter("override_timeout").value)
@@ -277,37 +277,82 @@ class MotionArbiter(Node):
         width = int(info.width)
         height = int(info.height)
 
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        should_log = False
+        last_log = getattr(self, "_last_plan_cost_log_time", 0.0)
+        if now_sec - last_log >= 0.5:
+            should_log = True
+            self._last_plan_cost_log_time = now_sec
+
+        costmap_sec = costmap.header.stamp.sec
+        costmap_nanosec = costmap.header.stamp.nanosec
+
+        log_lines = []
+        if should_log:
+            log_lines.append(f"--- Costmap Debug Plan Check (Costmap Time: {costmap_sec}.{costmap_nanosec:09d}, Res: {resolution:.3f}m) ---")
+
+        is_blocked = False
+        blocked_reason = ""
+
         for i in range(closest_idx, len(path)):
             px, py, _ = path[i]
             accumulated_dist += math.hypot(px - prev_x, py - prev_y)
-            if accumulated_dist > lookahead_m:
-                break
-
+            
             # Check costmap value at px, py
             mx = math.floor((px - origin_x) / resolution)
             my = math.floor((py - origin_y) / resolution)
+            
+            cost_val = None
+            out_of_bounds = False
+            
             if mx < 0 or my < 0 or mx >= width or my >= height:
-                continue
+                out_of_bounds = True
+            else:
+                idx = my * width + mx
+                if 0 <= idx < len(costmap.data):
+                    cost_val = int(costmap.data[idx])
+                else:
+                    out_of_bounds = True
 
-            idx = my * width + mx
-            if 0 <= idx < len(costmap.data):
-                raw = int(costmap.data[idx])
-                if raw >= 90 or raw < 0:
-                    now_sec = self.get_clock().now().nanoseconds * 1e-9
-                    last_warn = getattr(self, "_last_blocked_warn_time", 0.0)
-                    if now_sec - last_warn > 1.0:
-                        self.get_logger().warn(
-                            f"[SAFETY] Path blocked by obstacle! Holding robot position. "
-                            f"Blockage at relative x={px-rx:+.2f}m, y={py-ry:+.2f}m. "
-                            f"Distance along plan: {accumulated_dist:.2f}m (limit: {lookahead_m:.2f}m), "
-                            f"Cost: {raw}"
-                        )
-                        self._last_blocked_warn_time = now_sec
-                    return True
+            in_lookahead = (accumulated_dist <= lookahead_m)
+            
+            point_blocked = False
+            status_str = "OK"
+            if out_of_bounds:
+                status_str = "OOB"
+            elif cost_val is not None:
+                if cost_val >= 90 or cost_val < 0:
+                    point_blocked = True
+                    status_str = f"BLOCKED(cost={cost_val})"
+                else:
+                    status_str = f"cost={cost_val}"
+
+            if in_lookahead and point_blocked:
+                is_blocked = True
+                if not blocked_reason:
+                    blocked_reason = (
+                        f"Blocked at pt {i} (rel x={px-rx:+.2f}m, y={py-ry:+.2f}m) "
+                        f"dist={accumulated_dist:.2f}m, cost={cost_val}"
+                    )
+
+            if should_log:
+                lookahead_tag = "[LOOKAHEAD]" if in_lookahead else "[FUTURE]"
+                block_tag = "[BLOCKING]" if (in_lookahead and point_blocked) else ""
+                coord_str = f"({px:+.2f}, {py:+.2f})"
+                rel_str = f"(rel x={px-rx:+.2f}, y={py-ry:+.2f})"
+                log_lines.append(
+                    f"  Pt {i:3d}: {lookahead_tag} dist={accumulated_dist:5.2f}m {coord_str} {rel_str} "
+                    f"grid=({mx:3d}, {my:3d}) status={status_str} {block_tag}"
+                )
 
             prev_x, prev_y = px, py
 
-        return False
+        if should_log:
+            log_lines.append(f"Result: {'BLOCKED' if is_blocked else 'FREE'} | {blocked_reason if is_blocked else 'No obstacles in lookahead'}")
+            full_log = "\n".join(log_lines)
+            self.get_logger().info(full_log)
+
+        return is_blocked
 
     # ── Control loop ──────────────────────────────────────────────────────
 
