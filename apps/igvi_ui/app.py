@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from igvi_ui.clients.host_client import HostClient, HostClientError
+from igvi_ui.pages.capture_page import CapturePage
 from igvi_ui.pages.docker_page import DockerPage
 from igvi_ui.pages.door_page import DoorPage
 from igvi_ui.pages.robot_page import RobotPage
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         pages = [
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
+            ("Capture", CapturePage(self.client)),
             ("Door", door_page),
             ("Settings", SettingsPage(self.client)),
         ]
