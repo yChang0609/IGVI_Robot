@@ -195,6 +195,17 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 kinect_backlight_compensation=kinect.get("backlight_compensation", False),
                 kinect_powerline_frequency=kinect.get("powerline_frequency", 60),
             )
+            fp = data.get("face_point", {})
+            result.update(
+                face_point_distance_m=fp.get("distance_m", 0.3),
+                face_point_ang_kp=fp.get("ang_kp", 1.5),
+                face_point_ang_max=fp.get("ang_max", 0.45),
+                face_point_ang_floor=fp.get("ang_floor", 0.30),
+                face_point_align_deg=fp.get("align_deg", 30.0),
+                face_point_reverse_speed=fp.get("reverse_speed", 1.0),
+                face_point_yaw_tol_deg=fp.get("yaw_tol_deg", 8.0),
+                face_point_timeout_sec=fp.get("timeout_sec", 10.0),
+            )
         if ctrl_file.exists():
             ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
             bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
@@ -233,6 +244,16 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 "sharpness": d["kinect_sharpness"],
                 "backlight_compensation": d["kinect_backlight_compensation"],
                 "powerline_frequency": d["kinect_powerline_frequency"],
+            },
+            "face_point": {
+                "distance_m": d["face_point_distance_m"],
+                "ang_kp": d["face_point_ang_kp"],
+                "ang_max": d["face_point_ang_max"],
+                "ang_floor": d["face_point_ang_floor"],
+                "align_deg": d["face_point_align_deg"],
+                "reverse_speed": d["face_point_reverse_speed"],
+                "yaw_tol_deg": d["face_point_yaw_tol_deg"],
+                "timeout_sec": d["face_point_timeout_sec"],
             },
         }
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")

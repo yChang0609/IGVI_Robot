@@ -333,6 +333,14 @@ class CalibrationModel(BaseModel):
     kinect_sharpness: int = 2
     kinect_backlight_compensation: bool = False
     kinect_powerline_frequency: int = 60
+    face_point_distance_m: float = 0.3
+    face_point_ang_kp: float = 1.5
+    face_point_ang_max: float = 0.45
+    face_point_ang_floor: float = 0.30
+    face_point_align_deg: float = 30.0
+    face_point_reverse_speed: float = 1.0
+    face_point_yaw_tol_deg: float = 8.0
+    face_point_timeout_sec: float = 10.0
 
 
 class SaveMapResponse(BaseModel):
