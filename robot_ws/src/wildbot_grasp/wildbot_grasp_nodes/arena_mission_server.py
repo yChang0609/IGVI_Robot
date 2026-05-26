@@ -27,6 +27,7 @@ class ArenaMissionServer(RetrieveBase):
         )
         self.declare_parameter("base_exclusion_radius_m", 0.5)
         self.declare_parameter("blacklist_timeout_sec", 60.0)
+        self.declare_parameter("log_bear_candidates", True)
         
         self._goal_lock = threading.Lock()
         self._active_goal = False
@@ -139,6 +140,8 @@ class ArenaMissionServer(RetrieveBase):
                 
                 robot_xy = self.get_robot_xy()
                 radius = float(self.get_parameter("base_exclusion_radius_m").value)
+                log_candidates = bool(self.get_parameter("log_bear_candidates").value)
+                candidate_log = []
 
                 with self.memory_lock:
                     memory_copy = list(self.latest_memory.values())
@@ -147,37 +150,83 @@ class ArenaMissionServer(RetrieveBase):
                     if obj.get("class_name") != "xiong":
                         continue
                     obj_id = obj.get("id")
-                    if not obj_id or obj_id in blacklist:
-                        continue
-                        
                     pos = obj.get("position", {})
                     bx, by = pos.get("x"), pos.get("y")
-                    if bx is None or by is None:
-                        continue
-                        
                     bz = pos.get("z", 0.0)
+
+                    def remember_candidate(status, reason="", d_robot=None, d_base=None):
+                        if not log_candidates:
+                            return
+                        parts = [
+                            f"{status}",
+                            f"id={obj_id or '<missing>'}",
+                            f"pos=({float(bx):.2f},{float(by):.2f},{float(bz):.2f})"
+                            if bx is not None and by is not None else "pos=<missing>",
+                        ]
+                        if d_robot is not None:
+                            parts.append(f"d_robot={d_robot:.2f}")
+                        if d_base is not None:
+                            parts.append(f"d_base={d_base:.2f}")
+                        if reason:
+                            parts.append(f"reason={reason}")
+                        candidate_log.append(" ".join(parts))
+
+                    if not obj_id:
+                        remember_candidate("skip", "missing_id")
+                        continue
+                    if obj_id in blacklist:
+                        remember_candidate("skip", "blacklisted")
+                        continue
+                    if bx is None or by is None:
+                        remember_candidate("skip", "missing_xy")
+                        continue
+
+                    bx = float(bx)
+                    by = float(by)
+                    bz = float(bz)
+                    d_robot = self._dist(bx, by, robot_xy[0], robot_xy[1])
+                    d_base = self._dist(bx, by, our_base["x"], our_base["y"]) if our_base else d_robot
+
                     if bz > 0.15:
                         self.get_logger().info(f"Skipping bear {obj_id} because it is too high (z={bz:.2f}m)")
+                        remember_candidate("skip", "z_too_high", d_robot, d_base)
                         continue
                         
                     # Check exclusion radius
                     if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
+                        remember_candidate("skip", "inside_our_base_exclusion", d_robot, d_base)
                         continue
                     if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
+                        remember_candidate("skip", "inside_enemy_base_exclusion", d_robot, d_base)
                         continue
-                        
-                    d_robot = self._dist(bx, by, robot_xy[0], robot_xy[1])
-                    d_base = self._dist(bx, by, our_base["x"], our_base["y"]) if our_base else d_robot
+
+                    remember_candidate("valid", d_robot=d_robot, d_base=d_base)
                     
                     if d_base < best_dist:
                         best_dist = d_base
                         best_bear = obj
                         best_robot_dist = d_robot
 
+                if log_candidates and candidate_log:
+                    self.get_logger().info("Bear memory candidates: " + "; ".join(candidate_log))
+
                 # If found a valid bear, go grab it
                 if best_bear:
                     target_id = best_bear['id']
-                    self.publish_feedback(goal_handle, "grabbing", 0.0, f"Found {target_id} at {best_robot_dist:.1f}m (base dist: {best_dist:.1f}m). Calling search_retrieve.")
+                    pos = best_bear.get("position", {})
+                    self.publish_feedback(
+                        goal_handle,
+                        "grabbing",
+                        0.0,
+                        (
+                            f"Found {target_id} at {best_robot_dist:.1f}m "
+                            f"(base dist: {best_dist:.1f}m, "
+                            f"pos=({float(pos.get('x', 0.0)):.2f},"
+                            f"{float(pos.get('y', 0.0)):.2f},"
+                            f"{float(pos.get('z', 0.0)):.2f})). "
+                            "Calling search_retrieve."
+                        ),
+                    )
                     
                     if not self.search_client.wait_for_server(timeout_sec=5.0):
                         self.get_logger().error("search_retrieve server not available")
