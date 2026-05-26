@@ -3,6 +3,7 @@
 Subscribes:
   /plan             nav_msgs/Path        — global plan from nav2 planner (empty = clear)
   /motion/cmd       geometry_msgs/Twist  — manual override command
+  /motion/operator_cmd geometry_msgs/Twist — operator/UI manual command
   /motion/clear_path std_msgs/Empty      — explicit "drop the stored path" signal
   /estop            std_msgs/Bool        — latched emergency stop
 
@@ -20,13 +21,16 @@ State machine:
   MANUAL        → no path, manual cmd active
   ESTOP         → emergency stop engaged; output hard-zeroed
 
-A non-zero Twist on /motion/cmd while PATH_TRACKING → OVERRIDE.
+A non-zero Twist on /motion/cmd or /motion/operator_cmd while PATH_TRACKING → OVERRIDE.
 After `override_timeout` seconds without a new cmd (or a zero Twist), OVERRIDE → PATH_TRACKING.
 Path complete (within goal_tolerance of last point) → IDLE.
 
 The output velocity is rate-limited (a P-loop toward the desired target,
 clamped by `accel_linear` / `accel_angular`) and clamped to max limits — this
 is the "simple PID" requested for command execution.
+
+Operator/UI commands use separate `operator_*` limits so task speed profiles
+can tune autonomous/manual task motions without making keyboard drive sluggish.
 """
 
 from __future__ import annotations
@@ -83,6 +87,10 @@ class MotionArbiter(Node):
         self.declare_parameter("max_angular_velocity", 0.5)
         self.declare_parameter("accel_linear", 0.6)
         self.declare_parameter("accel_angular", 2.0)
+        self.declare_parameter("operator_max_linear_velocity", 0.3)
+        self.declare_parameter("operator_max_angular_velocity", 0.5)
+        self.declare_parameter("operator_accel_linear", 0.6)
+        self.declare_parameter("operator_accel_angular", 2.0)
         self.declare_parameter("kp_angular", 1.4)
         # self.declare_parameter("kp_wz_feedback", 0.15)
         self.declare_parameter("slow_heading_threshold", math.pi / 4)
@@ -104,6 +112,7 @@ class MotionArbiter(Node):
         self._drift_rate_x: float = 0.0
         self._drift_rate_y: float = 0.0
         self._motion_target: tuple[float, float] = (0.0, 0.0)
+        self._motion_source: str = "task"
         self._last_motion_time = None
         self._path_frame_id: str = "map"
         self._current_vel: tuple[float, float] = (0.0, 0.0)
@@ -112,6 +121,7 @@ class MotionArbiter(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, "/plan", self._on_path, 10)
         self.create_subscription(Twist, "/motion/cmd", self._on_motion_cmd, 10)
+        self.create_subscription(Twist, "/motion/operator_cmd", self._on_operator_cmd, 10)
         self.create_subscription(Empty, "/motion/clear_path", self._on_clear_path, 10)
         self.create_subscription(Bool, "/estop", self._on_estop, _ESTOP_QOS)
 
@@ -178,8 +188,15 @@ class MotionArbiter(Node):
                 self.get_logger().info(f"Path received ({len(self._path)} pts); tracking")
 
     def _on_motion_cmd(self, msg: Twist) -> None:
+        self._handle_motion_cmd(msg, "task")
+
+    def _on_operator_cmd(self, msg: Twist) -> None:
+        self._handle_motion_cmd(msg, "operator")
+
+    def _handle_motion_cmd(self, msg: Twist, source: str) -> None:
         with self._lock:
             self._motion_target = (float(msg.linear.x), float(msg.angular.z))
+            self._motion_source = source
             self._last_motion_time = self.get_clock().now()
             is_zero = abs(msg.linear.x) < 1e-3 and abs(msg.angular.z) < 1e-3
             if self._estop:
@@ -230,6 +247,7 @@ class MotionArbiter(Node):
             path_index = self._path_index
             path_frame_id = self._path_frame_id
             motion_target = self._motion_target
+            motion_source = self._motion_source
             last_motion = self._last_motion_time
             # wz_measured = self._current_wz_measured
 
@@ -300,10 +318,16 @@ class MotionArbiter(Node):
         #     desired_wz = desired_wz + (kp_feedback * wz_error)
 
         # Velocity smoother (acceleration-limited P toward desired)
-        max_lin = float(self.get_parameter("max_linear_velocity").value)
-        max_ang = float(self.get_parameter("max_angular_velocity").value)
-        accel_lin = float(self.get_parameter("accel_linear").value)
-        accel_ang = float(self.get_parameter("accel_angular").value)
+        if state in (State.OVERRIDE, State.MANUAL) and motion_source == "operator":
+            max_lin = float(self.get_parameter("operator_max_linear_velocity").value)
+            max_ang = float(self.get_parameter("operator_max_angular_velocity").value)
+            accel_lin = float(self.get_parameter("operator_accel_linear").value)
+            accel_ang = float(self.get_parameter("operator_accel_angular").value)
+        else:
+            max_lin = float(self.get_parameter("max_linear_velocity").value)
+            max_ang = float(self.get_parameter("max_angular_velocity").value)
+            accel_lin = float(self.get_parameter("accel_linear").value)
+            accel_ang = float(self.get_parameter("accel_angular").value)
         dt = 1.0 / self._control_rate
 
         desired_vx = max(-max_lin, min(max_lin, desired_vx))
