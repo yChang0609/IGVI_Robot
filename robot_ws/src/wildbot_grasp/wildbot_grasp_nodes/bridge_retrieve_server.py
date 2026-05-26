@@ -111,13 +111,26 @@ class BridgeRetrieveServer(RetrieveBase):
                 self._finish_goal()
                 return result
 
-        # Face the bear's map position, then hand off to centering.
+        # Navigate to a standoff approach pose around the bear, then hand off to
+        # visual approach. This avoids colliding when the robot is already close.
         pos = target_obj["position"]
         self.publish_feedback(
-            goal_handle, "facing", 0.5,
-            f"Facing {target_class} at map ({pos['x']:.2f}, {pos['y']:.2f})",
+            goal_handle, "evaluating", 0.5,
+            f"Choosing approach pose for {target_class} at map ({pos['x']:.2f}, {pos['y']:.2f})",
         )
-        ok, message = self.face_point(goal_handle, (pos["x"], pos["y"]))
+        approach_pose, approach_detail = self.choose_approach_pose(pos)
+        if approach_pose is None:
+            result.success = False
+            result.message = approach_detail
+            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
+            self._finish_goal()
+            return result
+
+        self.publish_feedback(goal_handle, "approaching", 0.55,
+                              f"Navigating to approach pose: {approach_detail}")
+        ok, message = self.navigate_to_pose(
+            goal_handle, approach_pose, "to_approach_pose", 0.6, speed_profile="transit"
+        )
         if not ok:
             result.success = False
             result.message = message
@@ -125,18 +138,7 @@ class BridgeRetrieveServer(RetrieveBase):
             self._finish_goal()
             return result
 
-        # 3. Center: rotate in place to align bear with image center
-        self.publish_feedback(goal_handle, "centering", 0.55,
-                              f"Centering on {target_class}")
-        ok, message = self.center_on_target(goal_handle, target_class)
-        if not ok:
-            result.success = False
-            result.message = message
-            goal_handle.canceled() if goal_handle.is_cancel_requested else goal_handle.abort()
-            self._finish_goal()
-            return result
-
-        # 4. Approach and grab
+        # 3. Approach and grab (visual_approach inside handles centering)
         self.publish_feedback(goal_handle, "grasping", 0.65,
                               f"Approaching and grabbing {target_class}")
         ok, message = self.approach_and_grab(goal_handle, target_class)
