@@ -102,6 +102,7 @@ class ImageView(QWidget):
         self.client = client
         self._poller: _ImagePoller | None = None
         self._active_topic: str | None = None
+        self._latest_payload: bytes | None = None
         self._preferred_topics: tuple[str, ...] = tuple(preferred_topics or ())
         self._build_ui()
 
@@ -220,9 +221,13 @@ class ImageView(QWidget):
         image = QImage.fromData(payload, "JPEG")
         if image.isNull():
             return
+        self._latest_payload = bytes(payload)
         self.canvas.set_image(QPixmap.fromImage(image))
         if active and active != self._active_topic:
             self._active_topic = active
 
     def _on_error(self, message: str) -> None:
         self.status.setText(f"Frame error: {message}")
+
+    def latest_frame(self) -> tuple[bytes | None, str | None]:
+        return self._latest_payload, self._active_topic
