@@ -96,7 +96,7 @@ class MotionArbiter(Node):
         self.declare_parameter("output_topic", "/cmd_vel")
         self.declare_parameter("enable_drift_correction", True)
         self.declare_parameter("avoidance_enabled", True)
-        self.declare_parameter("avoidance_lookahead_m", 0.65)
+        self.declare_parameter("avoidance_lookahead_m", 0.45)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._override_timeout = float(self.get_parameter("override_timeout").value)
