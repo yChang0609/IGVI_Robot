@@ -49,7 +49,7 @@ if sys.platform == "darwin" and "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:
     os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(os.path.dirname(_p6.__file__), "Qt", "plugins", "platforms")
     del _p6
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -63,7 +63,6 @@ from PySide6.QtWidgets import (
 )
 
 from igvi_ui.clients.host_client import HostClient, HostClientError
-from igvi_ui.pages.capture_page import CapturePage
 from igvi_ui.pages.docker_page import DockerPage
 from igvi_ui.pages.door_page import DoorPage
 from igvi_ui.pages.robot_page import RobotPage
@@ -73,6 +72,35 @@ from igvi_ui.widgets.sensor_group import SensorGroup
 from igvi_ui.widgets.status_badge import StatusBadge
 
 
+class _HealthWorker(QThread):
+    """Fetches health + bridge + battery + estop status off the main thread."""
+
+    result_ready = Signal(dict)  # keys: health, bridge, battery, estop, error
+
+    def __init__(self, client: HostClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        out: dict = {}
+        try:
+            out["health"] = self.client.health()
+            out["bridge"] = self.client.ui_bridge_health()
+        except HostClientError as exc:
+            out["error"] = str(exc)
+            self.result_ready.emit(out)
+            return
+        try:
+            out["battery"] = self.client.battery_status()
+        except HostClientError:
+            pass
+        try:
+            out["estop"] = self.client.estop_status()
+        except HostClientError:
+            pass
+        self.result_ready.emit(out)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, client: HostClient):
         super().__init__()
@@ -80,6 +108,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"IGVI Robot Control Center  —  {client.base_url}")
         self.setMinimumWidth(900)
         self._build_ui()
+
+        self._health_worker: _HealthWorker | None = None
 
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self.refresh_health)
@@ -115,7 +145,6 @@ class MainWindow(QMainWindow):
         pages = [
             ("Docker", docker_page),
             ("Robot", RobotPage(self.client)),
-            ("Capture", CapturePage(self.client)),
             ("Door", door_page),
             ("Settings", SettingsPage(self.client)),
         ]
@@ -195,18 +224,27 @@ class MainWindow(QMainWindow):
         self.status_line.setText(message)
 
     def refresh_health(self) -> None:
-        try:
-            health = self.client.health()
-            bridge = self.client.ui_bridge_health()
-        except HostClientError as exc:
+        # Skip if a worker is already in flight to avoid stacking up requests.
+        if self._health_worker and self._health_worker.isRunning():
+            return
+        worker = _HealthWorker(self.client)
+        worker.result_ready.connect(self._apply_health)
+        self._health_worker = worker
+        worker.start()
+
+    def _apply_health(self, data: dict) -> None:
+        if "error" in data:
             self.host_badge.set_state("Host Agent: offline", "danger")
             self.docker_badge.set_state("Docker: unknown", "muted")
             self.compose_badge.set_state("Compose: unknown", "muted")
             self.bridge_badge.set_state("UI Bridge: unknown", "muted")
             self.battery_badge.set_state("Battery: unknown", "muted")
             self.sensor_group.update_sources({}, available=False)
-            self.status_line.setText(f"Host Agent unavailable: {exc}")
+            self.status_line.setText(f"Host Agent unavailable: {data['error']}")
             return
+
+        health = data.get("health") or {}
+        bridge = data.get("bridge") or {}
 
         self.host_badge.set_state("Host Agent: ready", "ok")
         self.docker_badge.set_state(
@@ -224,8 +262,9 @@ class MainWindow(QMainWindow):
         )
         fusion_sources = (bridge.get("payload") or {}).get("fusion_sources") or {}
         self.sensor_group.update_sources(fusion_sources, available=bridge_ok)
-        self._refresh_battery_badge()
-        self._refresh_estop_button()
+        self._apply_battery_badge(data.get("battery"))
+        if "estop" in data:
+            self._apply_estop_button(bool(data["estop"].get("engaged", False)))
 
     def _refresh_estop_button(self) -> None:
         try:
@@ -267,14 +306,8 @@ class MainWindow(QMainWindow):
             else "Emergency stop released"
         )
 
-    def _refresh_battery_badge(self) -> None:
-        try:
-            battery = self.client.battery_status()
-        except HostClientError:
-            self.battery_badge.set_state("Battery: unknown", "muted")
-            return
-
-        if not battery.get("ok"):
+    def _apply_battery_badge(self, battery: dict | None) -> None:
+        if not battery or not battery.get("ok"):
             self.battery_badge.set_state("Battery: unknown", "muted")
             return
 
@@ -308,6 +341,8 @@ class MainWindow(QMainWindow):
         call it.
         """
         self.health_timer.stop()
+        if self._health_worker and self._health_worker.isRunning():
+            self._health_worker.wait(2000)
         for index in range(self.stack.count()):
             page = self.stack.widget(index)
             page_shutdown = getattr(page, "shutdown", None)
