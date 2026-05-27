@@ -286,6 +286,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 raise
         return request
 
+    @app.get("/api/task_speeds")
+    def get_task_speeds() -> dict:
+        path = current_settings().repo_root / "robot_ws" / "configs" / "task_speeds.yaml"
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text()) or {}
+        return data if isinstance(data, dict) else {}
+
     @app.get("/api/compose/profiles", response_model=list[str])
     def list_profiles() -> list[str]:
         return sorted(registry().allowed_profiles())

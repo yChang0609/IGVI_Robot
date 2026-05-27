@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -134,6 +135,49 @@ _IMU_STATE_STYLES = {
     "unavailable": "danger",
 }
 
+_SPEED_TASKS = {
+    "bridge_retrieve_server": ("Bridge Retrieve", ("transit", "approach", "carry")),
+    "search_retrieve_server": ("Search Retrieve", ("transit", "approach", "carry")),
+}
+
+_DEFAULT_TASK_SPEEDS = {
+    "bridge_retrieve_server": {
+        "transit_linear_speed": 0.18,
+        "transit_angular_speed": 0.35,
+        "transit_linear_accel": 0.30,
+        "transit_angular_accel": 0.80,
+        "approach_linear_speed": 0.05,
+        "approach_angular_speed": 0.25,
+        "approach_linear_accel": 0.18,
+        "approach_angular_accel": 0.50,
+        "carry_linear_speed": 0.12,
+        "carry_angular_speed": 0.22,
+        "carry_linear_accel": 0.20,
+        "carry_angular_accel": 0.50,
+    },
+    "search_retrieve_server": {
+        "transit_linear_speed": 0.80,
+        "transit_angular_speed": 1.00,
+        "transit_linear_accel": 0.60,
+        "transit_angular_accel": 1.00,
+        "approach_linear_speed": 0.05,
+        "approach_angular_speed": 0.30,
+        "approach_linear_accel": 0.20,
+        "approach_angular_accel": 0.60,
+        "carry_linear_speed": 0.60,
+        "carry_angular_speed": 0.60,
+        "carry_linear_accel": 0.80,
+        "carry_angular_accel": 0.70,
+    },
+}
+
+_SPEED_FIELDS = (
+    ("linear_speed", "Linear speed (m/s)", 0.0, 2.0, 0.01),
+    ("angular_speed", "Angular speed (rad/s)", 0.0, 2.5, 0.01),
+    ("linear_accel", "Linear accel (m/s²)", 0.0, 3.0, 0.01),
+    ("angular_accel", "Angular accel (rad/s²)", 0.0, 5.0, 0.01),
+)
+
 
 class SettingsPage(QWidget):
     def __init__(self, client: HostClient):
@@ -157,6 +201,7 @@ class SettingsPage(QWidget):
         self._build_imu_tab()
         self._build_ekf_tab()
         self._build_bridge_tab()
+        self._build_speed_tab()
 
         self.health_label = QLabel()
         self.health_label.setObjectName("Muted")
@@ -465,6 +510,76 @@ class SettingsPage(QWidget):
         outer.addStretch(1)
         self.tabs.addTab(page, "Bridge")
 
+    # ── Speed Tab ────────────────────────────────────────────────────────────
+
+    def _build_speed_tab(self) -> None:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 8, 0, 0)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(14, 0, 14, 8)
+        toolbar.addWidget(QLabel("Task speed profiles"))
+        self.speed_task_combo = QComboBox()
+        for node, (title, _) in _SPEED_TASKS.items():
+            self.speed_task_combo.addItem(title, node)
+        toolbar.addWidget(self.speed_task_combo)
+        toolbar.addStretch(1)
+        reset_btn = QPushButton("Reset Defaults")
+        reset_btn.clicked.connect(lambda: self._reset_task_speeds_to_defaults(current_only=True))
+        toolbar.addWidget(reset_btn)
+        apply = QPushButton("Apply")
+        apply.setObjectName("Primary")
+        apply.clicked.connect(self._apply_task_speeds)
+        toolbar.addWidget(apply)
+        outer.addLayout(toolbar)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(14, 0, 14, 14)
+        layout.setSpacing(10)
+
+        self.speed_inputs: dict[str, dict[str, dict[str, QDoubleSpinBox]]] = {}
+        self.speed_default_labels: dict[str, dict[str, dict[str, QLabel]]] = {}
+        self.speed_stack = QStackedWidget()
+        self.speed_task_combo.currentIndexChanged.connect(self.speed_stack.setCurrentIndex)
+        for node, (title, profiles) in _SPEED_TASKS.items():
+            frame = QFrame()
+            frame.setObjectName("Panel")
+            form = QFormLayout(frame)
+            form.setContentsMargins(14, 14, 14, 14)
+            self.speed_inputs[node] = {}
+            self.speed_default_labels[node] = {}
+            for profile in profiles:
+                self.speed_inputs[node][profile] = {}
+                self.speed_default_labels[node][profile] = {}
+                for suffix, label, min_val, max_val, step in _SPEED_FIELDS:
+                    spin = self._spin(min_val, max_val, step, 2)
+                    key = f"{profile}_{suffix}"
+                    default_label = QLabel("initial --")
+                    default_label.setObjectName("Muted")
+                    row = QWidget()
+                    row_layout = QHBoxLayout(row)
+                    row_layout.setContentsMargins(0, 0, 0, 0)
+                    row_layout.setSpacing(8)
+                    row_layout.addWidget(spin)
+                    row_layout.addWidget(default_label)
+                    row_layout.addStretch(1)
+                    self.speed_inputs[node][profile][key] = spin
+                    self.speed_default_labels[node][profile][key] = default_label
+                    form.addRow(f"{profile.title()} {label}", row)
+            self.speed_stack.addWidget(frame)
+
+        self._reset_task_speeds_to_defaults(show_message=False)
+        layout.addWidget(self.speed_stack)
+        layout.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+        self.tabs.addTab(page, "Speed")
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -568,6 +683,7 @@ class SettingsPage(QWidget):
         self.fp_reverse_speed.setValue(calib.get("face_point_reverse_speed", 1.0))
         self.fp_yaw_tol_deg.setValue(calib.get("face_point_yaw_tol_deg", 8.0))
         self.fp_timeout_sec.setValue(calib.get("face_point_timeout_sec", 10.0))
+        self._load_task_speeds(show_errors=False)
 
     def _save_host(self) -> None:
         payload = {
@@ -665,6 +781,75 @@ class SettingsPage(QWidget):
             )
         else:
             QMessageBox.information(self, "Saved", "Saved to YAML and applied to running nodes.")
+
+    def _load_task_speeds(self, *, show_errors: bool = True) -> None:
+        self._reset_task_speeds_to_defaults(show_message=False)
+        try:
+            data = self.client.task_speeds()
+        except HostClientError as exc:
+            if show_errors:
+                QMessageBox.warning(self, "Load failed", str(exc))
+            return
+
+        for node, profiles in getattr(self, "speed_inputs", {}).items():
+            params = data.get(node, {}).get("ros__parameters", {})
+            if not isinstance(params, dict):
+                continue
+            for profile, profile_inputs in profiles.items():
+                for key, spin in profile_inputs.items():
+                    if key in params:
+                        value = float(params[key])
+                        spin.setValue(value)
+
+    def _selected_speed_node(self) -> str | None:
+        if not hasattr(self, "speed_task_combo"):
+            return None
+        value = self.speed_task_combo.currentData()
+        return str(value) if value else None
+
+    def _reset_task_speeds_to_defaults(self, *, show_message: bool = True, current_only: bool = False) -> None:
+        selected = self._selected_speed_node() if current_only else None
+        for node, profiles in getattr(self, "speed_inputs", {}).items():
+            if selected is not None and node != selected:
+                continue
+            defaults = _DEFAULT_TASK_SPEEDS.get(node, {})
+            for profile, profile_inputs in profiles.items():
+                for key, spin in profile_inputs.items():
+                    value = float(defaults.get(key, 0.0))
+                    spin.setValue(value)
+                    label = self.speed_default_labels[node][profile].get(key)
+                    if label is not None:
+                        label.setText(f"initial {value:.2f}")
+        if show_message:
+            QMessageBox.information(self, "Reset", "Current speed page reset to default values.")
+
+    def _task_speed_payload(self) -> dict[str, dict[str, dict[str, float]]]:
+        payload: dict[str, dict[str, dict[str, float]]] = {}
+        for node, profiles in self.speed_inputs.items():
+            params: dict[str, float] = {}
+            for profile_inputs in profiles.values():
+                for key, spin in profile_inputs.items():
+                    params[key] = spin.value()
+            payload[node] = {"ros__parameters": params}
+        return payload
+
+    def _apply_task_speeds(self) -> None:
+        payload = self._task_speed_payload()
+        errors = []
+        for node, node_payload in payload.items():
+            try:
+                self.client.set_params(node, node_payload["ros__parameters"])
+            except HostClientError as exc:
+                errors.append(f"{node}: {exc}")
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Apply failed",
+                "YAML was not changed. Live push failed for:\n" + "\n".join(errors),
+            )
+        else:
+            QMessageBox.information(self, "Applied", "Applied to running task nodes. YAML was not changed.")
 
     def _start_camera_auto_calibration(self) -> None:
         QMessageBox.information(

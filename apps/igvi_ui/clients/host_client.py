@@ -332,3 +332,6 @@ class HostClient:
 
     def set_calibration(self, data: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", "/api/calibration", data)
+
+    def task_speeds(self) -> dict[str, Any]:
+        return self.request("GET", "/api/task_speeds")
