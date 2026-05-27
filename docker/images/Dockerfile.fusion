@@ -33,6 +33,7 @@ RUN cp -r ./robot_ws/* /workspaces && \
     ros-${ROS_DISTRO}-imu-filter-madgwick \
     ros-${ROS_DISTRO}-nav2-bringup \
     ros-${ROS_DISTRO}-depthimage-to-laserscan \
+    ros-${ROS_DISTRO}-spatio-temporal-voxel-layer \
     && \
     rosdep update --rosdistro ${ROS_DISTRO} && \
     colcon mixin update && \
