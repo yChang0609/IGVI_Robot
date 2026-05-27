@@ -644,7 +644,27 @@ class MotionArbiter(Node):
 
         tx, ty, _ = path[target_idx]
         target_heading = math.atan2(ty - y, tx - x)
-        heading_error = _wrap_angle(target_heading - yaw)
+
+        is_final_stretch = (target_idx == len(path) - 1)
+        if is_final_stretch:
+            dist_to_target = math.hypot(tx - x, ty - y)
+            goal_tol = float(self.get_parameter("goal_tolerance").value)
+            if dist_to_target > goal_tol:
+                # Calculate tangent half-angle alpha
+                alpha = math.asin(goal_tol / dist_to_target)
+                
+                # Check if current yaw is within the tangent cone
+                diff_mid = _wrap_angle(target_heading - yaw) # heading error to center
+                if abs(diff_mid) <= alpha:
+                    # Inside the cone: no heading error!
+                    heading_error = 0.0
+                else:
+                    # Outside the cone: error is the angular distance to the nearest tangent
+                    heading_error = math.copysign(abs(diff_mid) - alpha, diff_mid)
+            else:
+                heading_error = 0.0
+        else:
+            heading_error = _wrap_angle(target_heading - yaw)
 
         slow_thr = float(self.get_parameter("slow_heading_threshold").value)
         max_vx = float(self.get_parameter("max_linear_velocity").value)
