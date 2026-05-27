@@ -433,63 +433,80 @@ class RetrieveBase(Node):
         stage: str,
         progress: float,
         speed_profile: str = "transit",
+        target_pose: dict = None,
     ):
         timeout = float(self.get_parameter("nav_server_timeout").value)
         if not self.nav_client.wait_for_server(timeout_sec=timeout):
             return False, "NavigateToPose action server not available"
 
-        self.set_motion_arbiter_speed_profile(speed_profile)
-
-        max_replans = 5
-        replan_count = 0
-
-        while replan_count <= max_replans:
-            attempt_str = f" (plan attempt {replan_count + 1}/{max_replans + 1})" if replan_count > 0 else ""
-            self.publish_feedback(
-                goal_handle, stage, progress,
-                f"Navigating to x={pose.pose.position.x:.2f}, y={pose.pose.position.y:.2f}{attempt_str}",
-            )
-            nav_goal = NavigateToPose.Goal()
-            nav_goal.pose = pose
-            send_future = self.nav_client.send_goal_async(nav_goal)
-            while rclpy.ok() and not send_future.done():
-                if goal_handle.is_cancel_requested:
-                    self._plan_pub.publish(Path())
-                    self.cmd_vel_pub.publish(Twist())
-                    return False, "mission canceled"
-                time.sleep(0.05)
-
-            nav_goal_handle = send_future.result()
-            if not nav_goal_handle.accepted:
-                return False, "Nav2 rejected goal"
-
-            result_future = nav_goal_handle.get_result_async()
-            while rclpy.ok() and not result_future.done():
-                if goal_handle.is_cancel_requested:
-                    nav_goal_handle.cancel_goal_async()
-                    self._plan_pub.publish(Path())
-                    self.cmd_vel_pub.publish(Twist())
-                    return False, "mission canceled"
-                time.sleep(0.1)
-
-            wrapped_result = result_future.result()
-            if wrapped_result is None:
-                return False, "Nav2 returned no result"
-            if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
-                return False, f"Nav2 goal ended with status {wrapped_result.status}"
-
-            ok, reason = self.wait_until_arrived(goal_handle, pose)
-            if ok:
-                return True, reason
-            elif reason == "replanning_required":
-                replan_count += 1
-                self.clear_costmaps()
-                time.sleep(0.5)  # Let the costmap clear and update with new obstacles
-                continue
+        try:
+            if target_pose is not None:
+                self.set_motion_arbiter_params({
+                    "align_to_target": True,
+                    "target_x": float(target_pose["x"]),
+                    "target_y": float(target_pose["y"])
+                })
             else:
-                return False, reason
+                self.set_motion_arbiter_params({
+                    "align_to_target": False
+                })
 
-        return False, "failed to reach goal after maximum re-plans due to continuous blockage"
+            self.set_motion_arbiter_speed_profile(speed_profile)
+
+            max_replans = 5
+            replan_count = 0
+
+            while replan_count <= max_replans:
+                attempt_str = f" (plan attempt {replan_count + 1}/{max_replans + 1})" if replan_count > 0 else ""
+                self.publish_feedback(
+                    goal_handle, stage, progress,
+                    f"Navigating to x={pose.pose.position.x:.2f}, y={pose.pose.position.y:.2f}{attempt_str}",
+                )
+                nav_goal = NavigateToPose.Goal()
+                nav_goal.pose = pose
+                send_future = self.nav_client.send_goal_async(nav_goal)
+                while rclpy.ok() and not send_future.done():
+                    if goal_handle.is_cancel_requested:
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        return False, "mission canceled"
+                    time.sleep(0.05)
+
+                nav_goal_handle = send_future.result()
+                if not nav_goal_handle.accepted:
+                    return False, "Nav2 rejected goal"
+
+                result_future = nav_goal_handle.get_result_async()
+                while rclpy.ok() and not result_future.done():
+                    if goal_handle.is_cancel_requested:
+                        nav_goal_handle.cancel_goal_async()
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        return False, "mission canceled"
+                    time.sleep(0.1)
+
+                wrapped_result = result_future.result()
+                if wrapped_result is None:
+                    return False, "Nav2 returned no result"
+                if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
+                    return False, f"Nav2 goal ended with status {wrapped_result.status}"
+
+                ok, reason = self.wait_until_arrived(goal_handle, pose)
+                if ok:
+                    return True, reason
+                elif reason == "replanning_required":
+                    replan_count += 1
+                    self.clear_costmaps()
+                    time.sleep(0.5)  # Let the costmap clear and update with new obstacles
+                    continue
+                else:
+                    return False, reason
+
+            return False, "failed to reach goal after maximum re-plans due to continuous blockage"
+        finally:
+            self.set_motion_arbiter_params({
+                "align_to_target": False
+            })
 
     def wait_until_arrived(self, goal_handle, pose: PoseStamped):
         # We now unify arrival checking completely under motion_arbiter's state.

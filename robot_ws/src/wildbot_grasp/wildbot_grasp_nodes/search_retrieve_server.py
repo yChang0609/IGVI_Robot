@@ -67,9 +67,9 @@ class SearchRetrieveServer(RetrieveBase):
                 goal_handle.abort()
                 return result
     
-            # 3. Navigate to standoff pose
+            # 3. Navigate to standoff pose with target pose alignment
             ok, message = self.navigate_to_pose(
-                goal_handle, approach_pose, "navigating", 0.3, speed_profile="transit"
+                goal_handle, approach_pose, "navigating", 0.3, speed_profile="transit", target_pose=target["position"]
             )
             if not ok:
                 result.success = False

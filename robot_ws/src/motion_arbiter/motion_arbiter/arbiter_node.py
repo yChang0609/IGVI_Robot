@@ -105,6 +105,9 @@ class MotionArbiter(Node):
         self.declare_parameter("enable_drift_correction", True)
         self.declare_parameter("avoidance_enabled", True)
         self.declare_parameter("avoidance_lookahead_m", 0.45)
+        self.declare_parameter("align_to_target", False)
+        self.declare_parameter("target_x", 0.0)
+        self.declare_parameter("target_y", 0.0)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._override_timeout = float(self.get_parameter("override_timeout").value)
@@ -501,6 +504,11 @@ class MotionArbiter(Node):
             return None
         x, y, yaw = pose
         gx, gy, gyaw = path[-1]
+        align_to_target = bool(self.get_parameter("align_to_target").value)
+        if align_to_target:
+            tx = float(self.get_parameter("target_x").value)
+            ty = float(self.get_parameter("target_y").value)
+            gyaw = math.atan2(ty - y, tx - x)
         goal_tol = float(self.get_parameter("goal_tolerance").value)
         dist_to_goal = math.hypot(gx - x, gy - y)
 
@@ -535,8 +543,8 @@ class MotionArbiter(Node):
                     if self._rot_start_pose is None:
                         self._rot_start_pose = (x, y, yaw)
                 
-                # Calculate Golden Predictive Correction Distance (s) if correction is enabled
-                if enable_drift_correction:
+                # Calculate Golden Predictive Correction Distance (s) if correction is enabled and target-alignment mode is not active
+                if enable_drift_correction and not align_to_target:
                     predicted_dx = self._drift_rate_x * heading_error
                     predicted_dy = self._drift_rate_y * heading_error
                     
