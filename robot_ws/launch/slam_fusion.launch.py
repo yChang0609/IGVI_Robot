@@ -88,9 +88,9 @@ def generate_launch_description():
             'Vis/MinDepth':       '0.5',
         }],
         remappings=[
-            ('rgb/image',       '/rgb/image_raw'),
+            ('rgb/image',       '/rgb/image_slam'),
             ('rgb/camera_info', '/rgb/camera_info'),
-            ('depth/image',     '/depth_to_rgb/image_raw'),
+            ('depth/image',     '/depth_to_rgb/image_slam'),
             ('imu',             '/imu/filtered'),
             ('odom',            '/odom_visual'),
         ],
@@ -186,9 +186,9 @@ def generate_launch_description():
     }
 
     slam_remaps = [
-        ('rgb/image',       '/rgb/image_raw'),
+        ('rgb/image',       '/rgb/image_slam'),
         ('rgb/camera_info', '/rgb/camera_info'),
-        ('depth/image',     '/depth_to_rgb/image_raw'),
+        ('depth/image',     '/depth_to_rgb/image_slam'),
         ('scan',            '/scan'),
         # RTAB-Map runs on the fused EKF odom and publishes only map->odom.
         ('odom',            '/odometry/filtered'),
@@ -213,6 +213,13 @@ def generate_launch_description():
         condition=IfCondition(delete_db_on_start),
     )
 
+    camera_router_node = Node(
+        package='wildbot_grasp',
+        executable='camera_router_node',
+        name='camera_router',
+        output='screen'
+    )
+
     return LaunchDescription(declared_arguments + [
         imu_filter_node,
         base_to_camera_tf,
@@ -221,4 +228,5 @@ def generate_launch_description():
         icp_odom_node,
         rtabmap_keep,
         rtabmap_fresh,
+        camera_router_node,
     ])
