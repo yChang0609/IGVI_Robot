@@ -11,7 +11,7 @@ x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 services:
   igvi_bridge:
     <<: *base_service
-    profiles: ["bridge"]
+    profiles: ["communication"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.bridge
@@ -24,6 +24,7 @@ services:
       - ../../../robot_ws/src/igvi_bridge/igvi_bridge:/workspace/src/igvi_bridge/igvi_bridge:ro
     ports:
       - "8771:8771"
+    command: ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 run igvi_bridge bridge_node --ros-args --params-file /configs/task_speeds.yaml"]
     restart: unless-stopped
 
 networks:

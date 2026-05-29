@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from .battery import read_host_battery
 from .config import HostSettings, load_settings, save_settings
 from .docker_clients import (
     ComposeProjectClient,
@@ -22,8 +23,13 @@ from .docker_clients import (
 from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
+    ArenaMissionStartRequest,
+    ArenaMissionStatusResponse,
+    BatteryStatusResponse,
     BridgeRetrieveRequest,
     BridgeRetrieveStatusResponse,
+    BridgeTraverseRequest,
+    BridgeTraverseStatusResponse,
     ClearCostmapRequest,
     CalibrationModel,
     CmdVelRequest,
@@ -32,12 +38,19 @@ from .models import (
     ComposeProgressResponse,
     ContainerStatus,
     DevModeRequest,
+    EstopRequest,
+    EstopStatusResponse,
     HealthResponse,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
     LogsResponse,
     NavGoalRequest,
     NavStatusResponse,
+    DoorMissionStartRequest,
+    DoorMissionStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -182,6 +195,17 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 kinect_backlight_compensation=kinect.get("backlight_compensation", False),
                 kinect_powerline_frequency=kinect.get("powerline_frequency", 60),
             )
+            fp = data.get("face_point", {})
+            result.update(
+                face_point_distance_m=fp.get("distance_m", 0.3),
+                face_point_ang_kp=fp.get("ang_kp", 1.5),
+                face_point_ang_max=fp.get("ang_max", 0.45),
+                face_point_ang_floor=fp.get("ang_floor", 0.30),
+                face_point_align_deg=fp.get("align_deg", 30.0),
+                face_point_reverse_speed=fp.get("reverse_speed", 1.0),
+                face_point_yaw_tol_deg=fp.get("yaw_tol_deg", 8.0),
+                face_point_timeout_sec=fp.get("timeout_sec", 10.0),
+            )
         if ctrl_file.exists():
             ctrl = yaml.safe_load(ctrl_file.read_text()) or {}
             bc = ctrl.get("base_controller", {}).get("ros__parameters", {})
@@ -221,6 +245,16 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                 "backlight_compensation": d["kinect_backlight_compensation"],
                 "powerline_frequency": d["kinect_powerline_frequency"],
             },
+            "face_point": {
+                "distance_m": d["face_point_distance_m"],
+                "ang_kp": d["face_point_ang_kp"],
+                "ang_max": d["face_point_ang_max"],
+                "ang_floor": d["face_point_ang_floor"],
+                "align_deg": d["face_point_align_deg"],
+                "reverse_speed": d["face_point_reverse_speed"],
+                "yaw_tol_deg": d["face_point_yaw_tol_deg"],
+                "timeout_sec": d["face_point_timeout_sec"],
+            },
         }
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(configs), suffix=".yaml")
         try:
@@ -251,6 +285,14 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
                     os.unlink(tmp_path2)
                 raise
         return request
+
+    @app.get("/api/task_speeds")
+    def get_task_speeds() -> dict:
+        path = current_settings().repo_root / "robot_ws" / "configs" / "task_speeds.yaml"
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text()) or {}
+        return data if isinstance(data, dict) else {}
 
     @app.get("/api/compose/profiles", response_model=list[str])
     def list_profiles() -> list[str]:
@@ -307,7 +349,7 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     @app.post("/api/compose/actions/build", response_model=ComposeActionResponse)
     def build(request: ComposeActionRequest) -> ComposeActionResponse:
         services = target_services(request)
-        return compose_or_http(lambda: compose_project().build(services=services, no_cache=False))
+        return compose_or_http(lambda: compose_project().build(services=services, no_cache=request.no_cache))
 
     @app.post("/api/compose/actions/rebuild", response_model=ComposeActionResponse)
     def rebuild(request: ComposeActionRequest) -> ComposeActionResponse:
@@ -385,6 +427,31 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_stop() -> RosActionResponse:
         return await run_ros(lambda client: client.stop())
 
+    @app.post("/api/ros/estop", response_model=EstopStatusResponse)
+    async def ros_estop(request: EstopRequest) -> EstopStatusResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            result = await client.set_estop(request.engaged)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return EstopStatusResponse(
+            ok=bool(result.get("ok", True)),
+            engaged=bool(result.get("engaged", request.engaged)),
+            message=str(result.get("message", "")),
+        )
+
+    @app.get("/api/ros/estop", response_model=EstopStatusResponse)
+    async def ros_estop_status() -> EstopStatusResponse:
+        client = RobotBridgeClient(current_settings())
+        try:
+            result = await client.get_estop()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return EstopStatusResponse(
+            ok=bool(result.get("ok", True)),
+            engaged=bool(result.get("engaged", False)),
+        )
+
     @app.post("/api/ros/goal_pose", response_model=RosActionResponse)
     async def goal_pose(request: Pose2DRequest) -> RosActionResponse:
         return await run_ros(lambda client: client.publish_goal_pose(request))
@@ -397,9 +464,21 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
     async def ros_map() -> RobotMapResponse:
         return await run_ros(lambda client: client.get_map())
 
+    @app.get("/api/ros/costmap", response_model=RobotMapResponse)
+    async def ros_costmap() -> RobotMapResponse:
+        return await run_ros(lambda client: client.get_costmap())
+
     @app.get("/api/ros/pose", response_model=RobotPoseResponse)
     async def ros_pose() -> RobotPoseResponse:
         return await run_ros(lambda client: client.get_pose())
+
+    @app.get("/api/ros/plan")
+    async def ros_plan() -> dict:
+        return await run_ros(lambda client: client.get_plan())
+
+    @app.get("/api/ros/approach_pose")
+    async def ros_approach_pose() -> dict:
+        return await run_ros(lambda client: client.get_approach_pose())
 
     @app.get("/api/ros/image/topics", response_model=ImageTopicsResponse)
     async def ros_image_topics() -> ImageTopicsResponse:
@@ -422,9 +501,51 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         return Response(content=payload, media_type="image/jpeg", headers=headers)
 
 
+    @app.post("/api/ros/params/set", response_model=RosActionResponse)
+    async def ros_params_set(request: ParamsSetRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.set_ros_parameters(request))
+
+    @app.post("/api/ros/open_door/start", response_model=RosActionResponse)
+    async def ros_open_door_start(request: OpenDoorGoalRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_start(request))
+
+    @app.post("/api/ros/open_door/cancel", response_model=RosActionResponse)
+    async def ros_open_door_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_cancel())
+
+    @app.post("/api/ros/open_door/save_poses", response_model=RosActionResponse)
+    async def ros_open_door_save_poses() -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_save_poses())
+
+    @app.post("/api/ros/open_door/step/{step}", response_model=RosActionResponse)
+    async def ros_open_door_step(step: str) -> RosActionResponse:
+        return await run_ros(lambda client: client.open_door_step(step))
+
+    @app.get("/api/ros/open_door/status", response_model=OpenDoorStatusResponse)
+    async def ros_open_door_status() -> OpenDoorStatusResponse:
+        return await RobotBridgeClient(current_settings()).open_door_status()
+
+    # Integrated door mission: drive to a waypoint, then run open_door.
+    # Future UIs can drive the whole task with these three endpoints alone.
+    @app.post("/api/ros/door_mission/start", response_model=RosActionResponse)
+    async def ros_door_mission_start(request: DoorMissionStartRequest) -> RosActionResponse:
+        return await run_ros(lambda client: client.door_mission_start(request))
+
+    @app.post("/api/ros/door_mission/cancel", response_model=RosActionResponse)
+    async def ros_door_mission_cancel() -> RosActionResponse:
+        return await run_ros(lambda client: client.door_mission_cancel())
+
+    @app.get("/api/ros/door_mission/status", response_model=DoorMissionStatusResponse)
+    async def ros_door_mission_status() -> DoorMissionStatusResponse:
+        return await RobotBridgeClient(current_settings()).door_mission_status()
+
     @app.get("/api/ros/arm/temperatures", response_model=ArmTemperaturesResponse)
     async def ros_arm_temperatures() -> ArmTemperaturesResponse:
         return await run_ros(lambda client: client.get_arm_temperatures())
+
+    @app.get("/api/host/battery", response_model=BatteryStatusResponse)
+    def host_battery() -> BatteryStatusResponse:
+        return read_host_battery()
 
     @app.post("/api/ros/arm/trajectory", response_model=RosActionResponse)
     async def ros_arm_trajectory(request: ArmTrajectoryRequest) -> RosActionResponse:
@@ -482,9 +603,59 @@ def create_app(settings: HostSettings | None = None) -> FastAPI:
         result = await run_ros(lambda client: client.get_bridge_retrieve_status())
         return BridgeRetrieveStatusResponse(**result)
 
+    @app.post("/api/ros/bridge_traverse/start", response_model=RosActionResponse)
+    async def ros_bridge_traverse_start(request: BridgeTraverseRequest) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_bridge_traverse(request))
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_traverse_start",
+            message=str(result.get("message", "bridge traverse task started")),
+        )
+
+    @app.post("/api/ros/bridge_traverse/cancel", response_model=RosActionResponse)
+    async def ros_bridge_traverse_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_bridge_traverse())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="bridge_traverse_cancel",
+            message=str(result.get("message", "bridge traverse task canceled")),
+        )
+
+    @app.get("/api/ros/bridge_traverse/status", response_model=BridgeTraverseStatusResponse)
+    async def ros_bridge_traverse_status() -> BridgeTraverseStatusResponse:
+        result = await run_ros(lambda client: client.get_bridge_traverse_status())
+        return BridgeTraverseStatusResponse(**result)
+
+    @app.post("/api/ros/arena_mission/start", response_model=RosActionResponse)
+    async def ros_arena_mission_start(req: ArenaMissionStartRequest = ArenaMissionStartRequest()) -> RosActionResponse:
+        result = await run_ros(lambda client: client.start_arena_mission(req.start_patrol_idx))
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="arena_mission_start",
+            message=str(result.get("message", "arena mission started")),
+        )
+
+    @app.post("/api/ros/arena_mission/cancel", response_model=RosActionResponse)
+    async def ros_arena_mission_cancel() -> RosActionResponse:
+        result = await run_ros(lambda client: client.cancel_arena_mission())
+        return RosActionResponse(
+            ok=bool(result.get("ok")),
+            action="arena_mission_cancel",
+            message=str(result.get("message", "arena mission canceled")),
+        )
+
+    @app.get("/api/ros/arena_mission/status", response_model=ArenaMissionStatusResponse)
+    async def ros_arena_mission_status() -> ArenaMissionStatusResponse:
+        result = await run_ros(lambda client: client.get_arena_mission_status())
+        return ArenaMissionStatusResponse(**result)
+
     @app.get("/api/ros/semantic_memory")
     async def ros_semantic_memory() -> dict:
         return await run_ros(lambda client: client.get_semantic_memory())
+
+    @app.post("/api/ros/semantic_memory/clear")
+    async def ros_semantic_memory_clear() -> dict:
+        return await run_ros(lambda client: client.clear_semantic_memory())
 
     @app.post("/api/ros/costmap/clear", response_model=RosActionResponse)
     async def ros_clear_costmap(request: ClearCostmapRequest | None = None) -> RosActionResponse:

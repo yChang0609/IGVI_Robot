@@ -32,10 +32,13 @@ RUN apt-get update && \
 WORKDIR /workspace
 
 COPY robot_ws/src/igvi_bridge src/igvi_bridge
+# wildbot_grasp's action types are built into the bridge image so the bridge
+# can dispatch the /open_door, /bridge_retrieve, and /search_and_retrieve goals
+# from the UI without shelling out.
 COPY robot_ws/src/wildbot_grasp src/wildbot_grasp
 
 RUN . /opt/ros/jazzy/setup.sh && \
-    colcon build --packages-up-to igvi_bridge --symlink-install
+    colcon build --packages-select wildbot_grasp igvi_bridge --symlink-install
 
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/jazzy/setup.bash && \

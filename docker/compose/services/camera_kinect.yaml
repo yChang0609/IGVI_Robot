@@ -13,7 +13,7 @@ x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/wor
 services:
   camera_kinect:
     <<: *base_service
-    profiles: ["sensors", "kinect"]
+    profiles: ["robot"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.kinect

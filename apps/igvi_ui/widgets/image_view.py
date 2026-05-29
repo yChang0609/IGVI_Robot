@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QPixmap, QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,8 +16,24 @@ from igvi_ui._qt import stop_thread
 from igvi_ui.clients.host_client import HostClient
 
 
+class _TopicRefreshWorker(QThread):
+    topics_ready = Signal(list)
+
+    def __init__(self, client: HostClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            topics = self.client.image_topics()
+        except Exception:  # noqa: BLE001
+            topics = []
+        self.topics_ready.emit(topics)
+
+
 class _ImagePoller(QThread):
-    frame_received = Signal(bytes, str)
+    # Emits decoded QImage (in thread) + raw bytes (for capture) + active topic name.
+    frame_received = Signal(QImage, bytes, str)
     error = Signal(str)
 
     def __init__(self, client: HostClient) -> None:
@@ -39,7 +55,9 @@ class _ImagePoller(QThread):
                 try:
                     payload, active = self.client.image_frame(topic)
                     if payload:
-                        self.frame_received.emit(payload, active or "")
+                        image = QImage.fromData(payload, "JPEG")
+                        if not image.isNull():
+                            self.frame_received.emit(image, bytes(payload), active or "")
                 except Exception as exc:  # noqa: BLE001
                     self.error.emit(str(exc))
             self.msleep(200)
@@ -48,7 +66,7 @@ class _ImagePoller(QThread):
 class _Canvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._pixmap: QPixmap | None = None
         self._placeholder = "Select an image topic"
@@ -86,14 +104,39 @@ class _Canvas(QWidget):
 
 
 class ImageView(QWidget):
-    """Subscribes to a ROS sensor_msgs/Image topic via the host bridge and renders frames."""
+    """Subscribes to a ROS sensor_msgs/Image topic via the host bridge and renders frames.
 
-    def __init__(self, client: HostClient) -> None:
+    ``preferred_topics`` lets a host page pin a default selection (e.g. the door
+    debug image). The first preferred topic present in the live topic list wins;
+    otherwise we fall back to the generic /rgb/* defaults.
+    """
+
+    def __init__(
+        self,
+        client: HostClient,
+        preferred_topics: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.client = client
         self._poller: _ImagePoller | None = None
+        self._refresh_worker: _TopicRefreshWorker | None = None
         self._active_topic: str | None = None
+        self._latest_payload: bytes | None = None
+        self._preferred_topics: tuple[str, ...] = tuple(preferred_topics or ())
         self._build_ui()
+
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setInterval(5000)
+        self._retry_timer.timeout.connect(self._retry_topics_if_idle)
+        # Poller and retry timer are started in showEvent so hidden pages do no work.
+
+    def _start_poller(self) -> None:
+        if self._poller is None:
+            self._poller = _ImagePoller(self.client)
+            self._poller.frame_received.connect(self._on_frame)
+            self._poller.error.connect(self._on_error)
+            self._poller.set_topic(self._active_topic)
+            self._poller.start()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -125,32 +168,43 @@ class ImageView(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        if self._poller is None:
-            self._poller = _ImagePoller(self.client)
-            self._poller.frame_received.connect(self._on_frame)
-            self._poller.error.connect(self._on_error)
+        self._start_poller()
+        if self._poller and self._active_topic:
             self._poller.set_topic(self._active_topic)
-            self._poller.start()
+        self._retry_timer.start()
         self.refresh_topics()
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
-        self.shutdown()
+        self._retry_timer.stop()
+        if self._poller:
+            self._poller.set_topic(None)
 
     def shutdown(self) -> None:
-        """Stop the poller thread. Idempotent; safe to call on app exit."""
+        """Stop background threads. Called explicitly on app exit."""
+        self._retry_timer.stop()
+        if self._refresh_worker and self._refresh_worker.isRunning():
+            self._refresh_worker.wait(2000)
         if self._poller is not None:
             stop_thread(self._poller)
             self._poller = None
 
+    def _retry_topics_if_idle(self) -> None:
+        if not self._active_topic:
+            self.refresh_topics()
+
     # ── Topic management ──────────────────────────────────────────────────────
 
     def refresh_topics(self) -> None:
-        try:
-            topics = self.client.image_topics()
-        except Exception as exc:  # noqa: BLE001
-            self.status.setText(f"Topic list error: {exc}")
+        # Run the HTTP call off the main thread to avoid freezing the UI.
+        if self._refresh_worker and self._refresh_worker.isRunning():
             return
+        worker = _TopicRefreshWorker(self.client)
+        worker.topics_ready.connect(self._apply_topics)
+        self._refresh_worker = worker
+        worker.start()
+
+    def _apply_topics(self, topics: list) -> None:
         current = self.topic_combo.currentText() or self._active_topic or ""
         self.topic_combo.blockSignals(True)
         self.topic_combo.clear()
@@ -168,8 +222,10 @@ class ImageView(QWidget):
         if chosen and chosen != self._active_topic:
             self._on_topic_changed(chosen)
 
-    @staticmethod
-    def _pick_default(topics: list[str]) -> str | None:
+    def _pick_default(self, topics: list[str]) -> str | None:
+        for preference in self._preferred_topics:
+            if preference in topics:
+                return preference
         for preference in (
             "/eto_eye/annotated_image/compressed",
             "/rgb/image_bgr8",
@@ -187,14 +243,16 @@ class ImageView(QWidget):
             self._poller.set_topic(topic)
         self.canvas.set_placeholder(f"Waiting for {topic}…")
         self.status.setText(f"Subscribed: {topic}")
+        self._retry_timer.stop()  # topic found — no need to keep retrying
 
-    def _on_frame(self, payload: bytes, active: str) -> None:
-        image = QImage.fromData(payload, "JPEG")
-        if image.isNull():
-            return
+    def _on_frame(self, image: QImage, payload: bytes, active: str) -> None:
+        self._latest_payload = payload
         self.canvas.set_image(QPixmap.fromImage(image))
         if active and active != self._active_topic:
             self._active_topic = active
 
     def _on_error(self, message: str) -> None:
         self.status.setText(f"Frame error: {message}")
+
+    def latest_frame(self) -> tuple[bytes | None, str | None]:
+        return self._latest_payload, self._active_topic

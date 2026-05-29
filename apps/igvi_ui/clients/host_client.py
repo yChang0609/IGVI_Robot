@@ -94,16 +94,23 @@ class HostClient:
         service: str | None = None,
         services: list[str] | None = None,
         profile: str | None = None,
+        no_cache: bool = False,
     ) -> dict[str, Any]:
         return self.request(
             "POST",
             f"/api/compose/actions/{action}",
-            {"service": service, "services": services, "profile": profile},
+            {"service": service, "services": services, "profile": profile, "no_cache": no_cache},
             timeout=self.compose_timeout,
         )
 
     def ros_stop(self) -> dict[str, Any]:
         return self.request("POST", "/api/ros/stop", {})
+
+    def estop_set(self, engaged: bool) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/estop", {"engaged": engaged})
+
+    def estop_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/estop")
 
     def cmd_vel(self, linear_x: float, angular_z: float) -> dict[str, Any]:
         return self.request(
@@ -124,8 +131,17 @@ class HostClient:
     def ros_map(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/map", timeout=5.0)
 
+    def ros_costmap(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/costmap", timeout=3.0)
+
     def ros_pose(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/pose")
+
+    def ros_plan(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/plan")
+
+    def ros_approach_pose(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/approach_pose")
 
     def image_topics(self) -> list[str]:
         data = self.request("GET", "/api/ros/image/topics", timeout=3.0)
@@ -150,8 +166,58 @@ class HostClient:
             raise HostClientError(str(exc)) from exc
 
 
+    def set_params(self, node: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/params/set", {"node": node, "params": params}
+        )
+
+    def open_door_start(self, ready_distance_m: float = 0.0) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/open_door/start", {"ready_distance_m": ready_distance_m}
+        )
+
+    def open_door_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/cancel", {})
+
+    def open_door_save_poses(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/open_door/save_poses", {}, timeout=6.0)
+
+    def open_door_step(self, step: str) -> dict[str, Any]:
+        # run_press / run_push / go_home block server-side; allow the push its
+        # full duration plus headroom before the HTTP call gives up.
+        return self.request(
+            "POST", f"/api/ros/open_door/step/{step}", {}, timeout=40.0
+        )
+
+    def open_door_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/open_door/status", timeout=timeout)
+
+    # ── Door mission: integrated nav → open_door (single task) ──────────────
+    # The surface a UI uses to fire the whole door task at once. `start`
+    # dispatches nav to the named waypoint (default "door_approach"); when nav
+    # succeeds the bridge automatically kicks off open_door. Poll `status` for
+    # phase = idle | navigating | opening | succeeded | failed | canceled.
+
+    def door_mission_start(
+        self, waypoint: str = "door_approach", ready_distance_m: float = 0.0
+    ) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/ros/door_mission/start",
+            {"waypoint": waypoint, "ready_distance_m": ready_distance_m},
+            timeout=6.0,
+        )
+
+    def door_mission_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/door_mission/cancel", {}, timeout=4.0)
+
+    def door_mission_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/door_mission/status", timeout=timeout)
+
     def arm_temperatures(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/arm/temperatures")
+
+    def battery_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/host/battery")
 
     def arm_trajectory(self, positions: list[float], time_from_start: float = 0.3) -> dict[str, Any]:
         return self.request(
@@ -200,8 +266,34 @@ class HostClient:
     def bridge_retrieve_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/bridge_retrieve/status")
 
+    def bridge_traverse_start(self, bridge_waypoint_name: str) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/api/ros/bridge_traverse/start",
+            {"bridge_waypoint_name": bridge_waypoint_name},
+            timeout=8.0,
+        )
+
+    def bridge_traverse_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/bridge_traverse/cancel", {}, timeout=5.0)
+
+    def bridge_traverse_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/bridge_traverse/status")
+
+    def arena_mission_start(self, start_patrol_idx: int = 0) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/arena_mission/start", {"start_patrol_idx": start_patrol_idx}, timeout=8.0)
+
+    def arena_mission_cancel(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/arena_mission/cancel", {}, timeout=5.0)
+
+    def arena_mission_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/ros/arena_mission/status")
+
     def semantic_memory(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/semantic_memory", timeout=3.0)
+
+    def semantic_memory_clear(self) -> dict[str, Any]:
+        return self.request("POST", "/api/ros/semantic_memory/clear", {}, timeout=5.0)
 
     def imu_calibration_status(self) -> dict[str, Any]:
         return self.request("GET", "/api/ros/imu/calibration", timeout=3.0)
@@ -240,3 +332,6 @@ class HostClient:
 
     def set_calibration(self, data: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", "/api/calibration", data)
+
+    def task_speeds(self) -> dict[str, Any]:
+        return self.request("GET", "/api/task_speeds")

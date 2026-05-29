@@ -1,0 +1,12 @@
+# Color-based door-opening FSM.
+# The server finds the red push-bar in /rgb/image_raw, aligns and approaches
+# using depth from /depth_to_rgb/image_raw, then drives the arm to press the
+# knob at the bar's right end and pushes the base forward to open the door.
+float32 ready_distance_m     # depth at which to stop approaching, in meters (<=0 → server default)
+---
+bool success
+string message
+---
+string stage                 # FSM state name (align/approach/press/push/complete/abort)
+float32 progress             # 0..1
+string detail

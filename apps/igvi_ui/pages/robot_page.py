@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTabWidget,
     QVBoxLayout,
@@ -37,8 +38,11 @@ class _RosPoller(QThread):
     """Background thread: polls /api/ros/pose every 200 ms, /api/ros/map every 3 s."""
 
     map_received = Signal(dict)
+    costmap_received = Signal(dict)
     pose_received = Signal(dict)
     semantic_memory_received = Signal(dict)
+    plan_received = Signal(dict)
+    approach_pose_received = Signal(dict)
 
     def __init__(self, client: HostClient) -> None:
         super().__init__()
@@ -65,8 +69,26 @@ class _RosPoller(QThread):
 
             if tick % 5 == 0:
                 try:
+                    data = self.client.ros_costmap()
+                    if data.get("ok"):
+                        self.costmap_received.emit(data)
+                except Exception:
+                    pass
+                try:
                     data = self.client.semantic_memory()
                     self.semantic_memory_received.emit(data)
+                except Exception:
+                    pass
+                try:
+                    data = self.client.ros_plan()
+                    if data:
+                        self.plan_received.emit(data)
+                except Exception:
+                    pass
+                try:
+                    data = self.client.ros_approach_pose()
+                    if data:
+                        self.approach_pose_received.emit(data)
                 except Exception:
                     pass
 
@@ -94,8 +116,17 @@ class _DriveControl(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(10)
 
         self._kb_btn = QPushButton("⌨  Keyboard Mode")
@@ -119,16 +150,10 @@ class _DriveControl(QWidget):
         drive_grid.addWidget(back, 2, 1)
         layout.addLayout(drive_grid)
 
-        self.linear_slider = self._slider("Linear", layout, 36)
-        self.angular_slider = self._slider("Angular", layout, 42)
+        self.linear_slider = self._slider("Linear", layout, 25)
+        self.angular_slider = self._slider("Angular", layout, 33)
 
         actions = QGridLayout()
-        goal_btn = QPushButton("Set Goal")
-        goal_btn.setObjectName("Primary")
-        goal_btn.setToolTip("Click on the map to set a navigation goal")
-        goal_btn.clicked.connect(lambda: QMessageBox.information(
-            self, "Set Goal", "Click anywhere on the 2D map to send a Nav2 goal."
-        ))
         initial_btn = QPushButton("Initial Pose")
         initial_btn.clicked.connect(lambda: self._pose_action("initial_pose"))
         clear_btn = QPushButton("Clear Costmap")
@@ -136,12 +161,10 @@ class _DriveControl(QWidget):
         estop_btn = QPushButton("E-Stop")
         estop_btn.setObjectName("Danger")
         estop_btn.clicked.connect(self._stop)
-        actions.addWidget(goal_btn, 0, 0)
-        actions.addWidget(initial_btn, 0, 1)
-        actions.addWidget(clear_btn, 1, 0)
-        actions.addWidget(estop_btn, 1, 1)
+        actions.addWidget(initial_btn, 0, 0)
+        actions.addWidget(clear_btn, 0, 1)
+        actions.addWidget(estop_btn, 1, 0, 1, 2)
         layout.addLayout(actions)
-        layout.addStretch(1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -238,7 +261,8 @@ class _DriveControl(QWidget):
 
     def _clear_costmap(self) -> None:
         try:
-            self.client.clear_costmap("local")
+            self.client.clear_costmap("global")
+            self.map_2d.clear_costmap()
         except HostClientError as exc:
             QMessageBox.warning(self, "Clear costmap failed", str(exc))
 
@@ -299,9 +323,9 @@ class RobotPage(QWidget):
         self.bridge_retrieve_control = BridgeRetrieveControl(self.client, self.map_2d)
         
         self.control_tabs.addTab(self.drive_control, "Drive")
+        self.control_tabs.addTab(self.arm_control, "Arm")
         self.control_tabs.addTab(self.nav_control, "Navigation")
         self.control_tabs.addTab(self.waypoint_control, "Waypoints")
-        self.control_tabs.addTab(self.arm_control, "Arm")
         self.control_tabs.addTab(self.search_retrieve_control, "Search & Retrieve")
         self.control_tabs.addTab(self.bridge_retrieve_control, "Bridge Mission")
         control_layout.addWidget(self.control_tabs, 1)
@@ -310,6 +334,8 @@ class RobotPage(QWidget):
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 2)
         layout.setColumnStretch(2, 1)
+        layout.setRowStretch(0, 1)
+        layout.setRowStretch(1, 1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -318,8 +344,11 @@ class RobotPage(QWidget):
         if self._poller is None:
             self._poller = _RosPoller(self.client)
             self._poller.map_received.connect(self.map_2d.update_map)
+            self._poller.costmap_received.connect(self.map_2d.update_costmap)
             self._poller.pose_received.connect(self._on_pose)
             self._poller.semantic_memory_received.connect(self.search_retrieve_control.update_semantic_memory)
+            self._poller.plan_received.connect(self.map_2d.update_plan)
+            self._poller.approach_pose_received.connect(self.map_2d.update_approach_pose)
             self._poller.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802

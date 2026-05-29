@@ -27,11 +27,15 @@ x-eto-eye-env: &eto_eye_env
   DEPTH_MAX_AGE_SEC: "0.05"
 
 x-model-volume: &model_volume ${IGVI_DATA_ROOT}/models/eto_eye:/models:ro
+# /configs holds fastdds_shm.xml referenced by FASTRTPS_DEFAULT_PROFILES_FILE.
+# Without this mount FastDDS errors on the missing profile and falls back to
+# defaults, which breaks /detections_json discovery from other containers.
+x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 
 services:
   eto_eye_gpu:
     <<: *base_service
-    profiles: ["eto_eye_gpu"]
+    profiles: ["application"]
     build:
       context: ../../..
       dockerfile: docker/images/Dockerfile.eto_eye_gpu
@@ -48,6 +52,7 @@ services:
       - render
     volumes:
       - *model_volume
+      - *config_volume
       - ${IGVI_DATA_ROOT}/migraphx_cache/eto_eye:/migraphx_cache
     restart: unless-stopped
 

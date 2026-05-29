@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -25,9 +26,13 @@ GRIPPER_MIN_SAFE, GRIPPER_MAX = 168.0, 240.0  # < 168° will burn the motor
 GRIPPER_RETRACT_DEG = 2.0
 GRIPPER_RETRACT_DELAY_MS = 500
 
+# Default starting target / Home pose (arm_1 up, arm_2 folded, gripper open)
+DEFAULT_ARM1 = 210.0
+DEFAULT_ARM2 = 0.0
+DEFAULT_GRIPPER = 240.0
 # Default starting target (mid-range, gripper open)
-DEFAULT_ARM1 = 120.0
-DEFAULT_ARM2 = 120.0
+DEFAULT_ARM1 = 190.0
+DEFAULT_ARM2 = 0.0
 DEFAULT_GRIPPER = GRIPPER_MAX
 
 # Continuous step rate (deg/sec) while a key is held
@@ -91,8 +96,17 @@ class ArmControl(QWidget):
     # ── UI build ──────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(10)
 
         self._kb_btn = QPushButton("⌨  Keyboard Mode")
@@ -143,7 +157,6 @@ class ArmControl(QWidget):
         actions.addWidget(home_btn, 1, 0)
         actions.addWidget(send_btn, 1, 1)
         layout.addLayout(actions)
-        layout.addStretch(1)
 
     def _slider_row(self, label: str, lo: float, hi: float, value: float, on_value):
         row = QHBoxLayout()

@@ -1,0 +1,64 @@
+# Task-level speed presets.
+#
+# linear values are m/s; angular values are rad/s.
+# These are per-task desired limits. They remain bounded by motion_arbiter and
+# base_controller safety limits.
+
+search_retrieve_server:
+  ros__parameters:
+    transit_linear_speed: 0.8
+    transit_angular_speed: 1.0
+    transit_linear_accel: 0.60
+    transit_angular_accel: 1.00
+    approach_linear_speed: 0.05
+    approach_angular_speed: 0.30
+    approach_linear_accel: 0.20
+    approach_angular_accel: 0.60
+    carry_linear_speed: 0.6
+    carry_angular_speed: 0.6
+    carry_linear_accel: 0.8
+    carry_angular_accel: 0.7
+
+bridge_retrieve_server:
+  ros__parameters:
+    transit_linear_speed: 0.18
+    transit_angular_speed: 0.35
+    transit_linear_accel: 0.30
+    transit_angular_accel: 0.80
+    approach_linear_speed: 0.05
+    approach_angular_speed: 0.25
+    approach_linear_accel: 0.18
+    approach_angular_accel: 0.50
+    carry_linear_speed: 0.12
+    carry_angular_speed: 0.22
+    carry_linear_accel: 0.20
+    carry_angular_accel: 0.50
+
+bridge_traverse_server:
+  ros__parameters:
+    transit_linear_speed: 0.18
+    transit_angular_speed: 0.35
+    transit_linear_accel: 0.30
+    transit_angular_accel: 0.80
+    approach_linear_speed: 0.05
+    approach_angular_speed: 0.25
+    approach_linear_accel: 0.18
+    approach_angular_accel: 0.50
+    carry_linear_speed: 0.16
+    carry_angular_speed: 0.30
+    carry_linear_accel: 0.25
+    carry_angular_accel: 0.70
+
+open_door_server:
+  ros__parameters:
+    approach_speed: 0.05
+    approach_max_wz: 0.25
+    approach_linear_accel: 0.15
+    approach_angular_accel: 0.45
+
+igvi_bridge:
+  ros__parameters:
+    door_transit_linear_speed: 0.4
+    door_transit_angular_speed: 0.5
+    door_transit_linear_accel: 0.30
+    door_transit_angular_accel: 0.80

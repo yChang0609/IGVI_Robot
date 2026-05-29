@@ -393,9 +393,16 @@ class ComposeProjectClient:
         self._run_compose("restart", lambda: self.client.compose.restart(services=target_services))
         return self._result("restart", target_services, started_at, f"Restarted {', '.join(target_services)}")
 
+    def _all_profile_flags(self) -> list[str]:
+        flags: list[str] = []
+        for profile in sorted(self.registry.allowed_profiles()):
+            flags.extend(["--profile", profile])
+        return flags
+
     def stop_all(self) -> ComposeActionResponse:
         started_at = _utcnow()
         cmd = self._compose_base_cmd()
+        cmd.extend(self._all_profile_flags())
         cmd.append("stop")
         self._stream_subprocess("stop_all", cmd)
         return self._result("stop_all", None, started_at, "All services stopped")
@@ -403,6 +410,7 @@ class ComposeProjectClient:
     def remove_all(self) -> ComposeActionResponse:
         started_at = _utcnow()
         cmd = self._compose_base_cmd()
+        cmd.extend(self._all_profile_flags())
         cmd.extend(["down", "--remove-orphans"])
         self._stream_subprocess("remove_all", cmd)
         return self._result("remove_all", None, started_at, "All containers removed")

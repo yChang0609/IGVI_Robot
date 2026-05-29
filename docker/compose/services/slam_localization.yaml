@@ -9,11 +9,12 @@ x-base-service: &base_service
 x-config-volume: &config_volume ../../../robot_ws/configs:/configs:ro
 x-launch-volume: &launch_volume ../../../robot_ws/launch:/workspace/launch:ro
 x-igvi-imu-volume: &igvi_imu_volume ../../../robot_ws/src/igvi_imu/igvi_imu:/workspaces/src/igvi_imu/igvi_imu:ro
+x-grasp-source-volume: &grasp_source_volume ../../../robot_ws/src/wildbot_grasp:/workspaces/src/wildbot_grasp:ro
 
 services:
   slam_localization:
     <<: *base_service
-    profiles: ["localization"]
+    profiles: ["slam_system"]
 
     build:
       context: ../../..
@@ -26,6 +27,7 @@ services:
       - *launch_volume
       - ${IGVI_DATA_ROOT}/slam:/root/.ros
       - *igvi_imu_volume
+      - *grasp_source_volume
     command:
       - /bin/bash
       - -c

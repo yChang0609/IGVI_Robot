@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+import math
+import time
+import yaml
+import threading
+
+import rclpy
+from rclpy.action import ActionServer, ActionClient, GoalResponse
+from rclpy.executors import MultiThreadedExecutor
+from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Path
+
+from wildbot_grasp.action import SearchAndRetrieve
+from wildbot_grasp_nodes.retrieve_base import RetrieveBase
+
+WAYPOINTS_PATH = "/maps/waypoints.yaml"
+
+class ArenaMissionServer(RetrieveBase):
+    _feedback_class = SearchAndRetrieve.Feedback
+
+    def __init__(self):
+        super().__init__(
+            "arena_mission_server",
+            standoff_distance=0.45,
+            visual_servo_kp=0.005,
+        )
+        self.declare_parameter("base_exclusion_radius_m", 0.5)
+        self.declare_parameter("blacklist_timeout_sec", 60.0)
+        self.declare_parameter("log_bear_candidates", True)
+        
+        self._goal_lock = threading.Lock()
+        self._active_goal = False
+        self._patrol_idx = 0
+        
+        self.search_client = ActionClient(
+            self, SearchAndRetrieve, "search_retrieve",
+            callback_group=self.callback_group,
+        )
+        
+        self.action_server = ActionServer(
+            self,
+            SearchAndRetrieve,
+            "arena_mission",
+            execute_callback=self.execute_callback,
+            callback_group=self.callback_group,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+        )
+        self.get_logger().info("Ready: /arena_mission")
+
+    def goal_callback(self, goal_request):
+        with self._goal_lock:
+            if self._active_goal:
+                self.get_logger().warn("Rejecting goal: arena mission is already active")
+                return GoalResponse.REJECT
+            self._active_goal = True
+        self.get_logger().info("Received goal to start Arena Mission")
+        return GoalResponse.ACCEPT
+
+    def load_waypoints(self):
+        try:
+            with open(WAYPOINTS_PATH) as f:
+                data = yaml.safe_load(f) or {}
+            raw = data.get("waypoints") if isinstance(data, dict) else None
+            out = {}
+            if isinstance(raw, dict):
+                for name, pose in raw.items():
+                    if isinstance(pose, dict):
+                        out[name] = {
+                            "x": float(pose.get("x", 0.0)),
+                            "y": float(pose.get("y", 0.0)),
+                            "yaw": float(pose.get("yaw", 0.0)),
+                        }
+            return out
+        except Exception as e:
+            self.get_logger().error(f"Failed to load waypoints: {e}")
+            return {}
+
+    def get_robot_xy(self):
+        pose = self.get_robot_pose()
+        return (pose[0], pose[1]) if pose else (0.0, 0.0)
+
+    def _dist(self, x1, y1, x2, y2):
+        return math.hypot(x1 - x2, y1 - y2)
+
+    def execute_callback(self, goal_handle):
+        result = SearchAndRetrieve.Result()
+        blacklist = {} # target_id -> timestamp (monotonic)
+
+        # Parse starting patrol index from target_id ("arena_mode" or "arena_mode:N")
+        start_idx = 0
+        try:
+            parts = goal_handle.request.target_id.split(":")
+            if len(parts) > 1:
+                start_idx = int(parts[1])
+        except (ValueError, AttributeError, IndexError):
+            pass
+
+        try:
+            self._patrol_idx = start_idx
+            self.clear_costmaps()  # Clear costmap at start of mission to ensure clean slate
+            while rclpy.ok():
+                if goal_handle.is_cancel_requested:
+                    self.get_logger().info("Cancel requested! Returning from execute_callback...")
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "Arena mission canceled"
+                    return result
+                waypoints = self.load_waypoints()
+                our_base = waypoints.get("our_base")
+                enemy_base = waypoints.get("enemy_base")
+                home_pose = waypoints.get("home_pose") or waypoints.get("home")
+                
+                # We need a valid return pose (home_pose or our_base) to return the bear to.
+                return_target = home_pose or our_base
+                if not return_target:
+                    self.publish_feedback(goal_handle, "error", 0.0, "Missing both 'home_pose' and 'our_base' in waypoints")
+                    result.success = False
+                    result.message = "Missing both 'home_pose' and 'our_base' in waypoints"
+                    goal_handle.abort()
+                    return result
+
+                # 1. Clean blacklist
+                now = time.monotonic()
+                timeout = float(self.get_parameter("blacklist_timeout_sec").value)
+                blacklist = {k: v for k, v in blacklist.items() if now - v < timeout}
+
+                # 2. Find best bear
+                best_bear = None
+                best_dist = float('inf')
+                best_robot_dist = 0.0
+                
+                robot_xy = self.get_robot_xy()
+                radius = float(self.get_parameter("base_exclusion_radius_m").value)
+                log_candidates = bool(self.get_parameter("log_bear_candidates").value)
+                candidate_log = []
+
+                with self.memory_lock:
+                    memory_copy = list(self.latest_memory.values())
+                    
+                for obj in memory_copy:
+                    if obj.get("class_name") != "xiong":
+                        continue
+                    obj_id = obj.get("id")
+                    pos = obj.get("position", {})
+                    bx, by = pos.get("x"), pos.get("y")
+                    bz = pos.get("z", 0.0)
+
+                    def remember_candidate(status, reason="", d_robot=None, d_base=None):
+                        if not log_candidates:
+                            return
+                        parts = [
+                            f"{status}",
+                            f"id={obj_id or '<missing>'}",
+                            f"pos=({float(bx):.2f},{float(by):.2f},{float(bz):.2f})"
+                            if bx is not None and by is not None else "pos=<missing>",
+                        ]
+                        if d_robot is not None:
+                            parts.append(f"d_robot={d_robot:.2f}")
+                        if d_base is not None:
+                            parts.append(f"d_base={d_base:.2f}")
+                        if reason:
+                            parts.append(f"reason={reason}")
+                        candidate_log.append(" ".join(parts))
+
+                    if not obj_id:
+                        remember_candidate("skip", "missing_id")
+                        continue
+                    if obj_id in blacklist:
+                        remember_candidate("skip", "blacklisted")
+                        continue
+                    if bx is None or by is None:
+                        remember_candidate("skip", "missing_xy")
+                        continue
+
+                    bx = float(bx)
+                    by = float(by)
+                    bz = float(bz)
+                    d_robot = self._dist(bx, by, robot_xy[0], robot_xy[1])
+                    d_base = self._dist(bx, by, our_base["x"], our_base["y"]) if our_base else d_robot
+
+                    if bz > 0.15:
+                        self.get_logger().info(f"Skipping bear {obj_id} because it is too high (z={bz:.2f}m)")
+                        remember_candidate("skip", "z_too_high", d_robot, d_base)
+                        continue
+                        
+                    # Check exclusion radius
+                    if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
+                        remember_candidate("skip", "inside_our_base_exclusion", d_robot, d_base)
+                        continue
+                    if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
+                        remember_candidate("skip", "inside_enemy_base_exclusion", d_robot, d_base)
+                        continue
+
+                    remember_candidate("valid", d_robot=d_robot, d_base=d_base)
+                    
+                    if d_base < best_dist:
+                        best_dist = d_base
+                        best_bear = obj
+                        best_robot_dist = d_robot
+
+                if log_candidates and candidate_log:
+                    self.get_logger().info("Bear memory candidates: " + "; ".join(candidate_log))
+
+                # If found a valid bear, go grab it
+                if best_bear:
+                    target_id = best_bear['id']
+                    pos = best_bear.get("position", {})
+                    self.publish_feedback(
+                        goal_handle,
+                        "grabbing",
+                        0.0,
+                        (
+                            f"Found {target_id} at {best_robot_dist:.1f}m "
+                            f"(base dist: {best_dist:.1f}m, "
+                            f"pos=({float(pos.get('x', 0.0)):.2f},"
+                            f"{float(pos.get('y', 0.0)):.2f},"
+                            f"{float(pos.get('z', 0.0)):.2f})). "
+                            "Calling search_retrieve."
+                        ),
+                    )
+                    
+                    if not self.search_client.wait_for_server(timeout_sec=5.0):
+                        self.get_logger().error("search_retrieve server not available")
+                        time.sleep(1.0)
+                        continue
+                        
+                    req = SearchAndRetrieve.Goal()
+                    req.target_id = target_id
+                    req.home_pose_x = float(return_target["x"])
+                    req.home_pose_y = float(return_target["y"])
+                    req.home_pose_yaw = float(return_target["yaw"])
+                    
+                    send_future = self.search_client.send_goal_async(req)
+                    while rclpy.ok() and not send_future.done():
+                        time.sleep(0.05)
+                        
+                    search_goal_handle = send_future.result()
+                    if not search_goal_handle.accepted:
+                        self.publish_feedback(goal_handle, "rejected", 0.0, f"search_retrieve rejected goal for {target_id}")
+                        blacklist[target_id] = time.monotonic()
+                        continue
+                        
+                    if goal_handle.is_cancel_requested:
+                        search_goal_handle.cancel_goal_async()
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
+                        
+                    result_future = search_goal_handle.get_result_async()
+                    while rclpy.ok() and not result_future.done():
+                        if goal_handle.is_cancel_requested:
+                            search_goal_handle.cancel_goal_async()
+                            self._plan_pub.publish(Path())
+                            self.cmd_vel_pub.publish(Twist())
+                            goal_handle.canceled()
+                            result.success = False
+                            result.message = "Arena mission canceled"
+                            return result
+                        time.sleep(0.2)
+                        
+                    wrapped_result = result_future.result()
+                    if wrapped_result and wrapped_result.status == 4: # STATUS_SUCCEEDED
+                        self.publish_feedback(goal_handle, "grab_success", 0.0, f"Successfully retrieved {target_id}.")
+                        # Actively remove the object from memory
+                        self.remove_object_from_memory(target_id)
+                    else:
+                        self.publish_feedback(goal_handle, "grab_failed", 0.0, f"Failed to retrieve {target_id}. Blacklisting.")
+                        blacklist[target_id] = time.monotonic()
+                        self.clear_costmaps()
+                    
+                    time.sleep(1.0) # slight delay before next cycle
+                    continue
+
+                # 3. Patrol Phase
+                patrols = [ (k, v) for k, v in waypoints.items() if k.startswith("patrol_") ]
+                patrols.sort(key=lambda x: x[0])
+                
+                if not patrols:
+                    self.publish_feedback(goal_handle, "waiting", 0.0, "No valid bears and no patrols set. Waiting.")
+                    time.sleep(2.0)
+                    continue
+                    
+                patrol_name, patrol_wp = patrols[self._patrol_idx % len(patrols)]
+                self._patrol_idx += 1
+                
+                self.publish_feedback(goal_handle, "patrolling", 0.0, f"Patrolling to {patrol_name} ({patrol_wp['x']:.2f}, {patrol_wp['y']:.2f})")
+                
+                # Disable precise drift correction during patrol navigation to avoid slow in-place alignment
+                self.set_motion_arbiter_drift_correction(False)
+                
+                nav_pose = self.make_pose(patrol_wp["x"], patrol_wp["y"], patrol_wp["yaw"])
+                nav_goal = NavigateToPose.Goal()
+                nav_goal.pose = nav_pose
+                
+                if not self.nav_client.wait_for_server(timeout_sec=5.0):
+                    self.get_logger().error("Nav2 server not available")
+                    time.sleep(1.0)
+                    continue
+                    
+                send_future = self.nav_client.send_goal_async(nav_goal)
+                while rclpy.ok() and not send_future.done():
+                    time.sleep(0.05)
+                    
+                nav_goal_handle = send_future.result()
+                if not nav_goal_handle.accepted:
+                    continue
+                    
+                if goal_handle.is_cancel_requested:
+                    nav_goal_handle.cancel_goal_async()
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "Arena mission canceled"
+                    return result
+                    
+                result_future = nav_goal_handle.get_result_async()
+                patrol_interrupted = False
+                # Wait for motion_arbiter to transition away from 'idle' state.
+                # We give it up to 1.5 seconds. If it doesn't transition, we assume
+                # the goal is already reached or the plan was completed instantly.
+                start_wait = time.time()
+                has_started = False
+                while time.time() - start_wait < 1.5:
+                    if goal_handle.is_cancel_requested:
+                        break
+                    if self.motion_state in ("path_tracking", "aligning"):
+                        has_started = True
+                        break
+                    time.sleep(0.05)
+                
+                patrol_start_time = time.time()
+                patrol_timeout = 60.0
+                
+                while rclpy.ok():
+                    if goal_handle.is_cancel_requested:
+                        nav_goal_handle.cancel_goal_async()
+                        self._plan_pub.publish(Path())
+                        self.cmd_vel_pub.publish(Twist())
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "Arena mission canceled"
+                        return result
+                        
+                    if time.time() - patrol_start_time > patrol_timeout:
+                        self.get_logger().warn(f"Patrol to {patrol_name} timed out")
+                        self.clear_costmaps()  # Clear costmap on timeout to help recover from ghost obstacles
+                        break
+                        
+                    # Check if motion_arbiter has returned to idle (completed arrival & alignment)
+                    if has_started and self.motion_state == "idle":
+                        self.get_logger().info(f"Arrived at patrol waypoint '{patrol_name}' (confirmed by motion_arbiter)")
+                        break
+                    elif not has_started and time.time() - patrol_start_time > 2.0:
+                        self.get_logger().info(f"Patrol waypoint '{patrol_name}' already reached.")
+                        break
+                        
+                    # Memory interrupt check
+                    with self.memory_lock:
+                        memory_copy = list(self.latest_memory.values())
+                        
+                    for obj in memory_copy:
+                        obj_id = obj.get("id")
+                        if obj.get("class_name") == "xiong" and obj_id not in blacklist:
+                            pos = obj.get("position", {})
+                            bx, by = pos.get("x"), pos.get("y")
+                            if bx is None or by is None:
+                                continue
+                            
+                            valid = True
+                            if our_base and self._dist(bx, by, our_base["x"], our_base["y"]) < radius:
+                                valid = False
+                            if enemy_base and self._dist(bx, by, enemy_base["x"], enemy_base["y"]) < radius:
+                                valid = False
+                                
+                            bz = pos.get("z", 0.0)
+                            if bz > 0.15:
+                                valid = False
+                                
+                            if valid:
+                                patrol_interrupted = True
+                                break
+                    
+                    if patrol_interrupted:
+                        self.publish_feedback(goal_handle, "interrupt", 0.0, "Bear spotted during patrol! Interrupting.")
+                        self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
+                        nav_goal_handle.cancel_goal_async()
+                        break
+                        
+                    time.sleep(0.3)
+                    
+                if goal_handle.is_cancel_requested:
+                    self._plan_pub.publish(Path())
+                    self.cmd_vel_pub.publish(Twist())
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "Arena mission canceled"
+                    return result
+                    
+                if not patrol_interrupted:
+                    self.get_logger().info(f"Finished patrol {patrol_name}")
+                    self.set_motion_arbiter_drift_correction(True)  # Re-enable for subsequent bear retrieval
+                    time.sleep(1.0) # pause at patrol point
+
+        except Exception as e:
+            self.get_logger().error(f"Arena mission error: {e}")
+            result.success = False
+            result.message = f"Error: {e}"
+            goal_handle.abort()
+            return result
+
+        finally:
+            with self._goal_lock:
+                self._active_goal = False
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ArenaMissionServer()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == "__main__":
+    main()

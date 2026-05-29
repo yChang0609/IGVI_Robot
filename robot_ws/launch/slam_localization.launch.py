@@ -73,9 +73,9 @@ def generate_launch_description():
             'Vis/MinDepth':       '0.5',
         }],
         remappings=[
-            ('rgb/image',       '/rgb/image_raw'),
+            ('rgb/image',       '/rgb/image_slam'),
             ('rgb/camera_info', '/rgb/camera_info'),
-            ('depth/image',     '/depth_to_rgb/image_raw'),
+            ('depth/image',     '/depth_to_rgb/image_slam'),
             ('imu',             '/imu/filtered'),
             ('odom',            '/odom_visual'),
         ],
@@ -162,20 +162,30 @@ def generate_launch_description():
             'Mem/STMSize':               '10',    # localization needs little short-term memory
             'RGBD/LinearUpdate':         '0.05',  # re-localize every 5 cm
             'RGBD/AngularUpdate':        '0.02',  # re-localize every ~1.1°
-            # Localization mode adds no new nodes, so /map only republishes on
-            # loop closure. These force the full stored grid to be pushed every
-            # cycle, so Foxglove sees the whole arena from startup.
-            'map_always_update':         True,
-            'map_empty_ray_tracing':     True,
+            # Keep /map frozen to the clean stored grid: do NOT redraw it from
+            # live depth every cycle (that baked transient obstacles into the
+            # persistent map permanently). Live/dynamic obstacle avoidance is
+            # handled by the Nav2 costmap voxel_layer (Kinect /points2 + rear
+            # /scan) instead, which marks and ray-traces-clear on its own.
+            'map_always_update':         False,
+            'map_empty_ray_tracing':     False,
         }],
         remappings=[
-            ('rgb/image',       '/rgb/image_raw'),
+            ('rgb/image',       '/rgb/image_slam'),
             ('rgb/camera_info', '/rgb/camera_info'),
-            ('depth/image',     '/depth_to_rgb/image_raw'),
+            ('depth/image',     '/depth_to_rgb/image_slam'),
             ('scan',            '/scan'),
             # RTAB-Map localizes on the fused EKF odom, publishes only map->odom.
             ('odom',            '/odometry/filtered'),
         ],
+    )
+
+    # Lightweight dynamic topic router for C++ SLAM nodes
+    camera_router_node = Node(
+        package='wildbot_grasp',
+        executable='camera_router_node',
+        name='camera_router',
+        output='screen'
     )
 
     return LaunchDescription(declared_arguments + [
@@ -185,4 +195,5 @@ def generate_launch_description():
         rgbd_odom_node,
         icp_odom_node,
         rtabmap_loc_node,
+        camera_router_node,
     ])

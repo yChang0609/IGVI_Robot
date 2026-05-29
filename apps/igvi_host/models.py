@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,11 +29,23 @@ class DevModeRequest(BaseModel):
     enabled: bool
 
 
+class EstopRequest(BaseModel):
+    engaged: bool = True
+
+
+class EstopStatusResponse(BaseModel):
+    ok: bool = True
+    engaged: bool = False
+    action: str = "estop"
+    message: str = ""
+
+
 class ComposeActionRequest(BaseModel):
     service: str | None = None
     services: list[str] | None = None
     profile: str | None = None
     dev_mode: bool | None = None
+    no_cache: bool = False
 
 
 class ComposeActionResponse(BaseModel):
@@ -101,6 +113,45 @@ class RosActionResponse(BaseModel):
     message: str
 
 
+class ParamsSetRequest(BaseModel):
+    node: str
+    # Scalars (HSV ints, debug bool) or arrays (arm poses like [167.0, 80.0, 170.6]).
+    params: dict[str, Any]
+
+
+class OpenDoorGoalRequest(BaseModel):
+    ready_distance_m: float = 0.0
+
+
+class OpenDoorStatusResponse(BaseModel):
+    ok: bool = True
+    available: bool = False
+    state: str = "unavailable"
+    stage: str = ""
+    message: str = ""
+    progress: float = 0.0
+
+
+class DoorMissionStartRequest(BaseModel):
+    # Integrated nav → open_door task: drive to the named waypoint, then run
+    # the open_door action. Defaults match the standard door_approach setup.
+    waypoint: str = "door_approach"
+    ready_distance_m: float = 0.0
+
+
+class DoorMissionStatusResponse(BaseModel):
+    ok: bool = True
+    active: bool = False
+    # idle | navigating | driving | opening | succeeded | failed | canceled
+    phase: str = "idle"
+    waypoint: str = ""
+    ready_distance_m: float = 0.0
+    message: str = ""
+    # Nested snapshots so a UI can render everything from one polled GET.
+    nav: dict[str, Any] = Field(default_factory=dict)
+    open_door: dict[str, Any] = Field(default_factory=dict)
+
+
 class ComposeProgressResponse(BaseModel):
     action: str | None = None
     busy: bool = False
@@ -150,6 +201,22 @@ class ArmTemperaturesResponse(BaseModel):
     stamp_sec: float | None = None
 
 
+class BatteryStatusResponse(BaseModel):
+    ok: bool = False
+    percentage: float | None = None
+    voltage: float | None = None
+    current: float | None = None
+    charge: float | None = None
+    capacity: float | None = None
+    power_supply_status: int | None = None
+    status: str = "unknown"
+    charging: bool = False
+    present: bool = False
+    stamp_sec: float | None = None
+    source: str = "host"
+    message: str = ""
+
+
 class ArmTrajectoryRequest(BaseModel):
     positions: list[float]
     time_from_start: float = 0.3
@@ -185,6 +252,33 @@ class BridgeRetrieveRequest(BaseModel):
 
 
 class BridgeRetrieveStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
+class BridgeTraverseRequest(BaseModel):
+    bridge_waypoint_name: str = "bridge_center"
+    bridge_pose_x: float | None = None
+    bridge_pose_y: float | None = None
+    bridge_pose_yaw: float = 0.0
+
+
+class ArenaMissionStartRequest(BaseModel):
+    start_patrol_idx: int = 0
+
+
+class BridgeTraverseStatusResponse(BaseModel):
+    state: str = "idle"
+    message: str = ""
+    server_ready: bool = False
+    goal: dict | None = None
+    feedback: dict = Field(default_factory=dict)
+
+
+class ArenaMissionStatusResponse(BaseModel):
     state: str = "idle"
     message: str = ""
     server_ready: bool = False
@@ -239,6 +333,14 @@ class CalibrationModel(BaseModel):
     kinect_sharpness: int = 2
     kinect_backlight_compensation: bool = False
     kinect_powerline_frequency: int = 60
+    face_point_distance_m: float = 0.3
+    face_point_ang_kp: float = 1.5
+    face_point_ang_max: float = 0.45
+    face_point_ang_floor: float = 0.30
+    face_point_align_deg: float = 30.0
+    face_point_reverse_speed: float = 1.0
+    face_point_yaw_tol_deg: float = 8.0
+    face_point_timeout_sec: float = 10.0
 
 
 class SaveMapResponse(BaseModel):

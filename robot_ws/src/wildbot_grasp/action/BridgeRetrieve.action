@@ -1,11 +1,31 @@
 # Bridge retrieval mission.
 # Navigate to a bridge-center waypoint, acquire the target class on the bridge,
-# carry it back to the robot's starting pose, then release it.
+# carry it back to the configured home pose (or the mission start pose if no
+# home is given), then release it.
 
 string target_class
 float64 bridge_pose_x
 float64 bridge_pose_y
 float64 bridge_pose_yaw
+# Return target. When home_pose_valid is false the server falls back to the
+# robot's pose at mission start (legacy behaviour).
+bool home_pose_valid
+float64 home_pose_x
+float64 home_pose_y
+float64 home_pose_yaw
+# Door reference point (map frame). Not a navigation goal — only its direction
+# from the robot is used to pick the scan rotation sense (CW/CCW) when the
+# target is not yet known in semantic memory. When door_ref_valid is false the
+# server falls back to a fixed CW scan.
+bool door_ref_valid
+float64 door_ref_x
+float64 door_ref_y
+# Ordered return via-points (map frame). After grasping, the mission visits
+# these in order and then finishes at home_pose, so the return route is
+# deterministic (forced to cross the bridge). Empty → return straight to home.
+float64[] return_path_x
+float64[] return_path_y
+float64[] return_path_yaw
 ---
 bool success
 string message

@@ -12,10 +12,15 @@ from .models import (
     ArmTemperaturesResponse,
     ArmTrajectoryRequest,
     CmdVelRequest,
+    DoorMissionStartRequest,
+    DoorMissionStatusResponse,
     ImageTopicsResponse,
     ImuCalibrationStatusResponse,
     NavGoalRequest,
     NavStatusResponse,
+    OpenDoorGoalRequest,
+    OpenDoorStatusResponse,
+    ParamsSetRequest,
     Pose2DRequest,
     RobotMapResponse,
     RobotPoseResponse,
@@ -24,6 +29,7 @@ from .models import (
     SaveMapResponse,
     WaypointListResponse,
     BridgeRetrieveRequest,
+    BridgeTraverseRequest,
 )
 
 
@@ -67,6 +73,20 @@ class RobotBridgeClient:
             action="stop",
             message=str(result.get("message", "robot stopped")),
         )
+
+    async def set_estop(self, engaged: bool) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/estop", {"engaged": bool(engaged)})
+
+    async def get_estop(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_estop)
+
+    def _fetch_estop(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/estop"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
     async def publish_goal_pose(self, request: Pose2DRequest) -> RosActionResponse:
         await asyncio.to_thread(
@@ -132,6 +152,53 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def start_bridge_traverse(self, request: BridgeTraverseRequest) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if request.bridge_waypoint_name:
+            payload["bridge_waypoint_name"] = request.bridge_waypoint_name
+        else:
+            payload.update(
+                bridge_pose_x=request.bridge_pose_x or 0.0,
+                bridge_pose_y=request.bridge_pose_y or 0.0,
+                bridge_pose_yaw=request.bridge_pose_yaw,
+            )
+        return await asyncio.to_thread(
+            self._bridge_post,
+            "/api/bridge_traverse/start",
+            payload,
+        )
+
+    async def cancel_bridge_traverse(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/bridge_traverse/cancel", {})
+
+    async def get_bridge_traverse_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_bridge_traverse_status)
+
+    def _fetch_bridge_traverse_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/bridge_traverse/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def start_arena_mission(self, start_patrol_idx: int = 0) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/start", {"start_patrol_idx": start_patrol_idx})
+
+    async def cancel_arena_mission(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._bridge_post, "/api/arena_mission/cancel", {})
+
+    async def get_arena_mission_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_arena_mission_status)
+
+    def _fetch_arena_mission_status(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/arena_mission/status"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_semantic_memory(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_semantic_memory)
 
@@ -143,8 +210,34 @@ class RobotBridgeClient:
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
+    async def clear_semantic_memory(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._post_semantic_memory_clear)
+
+    def _post_semantic_memory_clear(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/semantic_memory/clear"
+        req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
     async def get_map(self) -> RobotMapResponse:
         return await asyncio.to_thread(self._fetch_map)
+
+    async def get_costmap(self) -> RobotMapResponse:
+        return await asyncio.to_thread(self._fetch_costmap)
+
+    def _fetch_costmap(self) -> RobotMapResponse:
+        url = self.settings.bridge_url.rstrip("/") + "/api/costmap"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                data = json.loads(r.read())
+            if not data.get("width"):
+                return RobotMapResponse(ok=False)
+            return RobotMapResponse(ok=True, **{k: data[k] for k in ("width", "height", "resolution", "origin_x", "origin_y", "data") if k in data})
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
     def _fetch_map(self) -> RobotMapResponse:
         url = self.settings.bridge_url.rstrip("/") + "/api/map"
@@ -154,6 +247,28 @@ class RobotBridgeClient:
             if not data.get("width"):
                 return RobotMapResponse(ok=False)
             return RobotMapResponse(ok=True, **{k: data[k] for k in ("width", "height", "resolution", "origin_x", "origin_y", "data") if k in data})
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_plan(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_plan)
+
+    def _fetch_plan(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/plan"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                return dict(json.loads(r.read()))
+        except Exception as exc:
+            raise RuntimeError(f"Bridge unavailable: {exc}") from exc
+
+    async def get_approach_pose(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_approach_pose)
+
+    def _fetch_approach_pose(self) -> dict[str, Any]:
+        url = self.settings.bridge_url.rstrip("/") + "/api/approach_pose"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                return dict(json.loads(r.read()))
         except Exception as exc:
             raise RuntimeError(f"Bridge unavailable: {exc}") from exc
 
@@ -389,4 +504,132 @@ class RobotBridgeClient:
             ok=bool(result.get("ok", False)),
             action=str(result.get("action", "imu_calibration_start")),
             message=str(result.get("message", "")),
+        )
+
+    async def set_ros_parameters(self, request: ParamsSetRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/params/set",
+            {"node": request.node, "params": request.params},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "params_set")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_start(self, request: OpenDoorGoalRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/open_door/start",
+            {"ready_distance_m": request.ready_distance_m},
+            3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/cancel", {}, 3.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_save_poses(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/save_poses", {}, 5.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "open_door_save_poses")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_step(self, step: str) -> RosActionResponse:
+        # run_press / run_push / go_home block server-side (push drives the base
+        # for push_duration_sec); give the bridge call generous headroom.
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/open_door/step", {"step": step}, 35.0
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", f"open_door_{step}")),
+            message=str(result.get("message", "")),
+        )
+
+    async def open_door_status(self) -> OpenDoorStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/open_door/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return OpenDoorStatusResponse(
+                ok=False, available=False, state="unavailable", message=f"bridge unavailable: {exc}"
+            )
+        return OpenDoorStatusResponse(
+            ok=True,
+            available=bool(data.get("available", False)),
+            state=str(data.get("state", "unavailable")),
+            stage=str(data.get("stage", "")),
+            message=str(data.get("message", "")),
+            progress=float(data.get("progress", 0.0)),
+        )
+
+    # ── Door mission: chained nav → open_door, single task surface ──────────
+
+    async def door_mission_start(self, request: DoorMissionStartRequest) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post,
+            "/api/door_mission/start",
+            {"waypoint": request.waypoint, "ready_distance_m": request.ready_distance_m},
+            5.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_start")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_cancel(self) -> RosActionResponse:
+        result = await asyncio.to_thread(
+            self._bridge_post, "/api/door_mission/cancel", {}, 3.0,
+        )
+        return RosActionResponse(
+            ok=bool(result.get("ok", False)),
+            action=str(result.get("action", "door_mission_cancel")),
+            message=str(result.get("message", "")),
+        )
+
+    async def door_mission_status(self) -> DoorMissionStatusResponse:
+        def _fetch() -> dict[str, Any]:
+            url = self.settings.bridge_url.rstrip("/") + "/api/door_mission/status"
+            with urllib.request.urlopen(url, timeout=2) as r:
+                return json.loads(r.read())
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            return DoorMissionStatusResponse(
+                ok=False, active=False, phase="unavailable",
+                message=f"bridge unavailable: {exc}",
+            )
+        return DoorMissionStatusResponse(
+            ok=True,
+            active=bool(data.get("active", False)),
+            phase=str(data.get("phase", "idle")),
+            waypoint=str(data.get("waypoint", "")),
+            ready_distance_m=float(data.get("ready_distance_m", 0.0)),
+            message=str(data.get("message", "")),
+            nav=dict(data.get("nav") or {}),
+            open_door=dict(data.get("open_door") or {}),
         )

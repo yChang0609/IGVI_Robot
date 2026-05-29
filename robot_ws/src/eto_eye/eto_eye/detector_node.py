@@ -151,35 +151,11 @@ class DetectorNode(Node):
         self.latest_depth_encoding = None
         self.latest_depth_frame_id = None
 
-        image_topic = self.get_parameter("image_topic").value
         detection_topic = self.get_parameter("detection_topic").value
-
-        if self.enable_depth:
-            depth_topic = self.get_parameter("depth_topic").value
-            # 使用 message_filters 來同步影像與深度
-            self.image_sub = message_filters.Subscriber(self, Image, image_topic)
-            self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
-            
-            # slop 參數設定容許的時間差 (例如 0.05 秒內視為同一幀)
-            self.ts = message_filters.ApproximateTimeSynchronizer(
-                [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
-            )
-            self.ts.registerCallback(self.sync_callback)
-            
-            self.get_logger().info(
-                f"Subscribed to synchronized {image_topic} and {depth_topic} "
-                f"scale={self.depth_unit_scale} roi_scale={self.depth_roi_scale}"
-            )
-        else:
-            self.subscription = self.create_subscription(
-                Image, image_topic, self.image_callback, 10
-            )
-            self.depth_subscription = None
         if self.output_format == "vision_msgs":
             from vision_msgs.msg import (
                 Detection2DArray,
             )
-
             self.publisher = self.create_publisher(Detection2DArray, detection_topic, 10)
         else:
             self.publisher = self.create_publisher(String, detection_topic, 10)
@@ -193,9 +169,23 @@ class DetectorNode(Node):
             )
         else:
             self.annotated_publisher = None
-        self.get_logger().info(
-            f"Subscribed to {image_topic}, publishing {self.output_format} to {detection_topic}"
-        )
+
+        # Standard raw-only subscriptions (YOLO always uses raw feeds to ensure precise grasping works)
+        image_topic = self.get_parameter("image_topic").value
+        if self.enable_depth:
+            depth_topic = self.get_parameter("depth_topic").value
+            self.image_sub = message_filters.Subscriber(self, Image, image_topic)
+            self.depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+            self.ts = message_filters.ApproximateTimeSynchronizer(
+                [self.image_sub, self.depth_sub], queue_size=10, slop=self.depth_max_age_sec
+            )
+            self.ts.registerCallback(self.sync_callback)
+            self.get_logger().info(f"Subscribed to synchronized raw topics: {image_topic} & {depth_topic}")
+        else:
+            self.subscription = self.create_subscription(
+                Image, image_topic, self.image_callback, 10
+            )
+            self.get_logger().info(f"Subscribed to raw image topic: {image_topic}")
 
     def _prepare_migraphx_cache(self, ep):
         if ep != "migraphx":
@@ -526,6 +516,8 @@ class DetectorNode(Node):
                     "nanosec": image_msg.header.stamp.nanosec,
                 },
                 "frame_id": image_msg.header.frame_id,
+                "image_width": int(image_msg.width),
+                "image_height": int(image_msg.height),
                 "detections": [self._json_detection(d) for d in detections],
             }
         )

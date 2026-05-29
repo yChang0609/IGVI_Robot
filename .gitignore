@@ -144,7 +144,15 @@ video.txt
 !/data/calibration/
 /data/calibration/*
 !/data/calibration/.gitkeep
+/captures/
+/images/
+/imagess/
 
 # Local files
 .*
 !/docker/compose/.env.example
+slam/*
+migraphx_cache/*
+maps/waypoints.yaml
+
+models/eto_eye/best.onnx

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+append_param() {
+  local -n _ref="$1"
+  local env_name="$2"
+  local param_name="$3"
+  local value="${!env_name:-}"
+  if [[ -n "${value}" ]]; then
+    _ref+=(-p "${param_name}:=${value}")
+  fi
+}
+
+ros_args=(--ros-args)
+if [[ -f /configs/task_speeds.yaml ]]; then
+  ros_args+=(--params-file /configs/task_speeds.yaml)
+fi
+append_param ros_args RETRIEVE_IMAGE_CENTER_X       image_center_x
+append_param ros_args RETRIEVE_VISUAL_SERVO_KP      visual_servo_kp
+append_param ros_args RETRIEVE_STANDOFF_DISTANCE    standoff_distance
+append_param ros_args RETRIEVE_APPROACH_DISTANCE_M  approach_target_distance_m
+append_param ros_args RETRIEVE_APPROACH_SPEED       approach_linear_speed
+append_param ros_args RETRIEVE_APPROACH_ANGULAR_SPEED approach_angular_speed
+append_param ros_args RETRIEVE_TRANSIT_LINEAR_SPEED transit_linear_speed
+append_param ros_args RETRIEVE_TRANSIT_ANGULAR_SPEED transit_angular_speed
+append_param ros_args RETRIEVE_CARRY_LINEAR_SPEED   carry_linear_speed
+append_param ros_args RETRIEVE_CARRY_ANGULAR_SPEED  carry_angular_speed
+append_param ros_args RETRIEVE_APPROACH_LINEAR_ACCEL approach_linear_accel
+append_param ros_args RETRIEVE_APPROACH_ANGULAR_ACCEL approach_angular_accel
+append_param ros_args RETRIEVE_TRANSIT_LINEAR_ACCEL transit_linear_accel
+append_param ros_args RETRIEVE_TRANSIT_ANGULAR_ACCEL transit_angular_accel
+append_param ros_args RETRIEVE_CARRY_LINEAR_ACCEL   carry_linear_accel
+append_param ros_args RETRIEVE_CARRY_ANGULAR_ACCEL  carry_angular_accel
+append_param ros_args RETRIEVE_APPROACH_TIMEOUT_SEC approach_timeout_sec
+append_param ros_args RETRIEVE_CENTER_TOLERANCE_PX  approach_center_tolerance_px
+append_param ros_args RETRIEVE_ARRIVAL_TOLERANCE    arrival_tolerance
+append_param ros_args RETRIEVE_ARRIVAL_TIMEOUT_SEC  arrival_timeout
+append_param ros_args RETRIEVE_YAW_TOLERANCE        yaw_tolerance
+
+exec ros2 run wildbot_grasp search_retrieve_server "${ros_args[@]}"

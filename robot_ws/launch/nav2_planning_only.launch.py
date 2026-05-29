@@ -10,12 +10,21 @@ and waypoint_follower are intentionally not launched — motion_arbiter is the
 sole velocity authority.
 """
 
+import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
     params = "/configs/nav2_params.yaml"
+
+    env_tolerance = os.environ.get("RETRIEVE_ARRIVAL_TOLERANCE")
+    planner_params = [params]
+    if env_tolerance:
+        try:
+            planner_params.append({"GridBased.tolerance": float(env_tolerance)})
+        except ValueError:
+            pass
 
     lifecycle_nodes = [
         "planner_server",
@@ -28,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="planner_server",
             name="planner_server",
             output="screen",
-            parameters=[params],
+            parameters=planner_params,
         ),
         Node(
             package="nav2_bt_navigator",

@@ -9,7 +9,7 @@ x-base-service: &base_service
 services:
   rosbridge:
     <<: *base_service
-    profiles: ["bridge"]
+    profiles: ["communication"]
     image: ghcr.io/screamlab/wildbot_base_image:latest
     ports:
       - 9090:9090
