@@ -30,7 +30,6 @@ Day-to-day operation is UI-driven: toggle services on the `Docker` page, run mis
   - [Building the ROS Workspace](#building-the-ros-workspace)
   - [Tests](#tests)
   - [Debugging via CLI](#debugging-via-cli)
-  - [Planning Documents](#planning-documents)
 
 ## System Architecture
 
@@ -406,8 +405,3 @@ docker compose --env-file docker/compose/.env -f docker/compose/compose.yaml \
 
 The `wildbot_grasp` package also ships a combined CLI: `python3 robot_ws/src/wildbot_grasp/tools/grasp.py {start,stop,check,state,logs,recreate}` (see that package's README).
 
-## Planning Documents
-
-- `.docs/Implement.md` — multi-phase roadmap (compose fixes → Zenoh migration → UI mmap bridge → Docker supervisor). Parts predate the current repo state; treat it as direction.
-- `.docs/chat_planning.md` — v3 system architecture design.
-- `memo.md` — calibration & tuning backlog (IMU, camera intrinsics, wheel odometry, EKF).
