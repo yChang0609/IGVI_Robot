@@ -31,10 +31,6 @@ Day-to-day operation is UI-driven: toggle services on the `Docker` page, run mis
   - [Tests](#tests)
   - [Debugging via CLI](#debugging-via-cli)
   - [Planning Documents](#planning-documents)
-  - [TODO / Roadmap](#todo--roadmap)
-    - [Mission Reliability \& Safety](#mission-reliability--safety)
-    - [Perception \& Data](#perception--data)
-    - [Platform Evolution](#platform-evolution)
 
 ## System Architecture
 
@@ -415,22 +411,3 @@ The `wildbot_grasp` package also ships a combined CLI: `python3 robot_ws/src/wil
 - `.docs/Implement.md` — multi-phase roadmap (compose fixes → Zenoh migration → UI mmap bridge → Docker supervisor). Parts predate the current repo state; treat it as direction.
 - `.docs/chat_planning.md` — v3 system architecture design.
 - `memo.md` — calibration & tuning backlog (IMU, camera intrinsics, wheel odometry, EKF).
-
-## TODO / Roadmap
-
-### Mission Reliability & Safety
-
-- [ ] Surface each mission's state, retry count, current distance, and centering error in the UI.
-- [ ] Converge the approach/turn speeds on each mission's `/motion/cmd` to avoid oscillation near the target.
-- [ ] Clearly prompt in the UI / mission state to wait for cooldown when the gripper overheats.
-- [ ] Validate the grasp distance band and whether `BEAR_TARGET_CENTER_X_PX` aligns the gripper centerline with the target.
-
-### Perception & Data
-
-- [ ] Confirm the YOLO class names (`xiong` / `xiong_qiao`) match `CLASS_FILTER`.
-- [ ] Tune the semantic-memory merge radius and hit thresholds to balance missed vs. false entries.
-
-### Platform Evolution
-
-- [ ] Evaluate the FastDDS → Zenoh migration and a shared compose anchor (see `.docs/Implement.md`).
-- [ ] UI mmap bridge and Docker supervisor.
